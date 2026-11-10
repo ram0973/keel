@@ -110,7 +110,7 @@ impl<'a> Codegen<'a> {
                 self.out.push_str(&format!(
                     "static {} {}({});\n",
                     ret,
-                    f.name,
+                    self.fname(&f.name),
                     params.join(", ")
                 ));
             }
@@ -159,8 +159,12 @@ impl<'a> Codegen<'a> {
                 Type::Void => "void".to_string(),
                 t => self.ty(t),
             };
-            self.out
-                .push_str(&format!("static {} {}({}) {{\n", ret, f.name, params.join(", ")));
+            self.out.push_str(&format!(
+                "static {} {}({}) {{\n",
+                ret,
+                self.fname(&f.name),
+                params.join(", ")
+            ));
         }
 
         for stmt in &f.body.stmts {
@@ -292,6 +296,18 @@ impl<'a> Codegen<'a> {
         out
     }
 
+    /// Имя функции в C. Пользовательские имена получают префикс `k_`,
+    /// чтобы не сталкиваться со стандартной библиотекой (`remove` из
+    /// stdio.h, `index` из strings.h и т.д.). `main` остаётся как есть —
+    /// это точка входа C.
+    fn fname(&self, name: &str) -> String {
+        if name == "main" {
+            name.to_string()
+        } else {
+            format!("k_{}", name)
+        }
+    }
+
     /// Выражение в «значенческом» контексте: если тип — ссылка,
     /// автоматически разыменовываем (`*r`).
     fn value_expr(&self, e: &Expr) -> String {
@@ -381,7 +397,7 @@ impl<'a> Codegen<'a> {
                     return format!("({}){{{}}}", cname, items.join(", "));
                 }
                 let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
-                format!("{}({})", name, a.join(", "))
+                format!("{}({})", self.fname(name), a.join(", "))
             }
             ExprKind::Unary { op, e } => match op {
                 UnOp::Neg => format!("(-{})", self.value_expr(e)),
@@ -389,6 +405,19 @@ impl<'a> Codegen<'a> {
             },
             ExprKind::Binary { op, l, r } => {
                 let (ls, rs) = (self.value_expr(l), self.value_expr(r));
+                // Строки сравниваются по содержимому, а не по адресу.
+                let both_str = matches!(self.types.get(&l.id), Some(Type::Str))
+                    && matches!(self.types.get(&r.id), Some(Type::Str));
+                if both_str {
+                    let cmp = match op {
+                        BinOp::Eq => "==",
+                        BinOp::Ne => "!=",
+                        _ => "",
+                    };
+                    if !cmp.is_empty() {
+                        return format!("(strcmp({}, {}) {} 0)", ls, rs, cmp);
+                    }
+                }
                 let opstr = match op {
                     BinOp::Add => "+",
                     BinOp::Sub => "-",

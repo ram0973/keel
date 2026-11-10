@@ -361,6 +361,30 @@ fn main() int {
 }
 
 #[test]
+fn устаревшая_ссылка_на_запись_ловится() {
+    // Сценарий из примера phonebook.keel: взяли ссылку на запись,
+    // запись заменили — ссылка устарела.
+    fails(
+        r#"
+struct Entry { id int; name string; }
+struct Book { entries [Entry; 2]; count int; }
+fn edit(book &Book mut, id int, name string) int {
+    book.entries[0] = Entry(id, name);
+    return 1;
+}
+fn main() int {
+    let mut book = Book([Entry(1, "a"), Entry(2, "b")], 2);
+    let first = &book.entries[0];
+    edit(&book, 2, "new");
+    print(first.name);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+#[test]
 fn неизвестное_поле_ловится() {
     fails(
         r#"
