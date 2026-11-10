@@ -1,2 +1,11 @@
 /target
 *.o
+
+# Служебные файлы с текстом сообщений коммитов. Их не должно быть
+# в репозитории: git add -A иначе утащит их в коммит.
+msg*.txt
+COMMIT_MSG.txt
+msg-fix.txt
+reword.sh
+seq-editor.sh
+
