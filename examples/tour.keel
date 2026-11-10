@@ -1,0 +1,62 @@
+// Программа, которая показывает разницу с Rust: то, что Rust запрещает,
+// в Keel — обычный код.
+
+struct Entity {
+    hp int;
+    name string;
+}
+
+struct World {
+    entities [Entity; 3];
+    alive int;
+}
+
+// Параметр-внутри: `entity` указывает на элемент `world.entities`.
+// Rust потребовал бы для этого либо lifetime-аннотации, либо перезапроса
+// ссылки в каждом месте.
+// `mut` на параметре-внутри означает: функция меняет содержимое
+// world.entities[]. Всё, что не покрыто этим контрактом, менять нельзя —
+// поэтому `world.alive` здесь не трогается.
+fn step(world &World, entity in world.entities[] mut, amount int) {
+    entity.hp = entity.hp - amount;
+}
+
+// Две изменяемые ссылки на элементы одной коллекции.
+// Rust: error[E0499] cannot borrow as mutable more than once.
+//
+// Контракт `mut(world.entities[])` объявляет: функция меняет элементы
+// коллекции. Вызывающий после вызова инвалидирует свои ссылки внутрь
+// world.entities — но не ссылку на саму коллекцию.
+fn heal_first_and_second(world &World) mut(world.entities[]) {
+    let a = &world.entities[0];
+    let b = &world.entities[1];
+    a.hp = a.hp + 10;
+    b.hp = b.hp + 10;
+}
+
+fn main() int {
+    let mut world = World(
+        [Entity(100, "orc"), Entity(80, "goblin"), Entity(50, "rat")],
+        3
+    );
+
+    print("--- начальное состояние ---");
+    print(world.entities[0].hp);
+    print(world.entities[1].hp);
+    print(world.entities[2].hp);
+
+    step(&world, &world.entities[0], 30);
+    print("--- после step(-30) ---");
+    print(world.entities[0].hp);
+
+    heal_first_and_second(&world);
+    print("--- после лечения первых двух ---");
+    print(world.entities[0].hp);
+    print(world.entities[1].hp);
+
+    print("--- имена ---");
+    print(world.entities[0].name);
+    print(world.entities[2].name);
+
+    return 0;
+}
