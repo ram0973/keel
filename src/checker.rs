@@ -298,7 +298,33 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &Stmt, ctx: &mut Ctx) {
         match stmt {
             Stmt::Let { name, mutable, ty, init } => {
-                let init_ty = self.type_of(init, ctx);
+                let mut init_ty = self.type_of(init, ctx);
+                // Пустой литерал `[]` не позволяет вывести тип элемента:
+                // элементов нет, а значит нет и их типа. Если тип
+                // объявлен явно, пустой литерал наследует его.
+                if let Some(declared) = ty {
+                    if let ExprKind::Array(items) = &init.kind {
+                        if items.is_empty() {
+                            if let Type::Array(..) = declared {
+                                init_ty = declared.clone();
+                            }
+                        }
+                    }
+                }
+                // Пустой литерал без объявленного типа: элементов нет,
+                // поэтому тип элемента вывести не из чего. Сообщаем об
+                // этом явно — иначе ошибка всплыла бы только при
+                // компиляции C, в виде «array of voids».
+                if let ExprKind::Array(items) = &init.kind {
+                    if items.is_empty() && ty.is_none() {
+                        self.diags.push(Diagnostic::new(
+                            init.line,
+                            "невозможно вывести тип элемента пустого массива: \
+                             укажите тип явно, например `let xs [int; 0] = [];`"
+                                .to_string(),
+                        ));
+                    }
+                }
                 if let Some(declared) = ty {
                     if !self.types_compatible(declared.clone(), &init_ty) {
                         self.diags.push(Diagnostic::new(
