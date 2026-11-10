@@ -331,6 +331,36 @@ fn main() int {
 }
 
 #[test]
+fn ссылки_сравниваются_по_значению() {
+    // Авторазыменование: `x < y` где x, y — ссылки на int.
+    ok(r#"
+fn main() int {
+    let mut a = 1;
+    let mut b = 2;
+    let x = &a;
+    let y = &b;
+    if x < y {
+        print(1);
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn авторазыменование_в_арифметике() {
+    ok(r#"
+fn main() int {
+    let mut a = 10;
+    let r = &a;
+    let s = r + 5;
+    print(s);
+    return 0;
+}
+"#);
+}
+
+#[test]
 fn неизвестное_поле_ловится() {
     fails(
         r#"

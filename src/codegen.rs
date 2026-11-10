@@ -292,6 +292,16 @@ impl<'a> Codegen<'a> {
         out
     }
 
+    /// Выражение в «значенческом» контексте: если тип — ссылка,
+    /// автоматически разыменовываем (`*r`).
+    fn value_expr(&self, e: &Expr) -> String {
+        let base = self.expr(e);
+        match self.types.get(&e.id) {
+            Some(Type::Ref(_)) => format!("(*{})", base),
+            _ => base,
+        }
+    }
+
     fn expr(&self, e: &Expr) -> String {
         match &e.kind {
             ExprKind::Int(n) => format!("INT64_C({})", n),
@@ -374,11 +384,11 @@ impl<'a> Codegen<'a> {
                 format!("{}({})", name, a.join(", "))
             }
             ExprKind::Unary { op, e } => match op {
-                UnOp::Neg => format!("(-{})", self.expr(e)),
-                UnOp::Not => format!("(!{})", self.expr(e)),
+                UnOp::Neg => format!("(-{})", self.value_expr(e)),
+                UnOp::Not => format!("(!{})", self.value_expr(e)),
             },
             ExprKind::Binary { op, l, r } => {
-                let (ls, rs) = (self.expr(l), self.expr(r));
+                let (ls, rs) = (self.value_expr(l), self.value_expr(r));
                 let opstr = match op {
                     BinOp::Add => "+",
                     BinOp::Sub => "-",

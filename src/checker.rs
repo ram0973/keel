@@ -646,6 +646,8 @@ impl Checker {
             ExprKind::Call { callee, args } => self.type_of_call(callee, args, ctx, e.line),
             ExprKind::Unary { op, e: inner } => {
                 let t = self.type_of(inner, ctx);
+                // Авторазыменование: `!r` где r: &bool — это `!(*r)`.
+                let t = t.deref().clone();
                 match op {
                     UnOp::Neg => {
                         if t != Type::Int {
@@ -662,6 +664,9 @@ impl Checker {
             ExprKind::Binary { op, l, r } => {
                 let lt = self.type_of(l, ctx);
                 let rt = self.type_of(r, ctx);
+                // Авторазыменование: сравнение ссылок сравнивает значения.
+                let lt = lt.deref().clone();
+                let rt = rt.deref().clone();
                 match op {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                         Type::Bool

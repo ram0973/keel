@@ -51,8 +51,11 @@ fn main() {
             println!("сгенерирован {}", out);
         }
         "run" => {
-            let tmp_c = std::env::temp_dir().join("keel_out.c");
-            let tmp_bin = std::env::temp_dir().join("keel_out.bin");
+            // Уникальные имена: иначе параллельные запуски (или запуск от
+            // другого пользователя) столкнутся за один и тот же файл.
+            let pid = std::process::id();
+            let tmp_c = std::env::temp_dir().join(format!("keel_out_{}.c", pid));
+            let tmp_bin = std::env::temp_dir().join(format!("keel_out_{}.bin", pid));
             let _ = std::fs::write(&tmp_c, &result.c_code);
 
             // Ищем компилятор C.
