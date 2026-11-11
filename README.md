@@ -61,6 +61,7 @@ cargo run -- run examples/language-tour.keel
 | `examples/phonebook.keel` | Телефонная книга: добавление, поиск, правка, удаление. Показывает, как borrow checker ловит устаревшую ссылку на запись |
 | `examples/mini.keel` | Мир с существами: параметр-внутри, контракт `mut`, две изменяемые ссылки на элементы одной коллекции, сортировка |
 | `examples/tour.keel` | Тот же код, что и в `examples/rust/rust_comparison.rs`, но на Keel: на Rust не компилируется, на Keel — работает |
+| `experiments/clif/` | Эксперимент: та же функция, но собранная в IR Cranelift напрямую. Оценка перехода с C-бэкенда на собственный IR |
 
 ```sh
 cargo run -- run examples/phonebook.keel
