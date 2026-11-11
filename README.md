@@ -188,6 +188,9 @@ fn heal_first_and_second(world &World) mut(world.entities[]) {
   сроки и обоснование порядка.
 - `docs/keel-syntax.md` — грамматика, открытые вопросы.
 - `docs/keel-risks.md` — минусы и подводные камни, с ценой.
+- `docs/links.md` — подборка материалов по реализации языков: как написать
+  свой компилятор, курсы, статьи по владению и регионам, генераторы
+  парсеров. Ссылки проверяются скриптом `scripts/check-links.py`.
 - `docs/keel-explained.md` — то же самое простыми словами, для того, кто
   знает только C.
 - `docs/cranelift-experiment.md` — **эксперимент с бэкендом на Cranelift**:

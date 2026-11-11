@@ -18,3 +18,13 @@ done
 echo
 echo "=== документация ==="
 python3 scripts/check-docs.py
+
+echo
+echo "=== ссылки ==="
+# Сеть может быть недоступна — это не повод ронять проверку целиком.
+if python3 scripts/check-links.py >/tmp/keel_links.log 2>&1; then
+    tail -3 /tmp/keel_links.log
+else
+    echo "проверка ссылок не пройдена (сеть?) — подробности в /tmp/keel_links.log"
+    tail -12 /tmp/keel_links.log
+fi
