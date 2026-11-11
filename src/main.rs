@@ -62,6 +62,11 @@ fn main() {
             let cc = if cfg!(target_os = "windows") { "clang" } else { "cc" };
             let st = Command::new(cc)
                 .arg("-w")
+                // Оптимизация: без неё сгенерированный C компилируется
+                // как -O0, и код Keel заметно медленее того, что может
+                // дать gcc. Уровень можно переопределить переменной
+                // KEEL_OPT (например, KEEL_OPT=-O0 для отладки).
+                .arg(std::env::var("KEEL_OPT").unwrap_or_else(|_| "-O2".to_string()))
                 .arg("-o")
                 .arg(&tmp_bin)
                 .arg(&tmp_c)

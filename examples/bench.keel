@@ -1,0 +1,31 @@
+// Бенчмарк Keel.
+//
+// Две нагрузки:
+//   1. горячий цикл с делением по модулю (проверка, что компилятор
+//      не мешает оптимизатору);
+//   2. рекурсивный fib.
+//
+// Тот же бенчмарк на Rust — в scripts/bench.py, там же сравнение.
+//
+// Запуск:
+//   cargo run -- run examples/bench.keel
+//   python3 scripts/bench.py          # полное сравнение с Rust
+
+fn fib(n int) int {
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() int {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 100000000 {
+        sum = sum + i % 7;
+        i = i + 1;
+    }
+    print(sum);
+    print(fib(30));
+    return 0;
+}

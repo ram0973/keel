@@ -75,6 +75,18 @@ cargo run -- run examples/tour.keel
 sh scripts/check-examples.sh
 ```
 
+**Сравнение с Rust по скорости и размеру:**
+
+```sh
+cargo build --release
+python3 scripts/bench.py
+```
+
+Выведет скорость программы, собранной Keel (через C) против того же
+бенчмарка на Rust, и размеры бинарников. По умолчанию сгенерированный C
+собирается с `-O2`; переопределить уровень можно переменной
+`KEEL_OPT` (например, `KEEL_OPT=-O0 cargo run -- run ...`).
+
 **Из Windows** команды выполняются через WSL:
 
 ```sh
