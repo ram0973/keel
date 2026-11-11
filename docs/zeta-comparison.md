@@ -362,13 +362,21 @@ Rust-символов в бинаре; `.z`-исходников на `main` в�
   удалил Rust-исходники из `main`.
 - В релизы уезжает **Rust-бинарь** с ветки `bootstrap`, а не
   «self-hosting pure Zeta», как обещает тур.
-- Использовался ли ИИ при написании — по внешним признакам не
-  устанавливается. Косвенные сигналы: порт изобилует признаками
-  незавершённой машинной адаптации («// Note: In Zeta, we don't have
-  RefCell like Rust», «// We'll need to adapt the borrow checker
-  interface», «// Speculative states stubbed (always Safe)»); набор файлов
-  не связан (ML, тензоры, диффузия, XAI, актёры рядом с парсером).
-  Определить это наверняка по репозиторию нельзя.
+- **Работа велась с помощью ИИ-агента.** В `docs/bootstrap/` лежат
+  **248 файлов** — отчёты каждые полчаса: `accountability_report.md` (45),
+  `cron_completion_report.md` (30), `summary.md` (25) и файлы вида
+  `accountability_check_HH_MM.md` / `cron_completion_HH_MM.md` с 00:00 до
+  23:30. В ROADMAP: *«Comprehensive autonomy system deployed»*, *«Autonomy
+  system with heartbeat monitoring deployed»*, *«Cron job accountability
+  checks implemented»*. Отчёт начинается со строк *«Cron Task:
+  zeta-bootstrap-accountability»* и *«TASK COMPLETED SUCCESSFULLY»*.
+- Что это объясняет: год темпа, несовместимый с одним разработчиком;
+  характерная речь машины в порте («// We'll need to adapt the borrow
+  checker interface»); маркетинговые заявления тура, опережающие код —
+  агент генерирует фичи быстрее, чем человек успевает их дописать.
+- **Практический вывод: заявления тура надо проверять компилятором, а
+  не читать.** Расхождение полное — см. 6.1 и 6.2. Код — источник
+  истины; тура — источник идей и синтаксиса.
 
 ### 6.4. Вывод для Keel
 
