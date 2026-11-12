@@ -15,6 +15,19 @@
 use crate::ast::*;
 use std::collections::HashMap;
 
+/// Склонение слова «аргумент» по числу: 1 аргумент, 2 аргумента,
+/// 5 аргументов. Без этого в сообщении появляется «ждёт 1 аргументов».
+fn аргументов(n: usize) -> String {
+    let word = if n % 10 == 1 && n % 100 != 11 {
+        "аргумент"
+    } else if (2..=4).contains(&(n % 10)) && !(12..=14).contains(&(n % 100)) {
+        "аргумента"
+    } else {
+        "аргументов"
+    };
+    format!("{} {}", n, word)
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub line: usize,
@@ -1034,9 +1047,9 @@ impl Checker {
                 self.diags.push(Diagnostic::new(
                     line,
                     format!(
-                        "конструктор `{}` ждёт {} аргументов, передан {}",
+                        "конструктор `{}` ждёт {}, передан {}",
                         name,
-                        s.fields.len(),
+                        аргументов(s.fields.len()),
                         args.len()
                     ),
                 ));
@@ -1135,9 +1148,9 @@ impl Checker {
             self.diags.push(Diagnostic::new(
                 line,
                 format!(
-                    "`{}` ждёт {} аргументов, передан {}",
+                    "`{}` ждёт {}, передан {}",
                     name,
-                    fi.params.len(),
+                    аргументов(fi.params.len()),
                     args.len()
                 ),
             ));
@@ -1322,7 +1335,10 @@ impl Checker {
     }
 
     fn is_copy(&self, t: &Type) -> bool {
-        matches!(t, Type::Int | Type::Bool | Type::Str)
+        // Ссылка — это указатель: копирование не отнимает владение
+        // у оригинала. Поэтому `println(r); println(r);` законно,
+        // как `&T` в Rust (там `&T: Copy`).
+        matches!(t, Type::Int | Type::Bool | Type::Str | Type::Ref(_))
     }
 
     fn types_compatible(&self, a: Type, b: &Type) -> bool {

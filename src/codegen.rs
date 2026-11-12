@@ -83,15 +83,34 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Тип элемента для составного литерала C: `(T[]){...}`.
+    ///
+    /// Здесь размеры пишутся ПОСЛЕ типа, а не после имени — это другое
+    /// правило C, чем в декларации. Для вложенного массива `[int; 2]`
+    /// тип элемента записывается как `int64_t[2]`, и литерал получается
+    /// `(int64_t[2][]){...}`.
+    fn array_literal_ty(&self, t: &Type) -> String {
+        match t {
+            Type::Array(elem, n) => format!("{}[{}]", self.array_literal_ty(elem), n),
+            t => self.ty(t),
+        }
+    }
+
     /// Декларация переменной: `T name`, `T name[N]` или `T (*name)[N]`.
+    ///
+    /// В C размеры пишутся ПОСЛЕ имени, а не после типа: не `int64_t[2] x`,
+    /// а `int64_t x[2]`. Для вложенных массивов это значит, что декларатор
+    /// строится рекурсивно: `[[int; 2]; 2]` даёт `int64_t x[2][2]`,
+    /// а не `int64_t[2] x[2]`.
     fn decl(&self, t: &Type, name: &str) -> String {
         match t {
-            Type::Array(elem, n) => format!("{} {}[{}]", self.ty(elem), name, n),
+            // Массив: размер дописывается к имени, рекурсия уходит в элемент.
+            Type::Array(elem, n) => self.decl(elem, &format!("{}[{}]", name, n)),
             // Ссылка — это указатель: `T* name`.
             Type::Ref(inner) => match inner.as_ref() {
                 // Указатель на массив: скобки обязательны — `T (*name)[N]`.
                 Type::Array(elem, n) => {
-                    format!("{} (*{})[{}]", self.ty(elem), name, n)
+                    self.decl(elem, &format!("(*{})[{}]", name, n))
                 }
                 t => format!("{}* {}", self.ty(t), name),
             },
@@ -311,13 +330,11 @@ impl<'a> Codegen<'a> {
                 // Затенение: второе `let x` получает другое имя в C.
                 let name = &self.fresh_var_name(name);
                 match &t {
-                    Type::Array(elem, n) => {
+                    Type::Array(_, _) => {
                         let items = self.array_items(init);
                         self.out.push_str(&format!(
-                            "  {} {}[{}] = {{{}}};\n",
-                            self.ty(elem),
-                            name,
-                            n,
+                            "  {} = {{{}}};\n",
+                            self.decl(&t, name),
                             items.join(", ")
                         ));
                     }
@@ -516,12 +533,26 @@ impl<'a> Codegen<'a> {
     }
 
     /// Элементы массива-литерала.
+    ///
+    /// В инициализации C требует константный инициализатор, поэтому
+    /// вложенные массивы записываются фигурными скобками рекурсивно:
+    /// `{{1, 2}, {3, 4}}`, а не `(int64_t[]){1, 2}`.
     fn array_items(&self, init: &Expr) -> Vec<String> {
         match &init.kind {
-            ExprKind::Array(items) => items.iter().map(|x| self.expr(x)).collect(),
+            ExprKind::Array(items) => items.iter().map(|x| self.array_init_elem(x)).collect(),
             ExprKind::Call { args, .. } => args.iter().map(|x| self.expr(x)).collect(),
             _ => vec![],
         }
+    }
+
+    /// Один элемент инициализатора массива: вложенный массив — `{...}`,
+    /// всё остальное — обычное выражение.
+    fn array_init_elem(&self, e: &Expr) -> String {
+        if let ExprKind::Array(items) = &e.kind {
+            let inner: Vec<String> = items.iter().map(|x| self.array_init_elem(x)).collect();
+            return format!("{{{}}}", inner.join(", "));
+        }
+        self.expr(e)
     }
 
     /// Поля составного литерала структуры: `.hp = 42, .name = "orc"`.
@@ -796,8 +827,11 @@ impl<'a> Codegen<'a> {
                     return format!("{{{}}}", elems.join(", "));
                 }
                 let elems: Vec<String> = items.iter().map(|x| self.expr(x)).collect();
+                // Тип элемента для составного литерала C: `(T[]){...}`.
+                // Для вложенного массива T сам является массивом, и в C
+                // это записывается как `T[inner]`, а не `T`.
                 let elem_ty = match self.types.get(&e.id) {
-                    Some(Type::Array(t, _)) => self.ty(t),
+                    Some(Type::Array(t, _)) => self.array_literal_ty(t),
                     _ => "int64_t".to_string(),
                 };
                 format!("({}[]){{{}}}", elem_ty, elems.join(", "))
