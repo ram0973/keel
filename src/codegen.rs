@@ -101,6 +101,23 @@ impl<'a> Codegen<'a> {
 
     pub fn generate(mut self) -> String {
         self.out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+        // Конкатенация строк: результат требует памяти, которой у операндов
+        // нет. Копируем в свежий буфер из кучи.
+        //
+        // Память не освобождается: в Keel пока нет ни `free`, ни владения
+        // для кучи. Для коротких программ это незаметно; настоящее
+        // освобождение — в волне 8 (куча и растущие коллекции).
+        self.out.push_str(
+            "// Склеивает две строки в новый буфер из кучи.\n\
+             // Освобождения пока нет — см. волну 8 в docs/lang-design.md.\n\
+             static char* k_str_concat(const char* a, const char* b) {\n\
+             \x20 size_t la = strlen(a), lb = strlen(b);\n\
+             \x20 char* r = (char*)malloc(la + lb + 1);\n\
+             \x20 memcpy(r, a, la);\n\
+             \x20 memcpy(r + la, b, lb + 1);\n\
+             \x20 return r;\n\
+             }\n\n",
+        );
 
         for item in &self.prog.items {
             if let Item::Struct(s) = item {
@@ -613,26 +630,61 @@ impl<'a> Codegen<'a> {
                     return "0".to_string();
                 };
                 if name == "print" || name == "println" {
-                    if let Some(a) = args.first() {
-                        let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
+                    if args.is_empty() {
+                        // `println()` без аргументов — просто перевод строки.
+                        if name == "println" {
+                            return "printf(\"\\n\")".to_string();
+                        }
+                        return String::new();
+                    }
+                    let nl = if name == "println" { "\\n" } else { "" };
+                    let last = args.len() - 1;
+                    let mut parts = Vec::new();
+                    for (i, a) in args.iter().enumerate() {
+                        let mut t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
                         let mut v = self.expr(a);
                         // Ссылка печатается по значению: авторазыменование.
-                        let mut t = t;
                         if let Type::Ref(inner) = t.clone() {
                             v = format!("(*{})", v);
                             t = *inner;
                         }
-                        // `print` — без перевода строки, `println` — с переводом.
-                        let nl = if name == "println" { "\\n" } else { "" };
-                        return match t {
-                            Type::Str => format!("printf(\"%s{}\", {})", nl, v),
+                        // Перевод строки — только у последнего аргумента.
+                        let tail = if i == last { nl } else { "" };
+                        parts.push(match t {
+                            Type::Str => format!("printf(\"%s{}\", {})", tail, v),
                             Type::Bool => {
-                                format!("printf(\"%s{}\", {} ? \"true\" : \"false\")", nl, v)
+                                format!("printf(\"%s{}\", {} ? \"true\" : \"false\")", tail, v)
                             }
-                            _ => format!("printf(\"%lld{}\", (long long){})", nl, v),
-                        };
+                            _ => format!("printf(\"%lld{}\", (long long){})", tail, v),
+                        });
                     }
-                    return String::new();
+                    // Несколько аргументов склеиваются оператором `,`:
+                    // каждый `printf` возвращает int, но результат
+                    // выражения всё равно не используется.
+                    return parts.join(", ");
+                }
+                // `len` — длина строки или массива. Для массива размер
+                // известен из типа и подставляется числом; для строки
+                // считается `strlen` в рантайме.
+                if name == "len" {
+                    let Some(a) = args.first() else {
+                        return "0".to_string();
+                    };
+                    let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
+                    let inner = match &t {
+                        Type::Ref(inner) => inner.as_ref().clone(),
+                        other => other.clone(),
+                    };
+                    return match inner {
+                        Type::Array(_, n) => n.to_string(),
+                        _ => {
+                            let v = match t {
+                                Type::Ref(_) => format!("(*{})", self.expr(a)),
+                                _ => self.expr(a),
+                            };
+                            format!("(long long)strlen({})", v)
+                        }
+                    };
                 }
                 // Конструктор структуры.
                 if let Some(s) = self.structs.get(name) {
@@ -698,6 +750,10 @@ impl<'a> Codegen<'a> {
                     };
                     if !cmp.is_empty() {
                         return format!("(strcmp({}, {}) {} 0)", ls, rs, cmp);
+                    }
+                    // Конкатенация: результат — новая строка в куче.
+                    if matches!(op, BinOp::Add) {
+                        return format!("k_str_concat({}, {})", ls, rs);
                     }
                 }
                 let opstr = match op {

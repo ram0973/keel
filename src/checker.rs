@@ -974,6 +974,8 @@ impl Checker {
                         Type::Bool
                     }
                     BinOp::And | BinOp::Or => Type::Bool,
+                    // Конкатенация строк: `+` для двух строк даёт строку.
+                    BinOp::Add if lt == Type::Str && rt == Type::Str => Type::Str,
                     _ => {
                         if lt != Type::Int || rt != Type::Int {
                             self.diags.push(Diagnostic::new(
@@ -1065,6 +1067,35 @@ impl Checker {
                 self.record_move(a, ctx);
             }
             return Type::Void;
+        }
+
+        // `len` — длина строки или массива. Для массива значение известно
+        // на этапе компиляции (размер — часть типа), для строки считается
+        // в рантайме через `strlen`.
+        if name == "len" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`len` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                let inner = match &t {
+                    Type::Ref(inner) => inner.as_ref(),
+                    other => other,
+                };
+                if !matches!(inner, Type::Str | Type::Array(..)) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!(
+                            "`len` работает со строкой или массивом, получен `{}`",
+                            t.name()
+                        ),
+                    ));
+                }
+            }
+            return Type::Int;
         }
 
         let Some(fi) = self.funcs.get(name).cloned() else {

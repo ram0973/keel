@@ -2,18 +2,34 @@
 
 use crate::ast::*;
 use crate::lexer::{lex, Tok, Token};
+use std::collections::HashMap;
 
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     next_id: u32,
+    /// Именованные константы: `const MAX = 100;`.
+    ///
+    /// Подставляются прямо в дерево на этапе разбора — как `#define` в C.
+    /// Поэтому у константы нет ни адреса, ни места в памяти, а её значение
+    /// обязано быть известно компилятору. Область видимости — файл:
+    /// константы, объявленные до места использования, видны ниже.
+    consts: HashMap<String, ConstVal>,
+}
+
+/// Значение именованной константы. Только то, что известно компилятору.
+#[derive(Clone, Debug)]
+enum ConstVal {
+    Int(i64),
+    Bool(bool),
+    Str(String),
 }
 
 type PResult<T> = Result<T, String>;
 
 impl Parser {
     pub fn new(src: &str) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0 })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0, consts: HashMap::new() })
     }
 
     /// Парсер с заданным начальным значением счётчика id.
@@ -23,7 +39,7 @@ impl Parser {
     /// файла попадёт на выражение из другого — и сгенерированный C
     /// окажется неверным (`self.name` вместо `self->name`).
     pub fn with_id_start(src: &str, start: u32) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start, consts: HashMap::new() })
     }
 
     /// Сколько id израсходовано — чтобы продолжить нумерацию в
@@ -146,6 +162,13 @@ impl Parser {
     pub fn parse_program(&mut self) -> PResult<Program> {
         let mut items = Vec::new();
         while !matches!(self.peek(), Tok::Eof) {
+            // `const` не становится объявлением: он выполняется здесь же
+            // и подставляется в места использования. Поэтому в дерево
+            // ничего не добавляется.
+            if self.at_kw("const") {
+                self.parse_const()?;
+                continue;
+            }
             items.push(self.parse_item()?);
         }
         Ok(Program { items })
@@ -162,12 +185,95 @@ impl Parser {
             Ok(Item::Import(self.parse_import()?))
         } else {
             Err(format!(
-                "строка {}: ожидалось 'struct', 'fn', 'impl' или 'import', получено {}",
+                "строка {}: ожидалось 'struct', 'fn', 'impl', 'import' или 'const', получено {}",
                 self.line(),
                 self.describe(self.peek())
             ))
         }
     }
+
+    /// Разбирает `const ИМЯ = значение;` и запоминает его.
+    ///
+    /// Значение — литерал (число, `true`/`false`, строка) или выражение
+    /// из уже известных констант и арифметики над ними. Подстановка
+    /// текстовая: у константы нет адреса и места в памяти.
+    fn parse_const(&mut self) -> PResult<()> {
+        let line = self.line();
+        self.expect_kw("const")?;
+        let name = self.ident()?;
+        self.expect_punct("=")?;
+        let val = self.parse_const_value(line)?;
+        self.expect_punct(";")?;
+        self.consts.insert(name, val);
+        Ok(())
+    }
+
+    /// Значение константы: литерал, ссылка на другую константу или
+    /// арифметика над ними. Всё обязано быть известно компилятору.
+    fn parse_const_value(&mut self, line: usize) -> PResult<ConstVal> {
+        // Унарный минус: `-1`.
+        if self.eat_punct("-") {
+            let inner = self.parse_const_value(line)?;
+            return match inner {
+                ConstVal::Int(n) => Ok(ConstVal::Int(-n)),
+                _ => Err(format!(
+                    "строка {}: унарный минус применим только к числу",
+                    line
+                )),
+            };
+        }
+
+        let left = match self.bump() {
+            Tok::Int(n) => ConstVal::Int(n),
+            Tok::Str(s) => ConstVal::Str(s),
+            Tok::Ident(s) if s == "true" => ConstVal::Bool(true),
+            Tok::Ident(s) if s == "false" => ConstVal::Bool(false),
+            Tok::Ident(s) => match self.consts.get(&s).cloned() {
+                Some(v) => v,
+                None => {
+                    return Err(format!(
+                        "строка {}: значение константы должно быть известно \
+                         компилятору, `{}` — не константа",
+                        line, s
+                    ))
+                }
+            },
+            other => {
+                return Err(format!(
+                    "строка {}: ожидалось значение константы, получено {}",
+                    line,
+                    self.describe(&other)
+                ))
+            }
+        };
+
+        // Арифметика над числами: `const N = 2 * 3;`.
+        let op = match self.peek() {
+            Tok::Punct(p) if matches!(p.as_str(), "+" | "-" | "*" | "/") => p.clone(),
+            _ => return Ok(left),
+        };
+        self.bump();
+        let right = self.parse_const_value(line)?;
+        match (left, right) {
+            (ConstVal::Int(a), ConstVal::Int(b)) => Ok(ConstVal::Int(match op.as_str() {
+                "+" => a + b,
+                "-" => a - b,
+                "*" => a * b,
+                "/" => {
+                    if b == 0 {
+                        return Err(format!("строка {}: деление на ноль в константе", line));
+                    }
+                    a / b
+                }
+                _ => unreachable!(),
+            })),
+            _ => Err(format!(
+                "строка {}: арифметика в константах работает только с числами",
+                line
+            )),
+        }
+    }
+
 
     /// 
     fn parse_import(&mut self) -> PResult<ImportDecl> {
@@ -388,8 +494,28 @@ impl Parser {
         if self.eat_punct("[") {
             let elem = self.parse_type()?;
             self.expect_punct(";")?;
+            // Размер массива: число или именованная константа. Константа
+            // подставляется значением — размер обязан быть известен
+            // компилятору, потому что он часть типа.
             let n = match self.bump() {
                 Tok::Int(n) => n as usize,
+                Tok::Ident(name) => match self.consts.get(&name) {
+                    Some(ConstVal::Int(n)) if *n >= 0 => *n as usize,
+                    Some(ConstVal::Int(_)) => {
+                        return Err(format!(
+                            "строка {}: размер массива не может быть отрицательным",
+                            self.line()
+                        ))
+                    }
+                    _ => {
+                        return Err(format!(
+                            "строка {}: размер массива должен быть числом или \
+                             числовой константой, получено `{}`",
+                            self.line(),
+                            name
+                        ))
+                    }
+                },
                 other => {
                     return Err(format!(
                         "строка {}: ожидался размер массива, получено {}",
@@ -433,6 +559,17 @@ impl Parser {
         // «ожидалось ';', получено 'int'» — сообщение о том, чего ждёт
         // парсер, а не о том, что забыл человек.
         if let Tok::Ident(name) = self.peek().clone() {
+            // `const` внутри функции: константа объявляется на уровне
+            // файла, потому что её значение подставляется на этапе
+            // разбора — места в стеке у неё нет.
+            if name == "const" {
+                return Err(format!(
+                    "строка {}: `const` объявляется на уровне файла, \
+                     вне функции: его значение подставляется при компиляции \
+                     и не занимает памяти",
+                    line
+                ));
+            }
             // Проверка идёт только для имени, которое не является
             // ключевым словом: иначе `let x = 5;` даёт подсказку
             // «пропущено `let`» про сам `let`.
@@ -440,7 +577,7 @@ impl Parser {
                 name.as_str(),
                 "let" | "fn" | "struct" | "impl" | "if" | "else" | "while"
                     | "for" | "do" | "return" | "break" | "continue"
-                    | "in" | "mut" | "true" | "false"
+                    | "in" | "mut" | "true" | "false" | "const" | "import"
             );
             if !is_keyword && self.looks_like_decl_without_let() {
                 return Err(format!(
@@ -824,6 +961,19 @@ impl Parser {
                          `1 + if ...` не допускается",
                         line
                     )),
+                    // Именованная константа подставляется своим значением:
+                    // у неё нет ни адреса, ни места в памяти.
+                    _ if self.consts.contains_key(&s) => {
+                        let v = self.consts.get(&s).cloned().unwrap();
+                        Ok(self.mk(
+                            line,
+                            match v {
+                                ConstVal::Int(n) => ExprKind::Int(n),
+                                ConstVal::Bool(b) => ExprKind::Bool(b),
+                                ConstVal::Str(t) => ExprKind::Str(t),
+                            },
+                        ))
+                    }
                     _ => Ok(self.mk(line, ExprKind::Ident(s))),
                 }
             }
