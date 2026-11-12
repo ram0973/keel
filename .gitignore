@@ -9,6 +9,7 @@ experiments/*/target
 msg*.txt
 COMMIT_MSG.txt
 msg-fix.txt
+commit-*.txt
 reword.sh
 seq-editor.sh
 
@@ -16,8 +17,10 @@ seq-editor.sh
 examples/users-manual.keel
 examples/_*.keel
 
-# Песочница для экспериментов: play/ — не часть проекта, а место,
-# где можно пробовать что угодно. Ни cargo, ни проверка примеров,
-# ни проверка документации в неё не заходят.
-play/
+# Песочница-туториал play/ — ЧАСТЬ репозитория (см. README, раздел 6).
+# Раньше была git-ignored; теперь коммитится, чтобы туториал не терялся.
+# Важно: ни cargo, ни проверка примеров (examples/*.keel), ни проверка
+# документации (docs/*.md + README.md) в play/ не заходят — поэтому
+# появление папки в репозитории ничего не ломает. Проверяется она
+# отдельным блоком в scripts/check-examples.sh.
 

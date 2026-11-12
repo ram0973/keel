@@ -24,6 +24,31 @@ for f in examples/*.keel; do
 done
 
 echo
+echo "=== туториал play/ ==="
+# Туториал компилируется и запускается как обычные программы: если
+# язык изменится и пример в туториале перестанет собираться, это
+# должно быть видно здесь, а не у читателя.
+for f in play/*.keel; do
+    printf '%-32s ' "$f"
+    if ! grep -q "^fn main" "$f"; then
+        # Модуль без точки входа (user.keel) — запускать нечего, но
+        # проверку типов он должен проходить.
+        if cargo run --quiet -- check "$f" >/dev/null 2>&1; then
+            echo "OK (модуль)"
+        else
+            echo ОШИБКА
+            cargo run --quiet -- check "$f" || true
+        fi
+    # stdin из /dev/null: 01-basics.keel читает ввод (read_line).
+    elif cargo run --quiet -- run "$f" </dev/null >/dev/null 2>&1; then
+        echo OK
+    else
+        echo ОШИБКА
+        cargo run --quiet -- check "$f" || true
+    fi
+done
+
+echo
 echo "=== документация ==="
 python3 scripts/check-docs.py
 

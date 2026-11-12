@@ -1,0 +1,16 @@
+// User вынесен сюда — и его видят все, кто подключает этот файл.
+//
+// Ключевое: имя `User` здесь пишется БЕЗ префикса. После
+// `import "user.keel";` в другом файле пишут просто `User(...)`,
+// а не `user::User(...)`.
+
+struct User {
+    name string;
+    age int;
+}
+
+impl User {
+    fn get_name(self &User) string {
+        return self.name;
+    }
+}

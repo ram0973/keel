@@ -1,0 +1,114 @@
+// ============================================================
+//  Keel — песочница и туториал
+// ============================================================
+//
+//  Это точка входа. Отсюда начинайте знакомство с языком.
+//
+//      cd ~/keel
+//      ./target/debug/keelc run play/main.keel      ← вы здесь
+//
+//  Дальше читайте файлы по порядку — от простого к сложному.
+//  Каждый файл рабочая программа, а не текст о программе.
+//
+//      01-basics.keel            переменные, типы, печать, const
+//      02-control-flow.keel      if, while, do-while, for, break/continue
+//      03-functions-structs.keel функции, структуры, массивы, методы
+//      04-ownership.keel         владение, ссылки, пути, mut-контракты
+//      05-modules.keel           модули: файл = модуль
+//      06-practice.keel          телефонная книга — всё вместе
+//      07-errors.keel            ошибки компилятора и их смысл
+//
+//  Подробное описание — в play/README.md.
+//
+//  Если читаете только один файл — читайте 04-ownership.keel.
+//  Остальное знакомо всякому, кто писал на C или Rust; модель
+//  владения — то, ради чего язык существует.
+// ============================================================
+
+import "user.keel";
+
+fn main() int {
+    println("Keel — туториал");
+    println();
+
+    // --- Привет, мир ---
+    println("Hello, world!");
+
+    // --- Переменные ---
+    // `let` — только чтение, `let mut` — можно менять.
+    let non_immutable_var int = 0;
+    let mut immutable_var int = 1;
+    let name string = "Keel";
+
+    // --- Структура из user.keel, метод, ссылка ---
+    let mut user User = User("John", 26);
+    println(user.name);
+    println(user.age);
+    println(user.get_name());
+
+    // --- Массив, len, for ---
+    let users = [User("John", 26), User("Mary", 18), User("James", 18)];
+
+    // Раньше здесь стояло `for i in 0..3` — число, вписанное руками.
+    // Теперь размер берётся из len(), и он не разойдётся с массивом.
+    for i in 0..len(users) {
+        println(users[i].name);
+    }
+
+    // Обход по значениям, без индекса.
+    for u in users {
+        // Тернарника в языке нет — вместо него `if` как выражение.
+        let mark string = if u.age >= 18 { "совершеннолетний" } else { "ребёнок" };
+        println("  ", u.name, " — ", mark);
+    }
+
+    // --- Передача по ссылке: владение остаётся здесь ---
+    print_user(&user);
+
+    // --- Структура с полем-массивом; размер — из len ---
+    let count int = len(users);
+    let registry Registry = Registry(users, count);
+    println("в реестре: ", registry.count);
+
+    // --- Структура в структуре ---
+    let post = Post(User("Leila", 30), "Post title");
+    println(post.title, " — автор ", post.user.name);
+
+    // --- Конкатенация строк ---
+    let greeting = "Привет, " + user.get_name() + "!";
+    println(greeting);
+
+    // --- Циклы while и do-while ---
+    let mut x int = 0;
+    while x < 3 {
+        x += 1;
+        println(x);
+    }
+
+    do {
+        x -= 1;
+        println(x);
+    } while x > 0;
+
+    println();
+    println("Дальше: play/01-basics.keel");
+
+    return 0;
+}
+
+struct Registry {
+    users [User; 3];
+    count int;
+}
+
+// struct in struct
+struct Post {
+    user User;
+    title string;
+}
+
+// function
+fn print_user(user &User) {
+    println(user.name);
+    println(user.age);
+}
