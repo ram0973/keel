@@ -104,15 +104,15 @@ fn sort_by_hp(hp &[int; 4] mut) {
 // --- Отчёт ------------------------------------------------------------------
 
 fn report(world &World) {
-    print("--- состояние ---");
+    println("--- состояние ---");
     let mut i = 0;
     while i < 4 {
-        print(world.entities[i].name);
-        print(world.entities[i].hp);
+        println(world.entities[i].name);
+        println(world.entities[i].hp);
         i = i + 1;
     }
-    print("живых:");
-    print(world.alive);
+    println("живых:");
+    println(world.alive);
 }
 
 
@@ -139,11 +139,11 @@ fn main() int {
     // перестановки. Компилятор это проверяет.
     let mut hp = [30, 50, 10, 70];
     sort_by_hp(&hp);
-    print("--- hp после сортировки ---");
-    print(hp[0]);
-    print(hp[1]);
-    print(hp[2]);
-    print(hp[3]);
+    println("--- hp после сортировки ---");
+    println(hp[0]);
+    println(hp[1]);
+    println(hp[2]);
+    println(hp[3]);
 
     report(&world);
     return 0;

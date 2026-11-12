@@ -25,7 +25,7 @@ fn main() int {
         sum = sum + i % 7;
         i = i + 1;
     }
-    print(sum);
-    print(fib(30));
+    println(sum);
+    println(fib(30));
     return 0;
 }

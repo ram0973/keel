@@ -428,6 +428,14 @@ impl Checker {
                 self.check_block(body, ctx);
                 ctx.loop_depth -= 1;
             }
+            Stmt::DoWhile { body, cond } => {
+                self.type_of(cond, ctx);
+                ctx.loop_depth += 1;
+                // Как и у `while`, тело проверяем дважды.
+                self.check_block(body, ctx);
+                self.check_block(body, ctx);
+                ctx.loop_depth -= 1;
+            }
             Stmt::Break { line } => {
                 if ctx.loop_depth == 0 {
                     self.diags.push(Diagnostic::new(
@@ -875,7 +883,8 @@ impl Checker {
         }
 
         // Встроенная функция?
-        if name == "print" {
+        // `print` печатает без перевода строки, `println` — с переводом.
+        if name == "print" || name == "println" {
             for a in args {
                 self.type_of(a, ctx);
                 self.record_move(a, ctx);

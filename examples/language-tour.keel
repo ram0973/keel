@@ -35,21 +35,21 @@
 // Значения по умолчанию неизменяемы: переприсваивание требует `let mut`.
 
 fn demo_types() int {
-    print("=== 1. типы и значения ===");
+    println("=== 1. типы и значения ===");
 
     let n = 42;            // int
     let flag = true;       // bool
     let name = "orc";      // string
 
-    print(n);              // 42
-    print(flag);           // true
-    print(name);           // orc
+    println(n);              // 42
+    println(flag);           // true
+    println(name);           // orc
 
     // Переприсваивание требует `mut`.
     let mut counter = 0;
     counter = counter + 1;
     counter = counter + 10;
-    print(counter);        // 11
+    println(counter);        // 11
 
     // Без `mut` — ошибка компиляции (см. раздел 9).
     // let frozen = 1;
@@ -90,31 +90,31 @@ struct World {
 }
 
 fn demo_structs() int {
-    print("=== 2. структуры и массивы ===");
+    println("=== 2. структуры и массивы ===");
 
     // Конструктор: позиционные аргументы в порядке полей.
     let p = Point(3, 4);
-    print(p.x);               // 3
-    print(p.y);               // 4
+    println(p.x);               // 3
+    println(p.y);               // 4
 
     // Массив структур: литерал.
     let points = [Point(1, 1), Point(2, 4), Point(3, 9)];
-    print(points[0].x);       // 1
-    print(points[2].y);       // 9
+    println(points[0].x);       // 1
+    println(points[2].y);       // 9
 
     // Поле-массив в структуре.
     let w = world_of(Entity(10, "orc"), Entity(20, "rat"), Entity(30, "bat"));
-    print(w.entities[1].name);// rat
-    print(w.alive);           // 3
+    println(w.entities[1].name);// rat
+    println(w.alive);           // 3
 
     // Структура — значение, а не ссылка: копируется при передаче.
-    print(p.x + p.y);         // 7
+    println(p.x + p.y);         // 7
 
     // Пустой массив: тип элемента объявляется явно, длина — ноль.
     // Без явного типа компилятор не знает, что за элементы.
     let empty [int; 0] = [];
     let empty_entities [Entity; 0] = [];
-    print("пустой массив создан");
+    println("пустой массив создан");
     return 0;
 }
 
@@ -152,22 +152,22 @@ fn world_of(e0 Entity, e1 Entity, e2 Entity) World {
 }
 
 fn demo_functions() int {
-    print("=== 3. функции: владение, ссылка, параметр-внутри ===");
+    println("=== 3. функции: владение, ссылка, параметр-внутри ===");
 
     // Владение: p копируется (структуры не Copy — но здесь значение
     // передаётся по владению и сразу используется).
     let p = Point(3, 4);
-    print(area(p));           // 12 — p перемещён, использовать нельзя
+    println(area(p));           // 12 — p перемещён, использовать нельзя
 
     // Ссылка: функция меняет объект вызывающего.
     let mut q = Point(10, 20);
     shift(&q, 5);
-    print(q.x);               // 15 — shift изменила объект вызывающего
+    println(q.x);               // 15 — shift изменила объект вызывающего
 
     // Параметр-внутри: элемент коллекции.
     let mut w = world_of(Entity(100, "orc"), Entity(80, "goblin"), Entity(50, "rat"));
     damage(&w, &w.entities[1], 30);
-    print(w.entities[1].hp);  // 50
+    println(w.entities[1].hp);  // 50
 
     return 0;
 }
@@ -190,19 +190,19 @@ fn consume(p Point) int {
 }
 
 fn demo_move() int {
-    print("=== 4. владение и move ===");
+    println("=== 4. владение и move ===");
 
     let p = Point(10, 20);
     let area_value = consume(p);   // p перемещён в consume
-    print(area_value);              // 10
+    println(area_value);              // 10
 
     // Использовать p после перемещения — ошибка компиляции (раздел 9):
-    // print(p.y);
+    // println(p.y);
 
     // А вот целые числа копируются, p можно использовать дальше:
     let n = 5;
     let m = consume_int(n);
-    print(n + m);                  // 10
+    println(n + m);                  // 10
     return 0;
 }
 
@@ -232,27 +232,27 @@ fn consume_int(n int) int {
 // его поля ссылку не убивает.
 
 fn demo_paths() int {
-    print("=== 5. ссылки помнят путь ===");
+    println("=== 5. ссылки помнят путь ===");
 
     let mut e = Entity(42, "goblin");
 
     // Ссылка на поле.
     let hp_ref = &e.hp;
-    print(hp_ref);              // 42 — ссылка жива
+    println(hp_ref);              // 42 — ссылка жива
 
     // Замена поля убивает ссылку на это поле:
     // e.hp = 7;                 // ошибка: ссылка hp_ref инвалидирована
-    // print(hp_ref);
+    // println(hp_ref);
 
     // ...но ссылка на сам объект остаётся живой:
     let e_ref = &e;
     e.hp = 7;                   // замена поля
-    print(e_ref.hp);            // 7 — e_ref ещё валидна
+    println(e_ref.hp);            // 7 — e_ref ещё валидна
 
     // Ссылка на элемент массива:
     let mut w = world_of(Entity(1, "orc"), Entity(2, "rat"), Entity(3, "bat"));
     let first = &w.entities[0];
-    print(first.name);          // orc
+    println(first.name);          // orc
 
     return 0;
 }
@@ -289,18 +289,18 @@ fn damage(world &World, e in world.entities[] mut, amount int) {
 }
 
 fn demo_contract() int {
-    print("=== 6. контракт mut ===");
+    println("=== 6. контракт mut ===");
 
     let mut w = world_of(Entity(100, "orc"), Entity(80, "goblin"), Entity(50, "rat"));
 
-    print(w.entities[0].hp);     // 100
+    println(w.entities[0].hp);     // 100
     heal(&w);
-    print(w.entities[0].hp);     // 110
-    print(w.entities[1].hp);     // 90
+    println(w.entities[0].hp);     // 110
+    println(w.entities[1].hp);     // 90
 
     // Параметр-внутри: меняем элемент коллекции.
     damage(&w, &w.entities[2], 20);
-    print(w.entities[2].hp);     // 30
+    println(w.entities[2].hp);     // 30
 
     return 0;
 }
@@ -337,19 +337,19 @@ fn element_and_container(world &World) mut(world.entities[]) {
     let elem = &world.entities[0];
     let whole = &world.entities;
     elem.hp = elem.hp + 1;
-    print(whole[1].hp);
+    println(whole[1].hp);
 }
 
 fn demo_vs_rust() int {
-    print("=== 7. то, что Rust запрещает ===");
+    println("=== 7. то, что Rust запрещает ===");
 
     let mut w = world_of(Entity(10, "a"), Entity(20, "b"), Entity(30, "c"));
     two_mutable_refs(&w);
-    print(w.entities[0].hp);     // 11
-    print(w.entities[1].hp);     // 21
+    println(w.entities[0].hp);     // 11
+    println(w.entities[1].hp);     // 21
 
     element_and_container(&w);
-    print(w.entities[0].hp);     // 12
+    println(w.entities[0].hp);     // 12
     return 0;
 }
 
@@ -392,13 +392,13 @@ fn sum_to(n int) int {
 }
 
 fn demo_control() int {
-    print("=== 8. управление потоком ===");
+    println("=== 8. управление потоком ===");
 
-    print(classify(100));        // живой
-    print(classify(30));         // ранен
-    print(classify(0));          // мёртв
+    println(classify(100));        // живой
+    println(classify(30));         // ранен
+    println(classify(0));          // мёртв
 
-    print(sum_to(10));           // 55
+    println(sum_to(10));           // 55
     return 0;
 }
 
@@ -449,7 +449,7 @@ fn demo_control() int {
 //
 //     let p = Point(1, 2);
 //     let q = consume(p);     // p перемещён в consume
-//     print(p.y);
+//     println(p.y);
 //     ошибка: `p` уже перемещён, использовать нельзя
 //
 // ПОЧЕМУ
@@ -472,7 +472,7 @@ fn demo_control() int {
 //
 //     let p = Point(1, 2);
 //     let q = peek(&p);       // peek(&Point) — не перемещает
-//     print(p.y);             // p жив, ошибки нет
+//     println(p.y);             // p жив, ошибки нет
 //
 // Целоые числа, bool и string копируются — их перемещать не нужно,
 // они остаются usable.
@@ -486,7 +486,7 @@ fn demo_control() int {
 //     let mut e = Entity(42, "x");
 //     let r = &e.hp;           // ссылка на поле hp
 //     e.hp = 7;                // значение поля заменено
-//     print(r);
+//     println(r);
 //     ошибка: ссылка `r` инвалидирована: объект `e.hp` был изменён
 //              или уничтожен
 //
@@ -507,10 +507,10 @@ fn demo_control() int {
 //
 //     let mut e = Entity(42, "x");
 //     let r = &e.hp;
-//     print(r);                // 42 — ссылка ещё жива
+//     println(r);                // 42 — ссылка ещё жива
 //     e.hp = 7;
 //     // r здесь уже нельзя — но и не нужно:
-//     print(e.hp);             // 7 — правильно
+//     println(e.hp);             // 7 — правильно
 //
 // Если ссылка нужна и после изменения, меняйте содержимое, а не
 // заменяйте значение: замена поля — это «replace» (убивает ссылку на
@@ -615,7 +615,7 @@ fn demo_control() int {
 //
 // ПРОБЛЕМА
 //
-//     print(e.armor);         // ошибка: у структуры `Entity` нет поля
+//     println(e.armor);         // ошибка: у структуры `Entity` нет поля
 //                             // `armor`
 //     nonexistent();          // ошибка: неизвестная функция `nonexistent`
 //     let x int = "строка";   // ошибка: несовпадение типов: объявлено

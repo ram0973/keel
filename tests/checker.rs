@@ -104,7 +104,7 @@ struct Entity { hp int; }
 fn main() int {
     let e = Entity(42);
     let r = &e.hp;
-    print(r);
+    println(r);
     return 0;
 }
 "#);
@@ -120,7 +120,7 @@ fn main() int {
     let mut e = Entity(42);
     let r = &e.hp;
     e.hp = 7;
-    print(r);
+    println(r);
     return 0;
 }
 "#,
@@ -137,7 +137,7 @@ fn main() int {
     let mut e = Entity(42);
     let r = &e;
     e.hp = 7;
-    print(r.hp);
+    println(r.hp);
     return 0;
 }
 "#);
@@ -152,7 +152,7 @@ fn main() int {
     let mut b = Entity(2);
     let r = &b.hp;
     a.hp = 100;
-    print(r);
+    println(r);
     return 0;
 }
 "#);
@@ -173,7 +173,7 @@ fn main() int {
     let b = &arr[1];
     a.hp = 10;
     b.hp = 20;
-    print(a.hp);
+    println(a.hp);
     return 0;
 }
 "#);
@@ -190,7 +190,7 @@ fn main() int {
     let b = &e;
     a.hp = 10;
     b.hp = 20;
-    print(e.hp);
+    println(e.hp);
     return 0;
 }
 "#);
@@ -206,7 +206,7 @@ fn main() int {
     let elem = &arr[0];
     let whole = &arr;
     elem.hp = 10;
-    print(whole[1].hp);
+    println(whole[1].hp);
     return 0;
 }
 "#);
@@ -263,7 +263,7 @@ fn main() int {
     let mut e = Entity(42);
     let r = &e.hp;
     damage(&e);
-    print(r);
+    println(r);
     return 0;
 }
 "#,
@@ -286,7 +286,7 @@ fn main() int {
         total = total + i;
         i = i + 1;
     }
-    print(total);
+    println(total);
     return 0;
 }
 "#);
@@ -303,7 +303,7 @@ fn main() int {
     while i < 3 {
         let r = &e.hp;
         e.hp = i;
-        print(r);
+        println(r);
         i = i + 1;
     }
     return 0;
@@ -340,7 +340,7 @@ fn main() int {
     let x = &a;
     let y = &b;
     if x < y {
-        print(1);
+        println(1);
     }
     return 0;
 }
@@ -354,7 +354,7 @@ fn main() int {
     let mut a = 10;
     let r = &a;
     let s = r + 5;
-    print(s);
+    println(s);
     return 0;
 }
 "#);
@@ -376,7 +376,7 @@ fn main() int {
     let mut book = Book([Entry(1, "a"), Entry(2, "b")], 2);
     let first = &book.entries[0];
     edit(&book, 2, "new");
-    print(first.name);
+    println(first.name);
     return 0;
 }
 "#,
@@ -391,7 +391,7 @@ fn неизвестное_поле_ловится() {
 struct Entity { hp int; }
 fn main() int {
     let e = Entity(42);
-    print(e.armor);
+    println(e.armor);
     return 0;
 }
 "#,
@@ -427,7 +427,7 @@ fn damage(entities &[Entity; 2], e in entities[] mut) {
 fn main() int {
     let mut arr = [Entity(1), Entity(2)];
     damage(&arr, &arr[0]);
-    print(arr[0].hp);
+    println(arr[0].hp);
     return 0;
 }
 "#);
@@ -720,7 +720,7 @@ fn for_по_не_массиву_ошибка() {
 fn main() int {
     let x = 5;
     for v in x {
-        print(v);
+        println(v);
     }
     return 0;
 }
@@ -735,7 +735,7 @@ fn границы_диапазона_должны_быть_int() {
         r#"
 fn main() int {
     for i in 0.."нет" {
-        print(i);
+        println(i);
     }
     return 0;
 }
@@ -760,4 +760,87 @@ fn main() int {
     return n;
 }
 "#);
+}
+
+#[test]
+fn do_while_работает() {
+    ok(r#"
+fn main() int {
+    let mut i = 0;
+    do {
+        i += 1;
+    } while i < 3;
+    return i;
+}
+"#);
+}
+
+#[test]
+fn println_и_print_работают() {
+    // `println` печатает с переводом строки, `print` — без него.
+    ok(r#"
+fn main() int {
+    println(42);
+    println("строка");
+    println(true);
+    print("a");
+    print("b");
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn utf8_строки_работают() {
+    // Строки — это байты; кириллица и эмодзи проходят как есть.
+    ok(r#"
+fn main() int {
+    let ru = "Привет, мир";
+    let emoji = "👋🌍";
+    println(ru);
+    println(emoji);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn две_ссылки_на_один_объект_разрешены() {
+    // В Keel один вид ссылки (`&T`), и право писать определяется
+    // владельцем пути, а не видом ссылки. Поэтому запрета на совпадение
+    // ссылок нет — в отличие от Rust, где две `&mut` на один объект
+    // дают E0499.
+    //
+    // Запрещено другое: ИСПОЛЬЗОВАНИЕ ссылки после того, как объект
+    // на её пути заменили. Это проверяется отдельно.
+    ok(r#"
+struct Item { v int; }
+fn main() int {
+    let mut arr [Item; 3] = [Item(0), Item(0), Item(0)];
+    let a = &arr[0];
+    let b = &arr[0];
+    a.v = 5;
+    b.v = 6;
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn ссылка_на_заменённый_объект_ловится() {
+    // А вот это — ядро безопасности: объект на пути заменили, ссылка
+    // больше недействительна. В C это тихая ошибка.
+    fails(
+        r#"
+struct Item { v int; }
+fn main() int {
+    let mut arr [Item; 3] = [Item(0), Item(0), Item(0)];
+    let a = &arr[0];
+    arr[0] = Item(9);
+    println(a.v);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
 }

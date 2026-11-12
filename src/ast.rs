@@ -260,6 +260,11 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
+    /// `do { ... } while cond;` — тело выполняется хотя бы один раз.
+    DoWhile {
+        body: Block,
+        cond: Expr,
+    },
     /// `break` — выход из ближайшего цикла.
     Break {
         line: usize,

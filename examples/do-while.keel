@@ -1,0 +1,49 @@
+// do-while, println и UTF-8.
+
+fn count_digits(n int) int {
+    // Считает цифры числа. Тело выполняется хотя бы один раз.
+    let mut count int = 0;
+    let mut x int = n;
+    do {
+        count += 1;
+        x = x / 10;
+    } while x > 0;
+    return count;
+}
+
+fn main() int {
+    // println печатает с переводом строки.
+    println(42);
+    println("строка");
+    println(true);
+
+    // print печатает без перевода.
+    print("a");
+    print("b");
+    print("\n");
+
+    // do-while: тело выполняется минимум один раз.
+    let mut i int = 0;
+    do {
+        i += 1;
+    } while i < 3;
+    println(i);            // 3
+
+    // Важное отличие от while: тело выполняется и когда условие ложно.
+    let mut j int = 100;
+    let mut rounds int = 0;
+    do {
+        rounds += 1;
+    } while j < 0;
+    println(rounds);       // 1 — тело выполнилось один раз
+
+    println(count_digits(12345));   // 5
+    println(count_digits(7));       // 1
+    println(count_digits(1000));    // 4
+
+    // UTF-8 работает: строки — это байты, печать идёт как есть.
+    println("Привет, мир");
+    println("Эмодзи: 👋🌍");
+
+    return 0;
+}

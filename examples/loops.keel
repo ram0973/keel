@@ -54,8 +54,8 @@ fn nested_pairs() int {
 fn main() int {
     // for по диапазону: правая граница исключительная, как в Rust и Zeta.
     // `0..5` — это 0, 1, 2, 3, 4.
-    print(sum_to(5));            // 0+1+2+3+4 = 10
-    print(sum_to(0));            // 0
+    println(sum_to(5));            // 0+1+2+3+4 = 10
+    println(sum_to(0));            // 0
 
     let mut counter int = 0;
     for i in 0..10 {
@@ -64,7 +64,7 @@ fn main() int {
             break;
         }
     }
-    print(counter);              // 3
+    println(counter);              // 3
 
     let mut skipped int = 0;
     for i in 0..10 {
@@ -73,14 +73,14 @@ fn main() int {
         }
         skipped += i;
     }
-    print(skipped);              // 1+3+5+7+9 = 25
+    println(skipped);              // 1+3+5+7+9 = 25
 
     // Массив, переданный по значению, перемещается — поэтому каждый
     // вызов получает свой литерал.
-    print(first_divisible([1, 2, 3, 4, 5, 6], 3));  // 2 (элемент 3, индекс 2)
-    print(count_skipped([1, 2, 3, 4, 5, 6]));       // 2 (3 и 6)
-    print(sum_all([1, 2, 3, 4, 5, 6]));             // 21
-    print(nested_pairs());            // 9
+    println(first_divisible([1, 2, 3, 4, 5, 6], 3));  // 2 (элемент 3, индекс 2)
+    println(count_skipped([1, 2, 3, 4, 5, 6]));       // 2 (3 и 6)
+    println(sum_all([1, 2, 3, 4, 5, 6]));             // 21
+    println(nested_pairs());            // 9
 
     // for по массиву с break.
     let data [int; 6] = [1, 2, 3, 4, 5, 6];
@@ -91,7 +91,7 @@ fn main() int {
             break;
         }
     }
-    print(found);                // 1
+    println(found);                // 1
 
     // `for v in a` даёт КОПИЮ элемента, а не ссылку. Поэтому изменить
     // элемент массива через `v` нельзя — это ошибка компиляции.
@@ -101,8 +101,8 @@ fn main() int {
     for i in 0..3 {
         nums[i] = nums[i] * 10;
     }
-    print(nums[0]);              // 10
-    print(nums[2]);              // 30
+    println(nums[0]);              // 10
+    println(nums[2]);              // 30
 
     return 0;
 }

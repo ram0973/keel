@@ -347,6 +347,15 @@ impl Parser {
             return Ok(Stmt::If { cond, then_block, else_block });
         }
 
+        if self.at_kw("do") {
+            self.bump();
+            let body = self.parse_block()?;
+            self.expect_kw("while")?;
+            let cond = self.parse_expr()?;
+            self.expect_punct(";")?;
+            return Ok(Stmt::DoWhile { body, cond });
+        }
+
         if self.at_kw("while") {
             self.bump();
             let cond = self.parse_expr()?;

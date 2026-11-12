@@ -40,23 +40,23 @@ fn main() int {
         3
     );
 
-    print("--- начальное состояние ---");
-    print(world.entities[0].hp);
-    print(world.entities[1].hp);
-    print(world.entities[2].hp);
+    println("--- начальное состояние ---");
+    println(world.entities[0].hp);
+    println(world.entities[1].hp);
+    println(world.entities[2].hp);
 
     step(&world, &world.entities[0], 30);
-    print("--- после step(-30) ---");
-    print(world.entities[0].hp);
+    println("--- после step(-30) ---");
+    println(world.entities[0].hp);
 
     heal_first_and_second(&world);
-    print("--- после лечения первых двух ---");
-    print(world.entities[0].hp);
-    print(world.entities[1].hp);
+    println("--- после лечения первых двух ---");
+    println(world.entities[0].hp);
+    println(world.entities[1].hp);
 
-    print("--- имена ---");
-    print(world.entities[0].name);
-    print(world.entities[2].name);
+    println("--- имена ---");
+    println(world.entities[0].name);
+    println(world.entities[2].name);
 
     return 0;
 }

@@ -278,6 +278,14 @@ impl<'a> Codegen<'a> {
                 }
                 self.out.push_str("  }\n");
             }
+            Stmt::DoWhile { body, cond } => {
+                self.out.push_str("  do {\n");
+                for s in &body.stmts {
+                    self.emit_stmt(s);
+                }
+                self.out
+                    .push_str(&format!("  }} while ({});\n", self.expr(cond)));
+            }
             Stmt::Break { .. } => {
                 self.out.push_str("  break;\n");
             }
@@ -465,7 +473,7 @@ impl<'a> Codegen<'a> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return "0".to_string();
                 };
-                if name == "print" {
+                if name == "print" || name == "println" {
                     if let Some(a) = args.first() {
                         let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
                         let mut v = self.expr(a);
@@ -475,12 +483,14 @@ impl<'a> Codegen<'a> {
                             v = format!("(*{})", v);
                             t = *inner;
                         }
+                        // `print` — без перевода строки, `println` — с переводом.
+                        let nl = if name == "println" { "\\n" } else { "" };
                         return match t {
-                            Type::Str => format!("printf(\"%s\\n\", {})", v),
+                            Type::Str => format!("printf(\"%s{}\", {})", nl, v),
                             Type::Bool => {
-                                format!("printf(\"%s\\n\", {} ? \"true\" : \"false\")", v)
+                                format!("printf(\"%s{}\", {} ? \"true\" : \"false\")", nl, v)
                             }
-                            _ => format!("printf(\"%lld\\n\", (long long){})", v),
+                            _ => format!("printf(\"%lld{}\", (long long){})", nl, v),
                         };
                     }
                     return String::new();
