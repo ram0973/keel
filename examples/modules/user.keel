@@ -1,0 +1,19 @@
+// Тип User и его методы. Подключается из modules.keel и registry.keel.
+
+struct User {
+    name string;
+    age int;
+}
+
+impl User {
+    // Читающий метод: объект остаётся у вызывающего.
+    fn get_name(self &User) string {
+        return self.name;
+    }
+
+    // Изменяющий метод: `mut(self)` объявляет изменение, и вызывающий
+    // знает, что его ссылки внутрь объекта после вызова мертвы.
+    fn birthday(self &User) mut(self) {
+        self.age = self.age + 1;
+    }
+}

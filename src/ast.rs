@@ -184,6 +184,18 @@ pub enum Item {
     Struct(StructDecl),
     Func(FuncDecl),
     Impl(ImplDecl),
+    ///  — подключить другой файл.
+    ///
+    /// Имена из подключённого файла становятся видны как свои:
+    /// пространство имён плоское. Путь — относительно каталога
+    /// импортирующего файла.
+    Import(ImportDecl),
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportDecl {
+    pub path: String,
+    pub line: usize,
 }
 
 /// `impl Type { ... }` — методы и ассоциированные функции типа.

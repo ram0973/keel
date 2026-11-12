@@ -16,6 +16,22 @@ impl Parser {
         Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0 })
     }
 
+    /// Парсер с заданным начальным значением счётчика id.
+    ///
+    /// Нужно при загрузке нескольких файлов: id выражений должны быть
+    /// уникальны **по всей программе**, иначе тип выражения из одного
+    /// файла попадёт на выражение из другого — и сгенерированный C
+    /// окажется неверным (`self.name` вместо `self->name`).
+    pub fn with_id_start(src: &str, start: u32) -> PResult<Parser> {
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start })
+    }
+
+    /// Сколько id израсходовано — чтобы продолжить нумерацию в
+    /// следующем файле.
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
     // --- вспомогательное ---
 
     fn peek(&self) -> &Tok {
@@ -142,13 +158,33 @@ impl Parser {
             Ok(Item::Func(self.parse_func()?))
         } else if self.at_kw("impl") {
             Ok(Item::Impl(self.parse_impl()?))
+        } else if self.at_kw("import") {
+            Ok(Item::Import(self.parse_import()?))
         } else {
             Err(format!(
-                "строка {}: ожидалось 'struct', 'fn' или 'impl', получено {}",
+                "строка {}: ожидалось 'struct', 'fn', 'impl' или 'import', получено {}",
                 self.line(),
                 self.describe(self.peek())
             ))
         }
+    }
+
+    /// 
+    fn parse_import(&mut self) -> PResult<ImportDecl> {
+        let line = self.line();
+        self.expect_kw("import")?;
+        let path = match self.bump() {
+            Tok::Str(s) => s,
+            other => {
+                return Err(format!(
+                    "строка {}: после  ожидался путь в кавычках, получено {}",
+                    self.line(),
+                    self.describe(&other)
+                ))
+            }
+        };
+        self.expect_punct(";")?;
+        Ok(ImportDecl { path, line })
     }
 
     /// `impl Type { fn ... }` — блок методов и ассоциированных функций.

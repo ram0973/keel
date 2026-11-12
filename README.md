@@ -61,11 +61,17 @@ cargo run -- run examples/language-tour.keel
 | `examples/phonebook.keel` | Телефонная книга: добавление, поиск, правка, удаление. Показывает, как borrow checker ловит устаревшую ссылку на запись |
 | `examples/mini.keel` | Мир с существами: параметр-внутри, контракт `mut`, две изменяемые ссылки на элементы одной коллекции, сортировка |
 | `examples/tour.keel` | Тот же код, что и в `examples/rust/rust_comparison.rs`, но на Keel: на Rust не компилируется, на Keel — работает |
+| `examples/methods.keel` | Методы и `impl`-блоки: ассоциированные функции, `self`, `mut(self)`, методы разных типов с одним именем |
+| `examples/references.keel` | Что означает `&`: без него значение перемещается, с ним вызывающий сохраняет владение |
+| `examples/self-value.keel` | Зачем нужен `self` без `&`: единственный случай — положить объект в поле другой структуры |
+| `examples/modules.keel` | Модули: три файла, `import`, плоские имена. `registry.keel` сам подключает `user.keel` |
 | `experiments/clif/` | Эксперимент: та же функция, но собранная в IR Cranelift напрямую. Оценка перехода с C-бэкенда на собственный IR |
 
 ```sh
 cargo run -- run examples/phonebook.keel
 cargo run -- run examples/mini.keel
+cargo run -- run examples/methods.keel
+cargo run -- run examples/modules.keel
 cargo run -- run examples/tour.keel
 ```
 

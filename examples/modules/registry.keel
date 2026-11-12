@@ -1,0 +1,19 @@
+// Реестр пользователей. Сам подключает user.keel — и это не создаёт
+// цикла, потому что user.keel ничего не импортирует.
+
+import "user.keel";
+
+struct Registry {
+    users [User; 3];
+    count int;
+}
+
+// Возвращает индекс пользователя по имени или -1.
+fn find(reg &Registry, name string) int {
+    for i in 0..reg.count {
+        if reg.users[i].name == name {
+            return i;
+        }
+    }
+    return -1;
+}

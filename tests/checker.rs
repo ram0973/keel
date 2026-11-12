@@ -1133,6 +1133,208 @@ fn main() int {
 "#);
 }
 
+// ============================================================
+// Дубликаты имён
+// ============================================================
+
+#[test]
+fn структура_объявленная_дважды_ловится() {
+    fails(
+        r#"
+struct User { v int; }
+struct User { w int; }
+fn main() int { return 0; }
+"#,
+        "объявлена дважды",
+    );
+}
+
+#[test]
+fn функция_объявленная_дважды_ловится() {
+    fails(
+        r#"
+fn f() int { return 1; }
+fn f() int { return 2; }
+fn main() int { return 0; }
+"#,
+        "объявлена дважды",
+    );
+}
+
+#[test]
+fn два_main_ловятся() {
+    fails(
+        r#"
+fn main() int { return 0; }
+fn main() int { return 1; }
+"#,
+        "`main` объявлена дважды",
+    );
+}
+
+#[test]
+fn метод_объявленный_дважды_ловится() {
+    fails(
+        r#"
+struct P { x int; }
+impl P {
+    fn get(self &P) int { return self.x; }
+    fn get(self &P) int { return 1; }
+}
+fn main() int { return 0; }
+"#,
+        "объявлен дважды",
+    );
+}
+
+#[test]
+fn имя_занятое_структурой_и_функцией_ловится() {
+    // `User(...)` всегда означает конструктор структуры, поэтому
+    // функция `User` недостижима. Раньше это молчало.
+    fails(
+        r#"
+struct User { v int; }
+fn User() int { return 1; }
+fn main() int { return 0; }
+"#,
+        "занято и структурой, и функцией",
+    );
+}
+
+#[test]
+fn свободная_функция_и_метод_с_одним_именем_не_конфликтуют() {
+    // Пространства имён разделены: свободная функция и метод живут
+    // в разных таблицах.
+    ok(r#"
+struct User { v int; }
+fn get() int { return 1; }
+impl User {
+    fn get(self &User) int { return self.v; }
+}
+fn main() int {
+    let u = User(5);
+    println(u.get());
+    println(get());
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn переменная_с_именем_типа_разрешена() {
+    // Переменные и типы — разные пространства имён.
+    ok(r#"
+struct User { v int; }
+fn main() int {
+    let User = 5;
+    println(User);
+    return 0;
+}
+"#);
+}
+
+// ============================================================
+// Импорт модулей
+// ============================================================
+
+#[test]
+fn import_неизвестного_файла_ошибка() {
+    // `compile` не загружает модули — он проверяет один текст.
+    // Поэтому `import` в нём остаётся узлом дерева и не мешает.
+    // Проверяем через файл: см. examples/modules/.
+    let dir = std::env::temp_dir().join(format!("keel_imp_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let main = dir.join("main.keel");
+    std::fs::write(&main, "import \"nope.keel\";\nfn main() int { return 0; }\n").unwrap();
+    let r = keelc::compile_file(&main);
+    assert!(r.is_err(), "ожидалась ошибка о ненайденном файле");
+    let msg = r.err().unwrap();
+    assert!(msg.contains("не удалось открыть"), "получено: {}", msg);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_цикл_ловится() {
+    let dir = std::env::temp_dir().join(format!("keel_cyc_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("a.keel"), "import \"b.keel\";\nfn fa() int { return 1; }\n").unwrap();
+    std::fs::write(dir.join("b.keel"), "import \"a.keel\";\nfn fb() int { return 2; }\n").unwrap();
+    let r = keelc::compile_file(&dir.join("a.keel"));
+    assert!(r.is_err(), "ожидалась ошибка о цикле");
+    let msg = r.err().unwrap();
+    assert!(msg.contains("цикл импорта"), "получено: {}", msg);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn import_подключает_имена_из_другого_файла() {
+    // Главная проверка: файл видит объявления из подключённого файла,
+    // и сгенерированный C компилируется и работает.
+    let dir = std::env::temp_dir().join(format!("keel_mod_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("user.keel"),
+        "struct User { name string; age int; }\n\
+         impl User {\n\
+         \x20   fn get_name(self &User) string { return self.name; }\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.keel"),
+        "import \"user.keel\";\n\
+         fn main() int {\n\
+         \x20   let u = User(\"John\", 26);\n\
+         \x20   println(u.get_name());\n\
+         \x20   return 0;\n\
+         }\n",
+    )
+    .unwrap();
+    let r = keelc::compile_file(&dir.join("main.keel")).expect("должно скомпилироваться");
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // Метод из импортированного файла должен получить доступ к полю
+    // через `->`, а не через `.` — это ловит перепутанные id выражений.
+    assert!(
+        r.c_code.contains("self->name"),
+        "в C нет self->name:\n{}",
+        r.c_code
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn один_файл_подключается_один_раз() {
+    // Ромбовидный импорт: main → a, main → b, a → common, b → common.
+    // `common.keel` должен загрузиться один раз, иначе структура
+    // окажется объявлена дважды.
+    let dir = std::env::temp_dir().join(format!("keel_dia_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("common.keel"), "struct Common { v int; }\n").unwrap();
+    std::fs::write(
+        dir.join("a.keel"),
+        "import \"common.keel\";\nfn fa() int { return 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b.keel"),
+        "import \"common.keel\";\nfn fb() int { return 2; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.keel"),
+        "import \"a.keel\";\nimport \"b.keel\";\n\
+         fn main() int { let c = Common(5); println(c.v); return 0; }\n",
+    )
+    .unwrap();
+    let r = keelc::compile_file(&dir.join("main.keel")).expect("должно скомпилироваться");
+    assert!(
+        r.diagnostics.is_empty(),
+        "структура загружена дважды: {:?}",
+        r.diagnostics
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn неизвестный_метод_ловится() {
     fails(

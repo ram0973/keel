@@ -1,6 +1,6 @@
 //! CLI компилятора Keel.
 
-use keelc::{compile, format_diagnostics};
+use keelc::{compile_file, format_diagnostics};
 use std::process::Command;
 
 fn main() {
@@ -16,18 +16,10 @@ fn main() {
     let cmd = args[1].clone();
     let path = args[2].clone();
 
-    let src = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("не удалось прочитать {}: {}", path, e);
-            std::process::exit(1);
-        }
-    };
-
-    let result = match compile(&src) {
+    let result = match compile_file(std::path::Path::new(&path)) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ошибка разбора: {}", e);
+            eprintln!("ошибка: {}", e);
             std::process::exit(1);
         }
     };

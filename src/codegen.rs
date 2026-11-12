@@ -122,6 +122,9 @@ impl<'a> Codegen<'a> {
                 Item::Func(f) => all_funcs.push(f),
                 Item::Impl(im) => all_funcs.extend(im.funcs.iter()),
                 Item::Struct(_) => {}
+                // Импорты обрабатывает загрузчик модулей: до
+                // проверщика и генератора они не доходят.
+                Item::Import(_) => {}
             }
         }
         for f in &all_funcs {
@@ -168,6 +171,9 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Item::Struct(_) => {}
+                // Импорты обрабатывает загрузчик модулей: до
+                // проверщика и генератора они не доходят.
+                Item::Import(_) => {}
             }
         }
         self.out

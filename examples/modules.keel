@@ -1,0 +1,50 @@
+// Модули Keel: файл видит объявления из другого файла.
+//
+// Синтаксис один:
+//
+//   import "путь.keel";
+//
+// Путь — относительно каталога ИМПОРТИРУЮЩЕГО файла. Имена из
+// подключённого файла становятся видны как свои: пространство имён
+// плоское, префиксов нет.
+//
+// Правила:
+//   - один файл подключается один раз, даже если импортирован из
+//     нескольких мест (ромбовидный импорт безопасен);
+//   - цикл импорта — ошибка с указанием цепочки;
+//   - отсутствующий файл — ошибка с указанием пути.
+//
+// Этот пример — точка входа. Он подключает два других файла:
+// modules/user.keel и modules/registry.keel, причём registry.keel
+// сам подключает user.keel — и ничего не ломается.
+
+import "modules/user.keel";
+import "modules/registry.keel";
+
+fn main() int {
+    // `User` пришёл из modules/user.keel — пишем просто `User`.
+    let users = [
+        User("John", 26),
+        User("Mary", 18),
+        User("James", 18)
+    ];
+
+    let mut reg = Registry(users, 3);
+
+    // Метод из подключённого файла.
+    for i in 0..reg.count {
+        println(reg.users[i].get_name());
+    }
+
+    // Функция из modules/registry.keel.
+    println(find(&reg, "Mary"));     // 1
+    println(find(&reg, "Nobody"));   // -1
+
+    // Изменение через метод: `mut(self)` объявлен в user.keel.
+    // `reg` объявлен `mut` — без этого вызов мутатора был бы ошибкой.
+    let first = &reg.users[0];
+    first.birthday();
+    println(reg.users[0].age);       // 27
+
+    return 0;
+}
