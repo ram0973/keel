@@ -7,9 +7,10 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("использование:");
-        eprintln!("  keelc check <file.keel>          — только проверка");
-        eprintln!("  keelc build <file.keel> <out.c>  — сгенерировать C");
-        eprintln!("  keelc run   <file.keel>          — скомпилировать и запустить");
+        eprintln!("  keelc check   <file.keel>            — только проверка");
+        eprintln!("  keelc build   <file.keel> <out.c>    — сгенерировать C");
+        eprintln!("  keelc compile <file.keel> <out>      — собрать исполняемый файл");
+        eprintln!("  keelc run     <file.keel>            — скомпилировать и запустить");
         std::process::exit(2);
     }
 
@@ -41,6 +42,43 @@ fn main() {
                 std::process::exit(1);
             }
             println!("сгенерирован {}", out);
+        }
+        // Собрать готовый исполняемый файл: C-код → `cc` → бинарник.
+        // В отличие от `run`, результат остаётся на диске.
+        "compile" => {
+            let out = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "a.out".to_string());
+            // C-код кладём рядом с результатом, чтобы его можно было
+            // прочитать и отладить.
+            let c_path = format!("{}.c", out);
+            if let Err(e) = std::fs::write(&c_path, &result.c_code) {
+                eprintln!("не удалось записать {}: {}", c_path, e);
+                std::process::exit(1);
+            }
+            let cc = if cfg!(target_os = "windows") { "clang" } else { "cc" };
+            let st = Command::new(cc)
+                .arg("-w")
+                .arg(std::env::var("KEEL_OPT").unwrap_or_else(|_| "-O2".to_string()))
+                .arg("-o")
+                .arg(&out)
+                .arg(&c_path)
+                .status();
+            match st {
+                Ok(s) if s.success() => {
+                    println!("собран {}", out);
+                    println!("исходник C: {}", c_path);
+                }
+                Ok(_) => {
+                    eprintln!("ошибка компиляции C");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("не удалось запустить `{}`: {}", cc, e);
+                    std::process::exit(1);
+                }
+            }
         }
         "run" => {
             // Уникальные имена: иначе параллельные запуски (или запуск от

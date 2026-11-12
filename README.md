@@ -6,6 +6,120 @@
 
 Компилятор написан на Rust, бэкенд генерирует C.
 
+## Быстрый старт
+
+### 1. Клонировать
+
+```sh
+git clone https://github.com/ram0973/keel.git
+cd keel
+```
+
+### 2. Установить зависимости
+
+Нужны три вещи:
+
+| Что | Зачем | Проверить |
+|---|---|---|
+| **Rust** (rustc + cargo) | сборка компилятора | `cargo --version` |
+| **C-компилятор** | сборка сгенерированного C | `cc --version` |
+| **git** | клонирование | `git --version` |
+
+Если Rust не установлен:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+C-компилятор (`cc`, обычно это gcc или clang):
+
+```sh
+# Debian / Ubuntu
+sudo apt install build-essential
+
+# Fedora
+sudo dnf install gcc
+```
+
+Проверено на: `rustc 1.99.1`, `cc (Ubuntu 15.2.0)`.
+
+### 3. Собрать компилятор
+
+```sh
+cargo build
+```
+
+Бинарник появится в `target/debug/keelc`. Дальше вызываем его напрямую —
+это быстрее, чем `cargo run`.
+
+### 4. Запустить свой пример
+
+Положите файл `myprogram.keel` в корень проекта и выполните:
+
+```sh
+# только проверить (без сборки C — быстро)
+./target/debug/keelc check myprogram.keel
+
+# собрать и запустить
+./target/debug/keelc run myprogram.keel
+
+# собрать готовый исполняемый файл
+./target/debug/keelc compile myprogram.keel myprogram
+./myprogram
+```
+
+`compile` оставляет на диске два файла: сам бинарник и рядом
+`myprogram.c` — сгенерированный C, который можно прочитать, отладить
+в `gdb` или собрать вручную:
+
+```sh
+cc -O2 -g myprogram.c -o myprogram
+./myprogram
+```
+
+### 5. Запустить примеры из репозитория
+
+```sh
+# программа-документация: десять разделов, каждый объясняет одну возможность
+./target/debug/keelc run examples/language-tour.keel
+
+# методы и impl-блоки
+./target/debug/keelc run examples/methods.keel
+
+# модули: три файла, import, плоские имена
+./target/debug/keelc run examples/modules.keel
+
+# что означает & и когда значение перемещается
+./target/debug/keelc run examples/references.keel
+
+# телефонная книга: CRUD и инвалидация ссылки
+./target/debug/keelc run examples/phonebook.keel
+
+# мир с существами: параметр-внутри, group borrowing, сортировка
+./target/debug/keelc run examples/mini.keel
+```
+
+Прогнать все примеры и тесты сразу:
+
+```sh
+cargo test
+sh scripts/check-examples.sh
+```
+
+### 6. Песочница `play/`
+
+Папка `play/` — место для собственных экспериментов. Она **исключена
+из git** и не проверяется ни тестами, ни `check-examples.sh`, ни
+проверкой документации: ломайте что угодно, проект это не затронет.
+
+```sh
+./target/debug/keelc run play/main.keel
+```
+
+Внутри уже лежит заготовка: `play/main.keel` — программа, где
+`struct User` и `impl User` пока в одном файле, с инструкцией, как
+вынести их в отдельный. Готовое решение — в `play/solution/`.
+
 ## Состояние
 
 MVP. Реализовано:
@@ -13,27 +127,23 @@ MVP. Реализовано:
 - лексер, парсер (рекурсивный спуск), AST;
 - проверщик владения и заимствований на путях;
 - генерация C; сборка и запуск — через `cc`;
-- 20 тестов, покрывающих семантику модели.
+- **77 тестов**, покрывающих семантику модели;
+- 13 примеров, включая многофайловый.
 
 Не реализовано (сознательно): обобщённые типы, `Vec`, `Option`/`Result`,
-лямбды, трейты, `enum`, модули, асинхронность, Higher RAII, generational
-references.
+лямбды, трейты, `enum`, `match`, приватность модулей (`pub`),
+асинхронность, Higher RAII, generational references.
 
-## Запуск
+## Запуск через cargo
+
+Команды те же, но через cargo — удобно, если не хочется помнить путь
+к бинарнику. Работает и без предварительного `cargo build`.
 
 ```sh
-cargo build
-
-# только проверка
 cargo run -- check examples/tour.keel
-
-# сгенерировать C
 cargo run -- build examples/tour.keel /tmp/out.c
-
-# скомпилировать и запустить
+cargo run -- compile examples/tour.keel /tmp/tour
 cargo run -- run examples/tour.keel
-
-# тесты
 cargo test
 ```
 
