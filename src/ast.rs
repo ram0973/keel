@@ -294,7 +294,12 @@ pub enum Stmt {
         rhs: Expr,
     },
     Expr(Expr),
-    Return(Option<Expr>),
+    /// `return expr;` или `return;`. Номер строки нужен для диагностики:
+    /// `return;` в функции, возвращающей значение, — ошибка.
+    Return {
+        line: usize,
+        value: Option<Expr>,
+    },
     If {
         cond: Expr,
         then_block: Block,

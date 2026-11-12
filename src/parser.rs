@@ -605,13 +605,14 @@ impl Parser {
         }
 
         if self.at_kw("return") {
+            let line = self.line();
             self.bump();
             if self.eat_punct(";") {
-                return Ok(Stmt::Return(None));
+                return Ok(Stmt::Return { line, value: None });
             }
             let e = self.parse_expr()?;
             self.expect_punct(";")?;
-            return Ok(Stmt::Return(Some(e)));
+            return Ok(Stmt::Return { line, value: Some(e) });
         }
 
         if self.at_kw("if") {

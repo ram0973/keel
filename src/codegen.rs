@@ -39,6 +39,16 @@ pub struct Codegen<'a> {
     var_names: std::cell::RefCell<HashMap<String, String>>,
     /// Счётчик затенений по каждому имени.
     shadow_count: std::cell::RefCell<HashMap<String, usize>>,
+    /// Генерируем ли прямо сейчас тело `main`. Нужно, чтобы голый
+    /// `return;` в main превратился в `return 0;` (в C main возвращает
+    /// int), а в обычной void-функции остался `return;`.
+    in_main: bool,
+    /// Тип возврата текущей функции. Нужен, чтобы дописать `return`
+    /// в конце функции, возвращающей значение: если пользователь
+    /// написал `fn f() int { if x { return 1; } }`, в C без финального
+    /// `return` получается неопределённое поведение — gcc предупреждает
+    /// «control reaches end of non-void function», но собирает.
+    cur_ret: Type,
 }
 
 impl<'a> Codegen<'a> {
@@ -64,6 +74,8 @@ impl<'a> Codegen<'a> {
             in_struct_init: std::cell::Cell::new(false),
             shadow_count: std::cell::RefCell::new(HashMap::new()),
             var_names: std::cell::RefCell::new(HashMap::new()),
+            in_main: false,
+            cur_ret: Type::Void,
         }
     }
 
@@ -318,6 +330,8 @@ impl<'a> Codegen<'a> {
         // Имена переменных — свои в каждой функции.
         self.var_names.borrow_mut().clear();
         self.shadow_count.borrow_mut().clear();
+        self.in_main = f.name == "main";
+        self.cur_ret = f.ret.clone();
         let mut params = Vec::new();
         for p in &f.params {
             let pt = match &p.kind {
@@ -368,8 +382,34 @@ impl<'a> Codegen<'a> {
         }
         if f.name == "main" {
             self.out.push_str("  return 0;\n");
+        } else if f.ret != Type::Void {
+            // Функция возвращает значение, но тело может закончиться без
+            // `return` (например, `fn f(x int) int { if x > 0 { return 1; } }`).
+            // В C это неопределённое поведение: gcc предупреждает
+            // «control reaches end of non-void function», но собирает, и
+            // функция вернёт мусор. Добавляем возврат нуля, чтобы
+            // поведение было определено.
+            self.out
+                .push_str(&format!("  return {};\n", self.zero_value(&f.ret)));
         }
         self.out.push_str("}\n\n");
+    }
+
+    /// Нулевое значение типа — для возврата в конце функции, которая
+    /// может закончиться без `return`.
+    fn zero_value(&self, t: &Type) -> String {
+        match t {
+            Type::Int => "INT64_C(0)".to_string(),
+            Type::Bool => "false".to_string(),
+            Type::Str => "\"\"".to_string(),
+            Type::Ref(_) => "NULL".to_string(),
+            Type::Named(n) => {
+                let c = self.ctype.get(n).cloned().unwrap_or_else(|| n.clone());
+                format!("({}){{0}}", c)
+            }
+            // Массив вернуть из функции в C нельзя — сюда не дойдём.
+            Type::Array(..) | Type::Void => "0".to_string(),
+        }
     }
 
     fn emit_stmt(&mut self, stmt: &Stmt) {
@@ -434,8 +474,12 @@ impl<'a> Codegen<'a> {
                     self.out.push_str(&format!("  {};\n", s));
                 }
             }
-            Stmt::Return(e) => match e {
+            Stmt::Return { value, .. } => match value {
                 Some(e) => self.out.push_str(&format!("  return {};\n", self.expr(e))),
+                // `main` в Keel — это `int main` в C, поэтому голый
+                // `return;` внутри main должен стать `return 0;`: иначе
+                // gcc справедливо ругается на возврат без значения.
+                None if self.in_main => self.out.push_str("  return 0;\n"),
                 None => self.out.push_str("  return;\n"),
             },
             Stmt::If { cond, then_block, else_block } => {

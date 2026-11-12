@@ -2171,3 +2171,276 @@ fn main() int {
 }
 "#);
 }
+
+
+// ============================================================
+// return: с значением и без
+// ============================================================
+
+#[test]
+fn return_без_значения_в_void_разрешён() {
+    ok(r#"
+fn f(x int) void {
+    if x > 0 {
+        return;
+    }
+    println("нет");
+}
+
+fn main() int {
+    f(1);
+    f(0);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn return_без_значения_в_int_запрещён() {
+    // Раньше проходило проверку и падало на сборке C с сообщением gcc
+    // «return with no value, in function returning non-void».
+    fails(
+        r#"
+fn f() int {
+    return;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "функция возвращает `int`, поэтому `return` требует значение",
+    );
+}
+
+#[test]
+fn return_без_значения_в_string_запрещён() {
+    fails(
+        r#"
+fn f() string {
+    return;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "функция возвращает `string`, поэтому `return` требует значение",
+    );
+}
+
+#[test]
+fn return_со_значением_в_void_запрещён() {
+    fails(
+        r#"
+fn f() void {
+    return 5;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "тип возврата: ожидался `void`, получен `int`",
+    );
+}
+
+#[test]
+fn return_в_main_без_значения_разрешён() {
+    // main — особый случай: в C он int, но в Keel `fn main() int`
+    // и `fn main()` равноправны, и голый `return;` должен работать.
+    ok(r#"
+fn main() int {
+    println("до");
+    return;
+}
+"#);
+}
+
+#[test]
+fn ранний_return_из_цикла() {
+    ok(r#"
+fn find(a [int; 5], want int) int {
+    for i in 0..5 {
+        if a[i] == want {
+            return i;
+        }
+    }
+    return -1;
+}
+
+fn main() int {
+    let a = [10, 20, 30, 40, 50];
+    println(find(a, 30));
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn функция_без_return_на_всех_путях() {
+    // В C это UB: gcc предупреждает «control reaches end of non-void
+    // function». Бэкенд дописывает возврат нуля, чтобы поведение было
+    // определено. Проверка типов такое пропускает.
+    ok(r#"
+fn f(x int) int {
+    if x > 0 {
+        return 1;
+    }
+}
+
+fn main() int {
+    println(f(1));
+    println(f(-1));
+    return 0;
+}
+"#);
+}
+
+// ============================================================
+// self — обязательный первый параметр метода
+// ============================================================
+
+#[test]
+fn метод_с_self_первым_параметром() {
+    ok(r#"
+struct User { name string; }
+
+impl User {
+    fn get_name(self &User) string {
+        return self.name;
+    }
+}
+
+fn main() int {
+    let u = User("Аня");
+    println(u.get_name());
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_с_self_и_другими_параметрами() {
+    ok(r#"
+struct User { name string; }
+
+impl User {
+    fn greet(self &User, other string) string {
+        return other;
+    }
+}
+
+fn main() int {
+    let u = User("Аня");
+    println(u.greet("Боря"));
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn self_по_значению_забирает_объект() {
+    ok(r#"
+struct User { name string; }
+
+impl User {
+    fn into_name(self User) string {
+        return self.name;
+    }
+}
+
+fn main() int {
+    let u = User("Аня");
+    println(u.into_name());
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn self_не_первым_параметром_не_метод() {
+    // `self` обязан быть первым: иначе это не метод, и вызов через
+    // точку не находится.
+    fails(
+        r#"
+struct User { name string; }
+
+impl User {
+    fn greet(other string, self &User) string {
+        return other;
+    }
+}
+
+fn main() int {
+    let u = User("Аня");
+    println(u.greet("Боря"));
+    return 0;
+}
+"#,
+        "у типа `User` нет метода `greet`",
+    );
+}
+
+#[test]
+fn self_без_типа_запрещён() {
+    // В Rust пишут `&self`; в Keel тип обязателен — `self &User`.
+    // Это ошибка разбора, а не проверки типов.
+    parse_fails(
+        r#"
+struct User { name string; }
+
+impl User {
+    fn get_name(self) string {
+        return self.name;
+    }
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "ожидалось имя",
+    );
+}
+
+#[test]
+fn функция_в_impl_без_self_это_ассоциированная() {
+    ok(r#"
+struct User { name string; }
+
+impl User {
+    fn make(n string) User {
+        return User(n);
+    }
+}
+
+fn main() int {
+    let u = User::make("Аня");
+    println(u.name);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn ассоциированную_нельзя_вызвать_через_точку() {
+    fails(
+        r#"
+struct User { name string; }
+
+impl User {
+    fn make(n string) User {
+        return User(n);
+    }
+}
+
+fn main() int {
+    let u = User("Аня");
+    let v = u.make("Боря");
+    return 0;
+}
+"#,
+        "у типа `User` нет метода `make`",
+    );
+}

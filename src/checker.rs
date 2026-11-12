@@ -386,6 +386,7 @@ impl Checker {
             ret: f.ret.clone(),
             declared: declared.clone(),
             loop_depth: 0,
+            is_main: f.name == "main",
         };
         self.check_block(&f.body, &mut ctx);
 
@@ -559,22 +560,44 @@ impl Checker {
             Stmt::Expr(e) => {
                 self.type_of(e, ctx);
             }
-            Stmt::Return(e) => {
-                if let Some(e) = e {
-                    let t = self.type_of(e, ctx);
-                    if !self.types_compatible(ctx.ret.clone(), &t) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "тип возврата: ожидался `{}`, получен `{}`",
-                                ctx.ret.name(),
-                                t.name()
-                            ),
-                        ));
+            Stmt::Return { line, value } => {
+                match value {
+                    Some(e) => {
+                        let t = self.type_of(e, ctx);
+                        if !self.types_compatible(ctx.ret.clone(), &t) {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "тип возврата: ожидался `{}`, получен `{}`",
+                                    ctx.ret.name(),
+                                    t.name()
+                                ),
+                            ));
+                        }
+                        // Ссылка не должна пережить кадр, в котором создана.
+                        self.check_return_escapes(e, ctx);
+                        self.record_move(e, ctx);
                     }
-                    // Ссылка не должна пережить кадр, в котором создана.
-                    self.check_return_escapes(e, ctx);
-                    self.record_move(e, ctx);
+                    // `return;` без значения — только из функции, которая
+                    // ничего не возвращает. Иначе в C получилось бы
+                    // `return;` внутри функции, возвращающей значение:
+                    // gcc на это ругается, а сообщение читалось бы как
+                    // ошибка бэкенда, а не как ошибка программы.
+                    None => {
+                        // В main голый `return;` — это «выход с кодом 0»:
+                        // main особый, как в C. В остальных функциях
+                        // `return;` без значения требует, чтобы функция
+                        // ничего не возвращала.
+                        if ctx.ret != Type::Void && !ctx.is_main {
+                            self.diags.push(Diagnostic::new(
+                                *line,
+                                format!(
+                                    "функция возвращает `{}`, поэтому `return` требует значение",
+                                    ctx.ret.name()
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
             Stmt::If { cond, then_block, else_block } => {
@@ -1632,8 +1655,15 @@ impl Checker {
     }
 
     fn types_compatible(&self, a: Type, b: &Type) -> bool {
+        // `void` совместим только с `void`. Раньше здесь стояло
+        // «если хоть одна сторона void — совместимо», и из-за этого
+        // `return 5;` в void-функции проходил проверку, а потом падал
+        // на сборке C: «return with a value, in function returning void».
+        // Тот же безусловный пропуск был нужен, чтобы `void`-функцию
+        // можно было вызвать как оператор — это проверяется отдельно,
+        // в ветке вызова, и здесь не нужно.
         if a == Type::Void || b == &Type::Void {
-            return true;
+            return a == Type::Void && b == &Type::Void;
         }
         if a.is_ref() || b.is_ref() {
             return a == *b;
@@ -1690,4 +1720,8 @@ struct Ctx {
     /// Глубина вложенности циклов. `break` и `continue` допустимы
     /// только внутри цикла.
     loop_depth: usize,
+    /// Это `main`? У main особый статус: его возврат — код выхода
+    /// программы, и `return;` без значения означает «выход с нулём»
+    /// (в C `main` тоже можно закончить без `return`).
+    is_main: bool,
 }
