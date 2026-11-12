@@ -877,3 +877,21 @@ fn main() int {
 }
 "#);
 }
+
+#[test]
+fn структура_с_массивом_в_поле_собирается() {
+    // В C нельзя присвоить массив в поле структуры (`.f = arr` — ошибка
+    // компиляции). Для таких структур генерируется отдельный конструктор
+    // `k_new_Имя`, который копирует поле через memcpy.
+    ok(r#"
+struct User { name string; age int; }
+struct Registry { users [User; 3]; count int; }
+fn main() int {
+    let users = [User("John", 26), User("Mary", 18), User("James", 18)];
+    let reg = Registry(users, 3);
+    println(reg.users[0].name);
+    println(reg.count);
+    return 0;
+}
+"#);
+}

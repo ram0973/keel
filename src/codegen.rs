@@ -105,6 +105,12 @@ impl<'a> Codegen<'a> {
             }
         }
         self.out.push('\n');
+        // Конструкторы структур с массивами в полях.
+        for item in &self.prog.items {
+            if let Item::Struct(s) = item {
+                self.emit_struct_ctor(s);
+            }
+        }
         // Прототипы: в C функция должна быть объявлена до вызова.
         for item in &self.prog.items {
             if let Item::Func(f) = item {
@@ -156,6 +162,49 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!("  {};\n", self.decl(&f.ty, &f.name)));
         }
         self.out.push_str(&format!("}} {};\n\n", cname));
+    }
+
+    /// Конструктор структуры, у которой есть поле-массив.
+    ///
+    /// В C нельзя присвоить массив в поле через инициализатор
+    /// (`.f = arr` — ошибка), поэтому делаем отдельную функцию, которая
+    /// копирует поле через memcpy.
+    fn emit_struct_ctor(&mut self, s: &StructDecl) {
+        if !s.fields.iter().any(|f| matches!(f.ty, Type::Array(_, _))) {
+            return;
+        }
+        let cname = self.ctype.get(&s.name).cloned().unwrap_or_default();
+        let mut params = Vec::new();
+        let mut body = Vec::new();
+        for f in &s.fields {
+            match &f.ty {
+                // Массив приходит указателем на элемент.
+                Type::Array(elem, _) => {
+                    params.push(format!("{}* {}", self.ty(elem), f.name));
+                    body.push(format!(
+                        "  memcpy(r.{}, {}, sizeof(r.{}));",
+                        f.name, f.name, f.name
+                    ));
+                }
+                t => {
+                    params.push(self.decl(t, &f.name));
+                    body.push(format!("  r.{} = {};", f.name, f.name));
+                }
+            }
+        }
+        let mut text = format!(
+            "static {} k_new_{}({}) {{\n  {} r;\n",
+            cname,
+            s.name,
+            params.join(", "),
+            cname
+        );
+        for line in &body {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push_str("  return r;\n}\n\n");
+        self.out.push_str(&text);
     }
 
     fn emit_func(&mut self, f: &FuncDecl) {
@@ -547,9 +596,18 @@ impl<'a> Codegen<'a> {
                     }
                     return String::new();
                 }
-                // Конструктор структуры → составной литерал.
+                // Конструктор структуры.
                 if let Some(s) = self.structs.get(name) {
                     let cname = self.ctype.get(name).cloned().unwrap_or_else(|| name.clone());
+                    // Если в поле лежит массив, в C нельзя написать
+                    // `.f = arr` — массив не копируется в инициализатор.
+                    // Для таких структур генерируется отдельная функция
+                    // `k_new_Имя`, которая копирует поле через memcpy.
+                    let has_array = s.fields.iter().any(|f| matches!(f.ty, Type::Array(_, _)));
+                    if has_array {
+                        let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
+                        return format!("k_new_{}({})", name, a.join(", "));
+                    }
                     let mut items = Vec::new();
                     let prev = self.in_struct_init.replace(true);
                     for (i, f) in s.fields.iter().enumerate() {
