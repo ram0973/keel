@@ -119,7 +119,7 @@ fn report(world &World) {
 // ============================================================================
 
 fn main() int {
-    let world = spawn(
+    let mut world = spawn(
         Entity("orc", 30),
         Entity("goblin", 50),
         Entity("rat", 10),

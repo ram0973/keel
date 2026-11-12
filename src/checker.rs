@@ -1076,6 +1076,7 @@ impl Checker {
                 continue;
             };
             let effective = Path { root: base.root.clone(), segs: mp.segs.clone() };
+            self.check_owner_is_mut(&effective, line, ctx);
             self.modified.push((effective.clone(), false));
             self.invalidate_inside(&effective);
         }
@@ -1096,11 +1097,54 @@ impl Checker {
                 }
                 _ => Path { root: base.root.clone(), segs: Vec::new() },
             };
+            self.check_owner_is_mut(&effective, line, ctx);
             self.modified.push((effective.clone(), false));
             self.invalidate_inside(&effective);
         }
 
         fi.ret.clone()
+    }
+
+    /// Владелец пути, который собирается изменить вызываемая функция,
+    /// должен быть объявлен `mut`.
+    ///
+    /// Прямая запись (`p.x = 1`) проверяется в `check_assign`. Но то же
+    /// изменение можно выполнить через вызов — `p.shift()` или
+    /// `shift(&p)`, — и тогда проверка обязана стоять здесь, иначе
+    /// неизменяемая переменная меняется в обход правил. Ровно это Rust
+    /// запрещает как E0596 («cannot borrow as mutable, as it is not
+    /// declared as mutable»).
+    ///
+    /// Проверяются только пути, чей корень — локальная переменная.
+    /// Пути, начинающиеся с имени параметра, — забота контракта самого
+    /// параметра, а не вызывающего.
+    fn check_owner_is_mut(&mut self, path: &Path, line: usize, ctx: &Ctx) {
+        let Ok(uid) = path.root.parse::<u32>() else {
+            return;
+        };
+        // Владелец — переменная, чей путь является префиксом пути записи.
+        // Для ссылки на элемент это контейнер, а не сама ссылка.
+        let Some(owner) = ctx
+            .scope
+            .values()
+            .filter(|l| l.ref_target.is_none())
+            .find(|l| l.path.is_prefix_of(path))
+            .cloned()
+        else {
+            return;
+        };
+        let _ = uid;
+        if !owner.is_mut {
+            let name = self.names.get(&owner.uid).cloned().unwrap_or_default();
+            self.diags.push(Diagnostic::new(
+                line,
+                format!(
+                    "`{}` не объявлен как `mut` — вызов изменяет его, \
+                     а изменять неизменяемую переменную нельзя",
+                    name
+                ),
+            ));
+        }
     }
 
     /// Путь значения выражения, если это «место» (переменная, поле, элемент).

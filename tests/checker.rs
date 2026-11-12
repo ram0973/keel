@@ -970,6 +970,98 @@ fn main() int { return 0; }
 }
 
 #[test]
+fn вызов_мутатора_на_неизменяемой_переменной_ловится() {
+    // Прямая запись `p.x = 1` в не-mut переменную запрещена. Но то же
+    // изменение можно выполнить через вызов — и тогда проверка обязана
+    // стоять в месте вызова, иначе неизменяемая переменная меняется в
+    // обход правил. Rust запрещает это как E0596.
+    fails(
+        r#"
+struct Point { x int; y int; }
+impl Point {
+    fn shift(self &Point) mut(self) { self.x = self.x + 1; }
+}
+fn main() int {
+    let p = Point(3, 4);
+    p.shift();
+    return 0;
+}
+"#,
+        "не объявлен как `mut`",
+    );
+}
+
+#[test]
+fn вызов_свободной_функции_мутатора_на_неизменяемой_ловится() {
+    // То же для свободной функции с mut-контрактом: `shift(&p)` меняет
+    // `p`, значит `p` должен быть `mut`.
+    fails(
+        r#"
+struct Point { x int; y int; }
+fn shift(p &Point) mut(p.x) { p.x = p.x + 1; }
+fn main() int {
+    let p = Point(3, 4);
+    shift(&p);
+    return 0;
+}
+"#,
+        "не объявлен как `mut`",
+    );
+}
+
+#[test]
+fn вызов_мутатора_на_изменяемой_переменной_разрешён() {
+    // Обратная сторона: `let mut` даёт право на вызов мутатора.
+    ok(r#"
+struct Point { x int; y int; }
+impl Point {
+    fn shift(self &Point) mut(self) { self.x = self.x + 1; }
+}
+fn main() int {
+    let mut p = Point(3, 4);
+    p.shift();
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_читатель_на_неизменяемой_переменной_разрешён() {
+    // Читающий метод ничего не меняет, поэтому `let p` достаточно.
+    ok(r#"
+struct Point { x int; y int; }
+impl Point {
+    fn sum(self &Point) int { return self.x + self.y; }
+}
+fn main() int {
+    let p = Point(3, 4);
+    println(p.sum());
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_по_значению_перемещает_объект() {
+    // `self Point` — объект переезжает в метод. Второй вызов невозможен.
+    fails(
+        r#"
+struct Point { x int; y int; }
+impl Point {
+    fn sum(self Point) int { return self.x + self.y; }
+}
+fn main() int {
+    let p = Point(3, 4);
+    println(p.sum());
+    println(p.sum());
+    return 0;
+}
+"#,
+        "перемещён",
+    );
+}
+
+#[test]
 fn неизвестный_метод_ловится() {
     fails(
         r#"
