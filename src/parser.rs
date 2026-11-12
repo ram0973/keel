@@ -167,18 +167,20 @@ impl Parser {
     }
 
     fn parse_struct(&mut self) -> PResult<StructDecl> {
+        let line = self.line();
         self.expect_kw("struct")?;
         let name = self.ident()?;
         self.expect_punct("{")?;
         let mut fields = Vec::new();
         while !self.at_punct("}") {
+            let fline = self.line();
             let fname = self.ident()?;
             let ty = self.parse_type()?;
             self.expect_punct(";")?;
-            fields.push(Field { name: fname, ty });
+            fields.push(Field { name: fname, ty, line: fline });
         }
         self.expect_punct("}")?;
-        Ok(StructDecl { name, fields })
+        Ok(StructDecl { name, fields, line })
     }
 
     fn parse_func(&mut self) -> PResult<FuncDecl> {
@@ -190,6 +192,7 @@ impl Parser {
     /// Общая часть после имени: параметры, тип возврата, контракт, тело.
     /// `owner` — имя типа, если функция объявлена в `impl`-блоке.
     fn parse_func_rest(&mut self, name: String, owner: Option<String>) -> PResult<FuncDecl> {
+        let line = self.line();
         self.expect_punct("(")?;
         let mut params = Vec::new();
         while !self.at_punct(")") {
@@ -223,7 +226,7 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(FuncDecl { name, params, ret, mut_paths, body, owner })
+        Ok(FuncDecl { name, params, ret, mut_paths, body, owner, line })
     }
 
     fn parse_param(&mut self) -> PResult<Param> {
@@ -268,6 +271,77 @@ impl Parser {
             }
         }
         Ok(Path { root, segs })
+    }
+
+    /// Похоже ли текущее место на объявление переменной без `let`?
+    ///
+    /// Признак: `имя` + тип (`int`, `bool`, `string`, `void`, `&T`, `[T; N]`
+    /// или имя структуры) + `=`. Именно сочетание «имя, затем тип» отличает
+    /// забытое объявление от присваивания `x = 5;` и от вызова `f(x);`.
+    ///
+    /// Тип здесь распознаётся грубо — по форме токенов, а не разбором:
+    /// цель в том, чтобы дать подсказку, а не заменить парсер.
+    fn looks_like_decl_without_let(&self) -> bool {
+        // После имени должен идти тип.
+        match self.peek_at(1) {
+            // `x &T = ...`
+            Tok::Punct(p) if p == "&" => {}
+            // `x [T; N] = ...` — но не `arr[0] = ...`: у типа внутри
+            // скобок есть `;`, у индекса — нет.
+            Tok::Punct(p) if p == "[" => {
+                let mut j = 2usize;
+                let mut has_semi = false;
+                while j < 10 {
+                    match self.peek_at(j) {
+                        Tok::Punct(q) if q == ";" => {
+                            has_semi = true;
+                            break;
+                        }
+                        Tok::Punct(q) if q == "]" => break,
+                        Tok::Eof => return false,
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if !has_semi {
+                    return false;
+                }
+            }
+            // `x int = ...`, `x User = ...`
+            Tok::Ident(t) => {
+                // Имя типа не должно быть тем, что превращает строку
+                // в выражение: `x in ...`, `x mut` и подобное.
+                if matches!(t.as_str(), "in" | "mut" | "else") {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        // И через один-два токена — `=`. Для `[T; N]` тип длиннее,
+        // поэтому смотрим вперёд до `=` в пределах строки. Внутри
+        // квадратных скобок `;` — часть типа, а не конец оператора,
+        // поэтому считаем глубину. Если тип начинается с `[`, глубина
+        // уже равна единице — иначе `;` внутри `[T; N]` обрывает поиск.
+        let mut i = 2usize;
+        let mut depth = if matches!(self.peek_at(1), Tok::Punct(p) if p == "[") {
+            1i32
+        } else {
+            0i32
+        };
+        while i < 12 {
+            match self.peek_at(i) {
+                Tok::Punct(p) if p == "=" && depth == 0 => return true,
+                Tok::Punct(p) if p == "[" => depth += 1,
+                Tok::Punct(p) if p == "]" => depth -= 1,
+                Tok::Punct(p) if (p == ";" || p == ")" || p == "{") && depth <= 0 => {
+                    return false
+                }
+                Tok::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn parse_type(&mut self) -> PResult<Type> {
@@ -317,6 +391,29 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
         let line = self.line();
+
+        // Похоже на объявление без `let`: `x int = 0;` вместо
+        // `let x int = 0;`. Без этой подсказки человек получает
+        // «ожидалось ';', получено 'int'» — сообщение о том, чего ждёт
+        // парсер, а не о том, что забыл человек.
+        if let Tok::Ident(name) = self.peek().clone() {
+            // Проверка идёт только для имени, которое не является
+            // ключевым словом: иначе `let x = 5;` даёт подсказку
+            // «пропущено `let`» про сам `let`.
+            let is_keyword = matches!(
+                name.as_str(),
+                "let" | "fn" | "struct" | "impl" | "if" | "else" | "while"
+                    | "for" | "do" | "return" | "break" | "continue"
+                    | "in" | "mut" | "true" | "false"
+            );
+            if !is_keyword && self.looks_like_decl_without_let() {
+                return Err(format!(
+                    "строка {}: похоже, пропущено `let`: напишите `let {} ...` \
+                     — объявление переменной начинается с `let`",
+                    line, name
+                ));
+            }
+        }
 
         if self.at_kw("let") {
             self.bump();

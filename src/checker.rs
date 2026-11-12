@@ -65,6 +65,8 @@ pub struct Checker {
     /// Методы: (имя типа, имя метода) → сигнатура. Вызов `x.m(...)`
     /// ищется по типу получателя `x`.
     methods: HashMap<(String, String), FuncInfo>,
+    /// Строка объявления каждой функции — для диагностик.
+    func_lines: HashMap<String, usize>,
     /// uid -> имя, для читаемых сообщений об ошибках.
     names: HashMap<u32, String>,
     next_uid: u32,
@@ -97,6 +99,7 @@ impl Checker {
             structs: HashMap::new(),
             funcs: HashMap::new(),
             methods: HashMap::new(),
+            func_lines: HashMap::new(),
             names: HashMap::new(),
             next_uid: 1,
             refs: Vec::new(),
@@ -110,41 +113,82 @@ impl Checker {
 
     pub fn check(&mut self, program: &Program) -> Vec<Diagnostic> {
         // Сначала собираем объявления, чтобы функции могли ссылаться друг на друга.
+        // Повторные имена — ошибка: в C они дают «redefinition» в
+        // сгенерированном коде, где причина не видна, либо молча
+        // перекрывают друг друга.
         for item in &program.items {
             match item {
                 Item::Struct(s) => {
+                    if let Some(prev) = self.structs.get(&s.name) {
+                        self.diags.push(Diagnostic::new(
+                            s.line,
+                            format!(
+                                "структура `{}` объявлена дважды (первое объявление — строка {})",
+                                s.name, prev.line
+                            ),
+                        ));
+                    }
                     self.structs.insert(s.name.clone(), s.clone());
                 }
                 Item::Func(f) => {
-                    self.funcs.insert(
-                        f.name.clone(),
-                        FuncInfo {
-                            params: f.params.clone(),
-                            ret: f.ret.clone(),
-                            mut_paths: f.mut_paths.clone(),
-                        },
-                    );
+                    self.declare_func(f, None);
                 }
                 Item::Impl(im) => {
                     for f in &im.funcs {
-                        let fi = FuncInfo {
-                            params: f.params.clone(),
-                            ret: f.ret.clone(),
-                            mut_paths: f.mut_paths.clone(),
-                        };
                         if Self::is_method(f) {
                             // Метод: ключ — (тип, имя). Вызов идёт как
                             // `x.name(...)`, поэтому ищем по типу получателя.
-                            self.methods
-                                .insert((im.ty.clone(), f.name.clone()), fi);
+                            let key = (im.ty.clone(), f.name.clone());
+                            if self.methods.contains_key(&key) {
+                                self.diags.push(Diagnostic::new(
+                                    f.line,
+                                    format!(
+                                        "метод `{}` у типа `{}` объявлен дважды",
+                                        f.name, im.ty
+                                    ),
+                                ));
+                            }
+                            self.methods.insert(
+                                key,
+                                FuncInfo {
+                                    params: f.params.clone(),
+                                    ret: f.ret.clone(),
+                                    mut_paths: f.mut_paths.clone(),
+                                },
+                            );
                         } else {
-                            // Ассоциированная функция: вызов как
-                            // `Type::name(...)`.
-                            self.funcs
-                                .insert(format!("{}::{}", im.ty, f.name), fi);
+                            self.declare_func(f, Some(&im.ty));
                         }
                     }
                 }
+            }
+        }
+
+        // Имя, занятое и структурой, и функцией, — почти всегда ошибка:
+        // `User(...)` разбирается как конструктор структуры, и функция
+        // становится недостижимой. Лучше сказать об этом прямо.
+        for f in self.funcs.keys() {
+            if let Some((ty, _)) = f.split_once("::") {
+                // Ассоциированная функция: `Тип::имя` — конфликт только
+                // если есть структура с именем `Тип::имя` (невозможно).
+                let _ = ty;
+                continue;
+            }
+            if self.structs.contains_key(f) {
+                let line = self
+                    .func_lines
+                    .get(f)
+                    .copied()
+                    .unwrap_or(0);
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!(
+                        "имя `{}` занято и структурой, и функцией: вызов `{}(...)` \
+                         всегда означает конструктор структуры, поэтому функция \
+                         недостижима — переименуйте одно из двух",
+                        f, f
+                    ),
+                ));
             }
         }
 
@@ -167,6 +211,39 @@ impl Checker {
     /// Метод — функция с первым параметром `self`.
     fn is_method(f: &FuncDecl) -> bool {
         f.params.first().map(|p| p.name == "self").unwrap_or(false)
+    }
+
+    /// Регистрирует функцию в таблице, сообщая о повторном имени.
+    /// `owner` — имя типа для ассоциированной функции из `impl`-блока.
+    ///
+    /// Повторное имя — не мелочь: в C это «redefinition of 'k_f'» в
+    /// сгенерированном коде, где причина не видна. Два `main` — тем
+    /// более: C соберёт только один, и поведение зависит от порядка.
+    fn declare_func(&mut self, f: &FuncDecl, owner: Option<&str>) {
+        let key = match owner {
+            Some(ty) => format!("{}::{}", ty, f.name),
+            None => f.name.clone(),
+        };
+        if let Some(prev) = self.func_lines.get(&key) {
+            let what = if f.name == "main" {
+                format!("функция `main` объявлена дважды (первое объявление — строка {})", prev)
+            } else {
+                format!(
+                    "функция `{}` объявлена дважды (первое объявление — строка {})",
+                    key, prev
+                )
+            };
+            self.diags.push(Diagnostic::new(f.line, what));
+        }
+        self.func_lines.insert(key.clone(), f.line);
+        self.funcs.insert(
+            key,
+            FuncInfo {
+                params: f.params.clone(),
+                ret: f.ret.clone(),
+                mut_paths: f.mut_paths.clone(),
+            },
+        );
     }
 
     /// Ключ функции для таблиц, где важен владелец: `Тип::имя` для метода

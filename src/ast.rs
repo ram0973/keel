@@ -125,12 +125,16 @@ impl fmt::Display for Path {
 pub struct Field {
     pub name: String,
     pub ty: Type,
+    /// Строка объявления поля — для диагностик.
+    pub line: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<Field>,
+    /// Строка объявления — для диагностик о повторных именах.
+    pub line: usize,
 }
 
 /// Как объявлен параметр.
@@ -171,6 +175,8 @@ pub struct FuncDecl {
     /// функции `None`. Нужно, чтобы методы разных типов с одинаковым
     /// именем не сталкивались.
     pub owner: Option<String>,
+    /// Строка объявления — для диагностик о повторных именах.
+    pub line: usize,
 }
 
 #[derive(Clone, Debug)]
