@@ -167,12 +167,30 @@ pub struct FuncDecl {
     pub ret: Type,
     pub mut_paths: Vec<MutPath>,
     pub body: Block,
+    /// Для функции из `impl`-блока — имя типа-владельца. У свободной
+    /// функции `None`. Нужно, чтобы методы разных типов с одинаковым
+    /// именем не сталкивались.
+    pub owner: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Item {
     Struct(StructDecl),
     Func(FuncDecl),
+    Impl(ImplDecl),
+}
+
+/// `impl Type { ... }` — методы и ассоциированные функции типа.
+///
+/// Метод отличается от ассоциированной функции тем, что его первый
+/// параметр называется `self`. `self` — обычный параметр: он может быть
+/// ссылкой (`self &T`) или значением (`self T`), и на него действуют те
+/// же правила владения, что и на любой другой параметр.
+#[derive(Clone, Debug)]
+pub struct ImplDecl {
+    /// Имя типа, для которого объявлен блок.
+    pub ty: String,
+    pub funcs: Vec<FuncDecl>,
 }
 
 #[derive(Clone, Debug)]
@@ -195,6 +213,14 @@ pub enum ExprKind {
     /// Массив-литерал: `[a, b, c]`.
     Array(Vec<Expr>),
     Call { callee: Box<Expr>, args: Vec<Expr> },
+    /// `x.method(args)` — вызов метода. Отличается от `Field` наличием
+    /// скобок; разрешается в обычный вызов с получателем первым
+    /// аргументом.
+    MethodCall {
+        obj: Box<Expr>,
+        name: String,
+        args: Vec<Expr>,
+    },
     Unary { op: UnOp, e: Box<Expr> },
     Binary { op: BinOp, l: Box<Expr>, r: Box<Expr> },
     Ref(Box<Expr>),

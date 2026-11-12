@@ -895,3 +895,114 @@ fn main() int {
 }
 "#);
 }
+
+#[test]
+fn ассоциированная_функция_вызывается_через_двойное_двоеточие() {
+    ok(r#"
+struct Point { x int; y int; }
+impl Point {
+    fn new(x int, y int) Point {
+        return Point(x, y);
+    }
+}
+fn main() int {
+    let p = Point::new(3, 4);
+    println(p.x);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_читает_поле_через_self() {
+    // `self &Point` — метод видит объект вызывающего.
+    ok(r#"
+struct Point { x int; y int; }
+impl Point {
+    fn sum(self &Point) int {
+        return self.x + self.y;
+    }
+}
+fn main() int {
+    let p = Point(3, 4);
+    println(p.sum());
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_меняет_объект_по_mut_контракту() {
+    // `mut(self)` объявляет, что метод меняет объект: изменение видно
+    // вызывающему.
+    ok(r#"
+struct Point { x int; y int; }
+impl Point {
+    fn shift(self &Point) mut(self) {
+        self.x = self.x + 1;
+    }
+}
+fn main() int {
+    let mut p = Point(3, 4);
+    p.shift();
+    println(p.x);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn метод_без_mut_контракта_не_даёт_писать() {
+    // Метод со `self &Point` без `mut(self)` писать не может — это то же
+    // правило, что и для свободной функции.
+    fails(
+        r#"
+struct Point { x int; y int; }
+impl Point {
+    fn bad(self &Point) {
+        self.x = 1;
+    }
+}
+fn main() int { return 0; }
+"#,
+        "mut-контракт",
+    );
+}
+
+#[test]
+fn неизвестный_метод_ловится() {
+    fails(
+        r#"
+struct Point { x int; y int; }
+fn main() int {
+    let p = Point(3, 4);
+    p.nope();
+    return 0;
+}
+"#,
+        "нет метода",
+    );
+}
+
+#[test]
+fn методы_разных_типов_с_одинаковым_именем_не_сталкиваются() {
+    // В C метод получает имя `k_Тип_метод`, поэтому `Point::get` и
+    // `Box::get` не конфликтуют.
+    ok(r#"
+struct Point { x int; }
+struct Box { v int; }
+impl Point {
+    fn get(self &Point) int { return self.x; }
+}
+impl Box {
+    fn get(self &Box) int { return self.v; }
+}
+fn main() int {
+    let p = Point(1);
+    let b = Box(2);
+    println(p.get());
+    println(b.get());
+    return 0;
+}
+"#);
+}

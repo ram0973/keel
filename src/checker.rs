@@ -62,6 +62,9 @@ struct RefLocal {
 pub struct Checker {
     structs: HashMap<String, StructDecl>,
     funcs: HashMap<String, FuncInfo>,
+    /// Методы: (имя типа, имя метода) → сигнатура. Вызов `x.m(...)`
+    /// ищется по типу получателя `x`.
+    methods: HashMap<(String, String), FuncInfo>,
     /// uid -> имя, для читаемых сообщений об ошибках.
     names: HashMap<u32, String>,
     next_uid: u32,
@@ -74,6 +77,10 @@ pub struct Checker {
     /// Разрешённые типы параметров: (функция, параметр) → тип.
     /// Нужны кодогенератору: тип параметра-внутри выводится из пути.
     pub param_types: HashMap<(String, String), Type>,
+    /// id выражения `x.method(...)` → нужно ли передать получателя
+    /// ссылкой. Метод, объявленный как `self &T`, при вызове на значении
+    /// получает адрес; кодогенератор должен знать это по id выражения.
+    pub method_recv_ref: HashMap<u32, bool>,
     diags: Vec<Diagnostic>,
 }
 
@@ -89,12 +96,14 @@ impl Checker {
         Checker {
             structs: HashMap::new(),
             funcs: HashMap::new(),
+            methods: HashMap::new(),
             names: HashMap::new(),
             next_uid: 1,
             refs: Vec::new(),
             modified: Vec::new(),
             expr_types: HashMap::new(),
             param_types: HashMap::new(),
+            method_recv_ref: HashMap::new(),
             diags: Vec::new(),
         }
     }
@@ -116,17 +125,58 @@ impl Checker {
                         },
                     );
                 }
+                Item::Impl(im) => {
+                    for f in &im.funcs {
+                        let fi = FuncInfo {
+                            params: f.params.clone(),
+                            ret: f.ret.clone(),
+                            mut_paths: f.mut_paths.clone(),
+                        };
+                        if Self::is_method(f) {
+                            // Метод: ключ — (тип, имя). Вызов идёт как
+                            // `x.name(...)`, поэтому ищем по типу получателя.
+                            self.methods
+                                .insert((im.ty.clone(), f.name.clone()), fi);
+                        } else {
+                            // Ассоциированная функция: вызов как
+                            // `Type::name(...)`.
+                            self.funcs
+                                .insert(format!("{}::{}", im.ty, f.name), fi);
+                        }
+                    }
+                }
             }
         }
 
         // Затем проверяем тела.
         for item in &program.items {
-            if let Item::Func(f) = item {
-                self.check_func(f);
+            match item {
+                Item::Func(f) => self.check_func(f),
+                Item::Impl(im) => {
+                    for f in &im.funcs {
+                        self.check_func(f);
+                    }
+                }
+                Item::Struct(_) => {}
             }
         }
 
         self.diags.clone()
+    }
+
+    /// Метод — функция с первым параметром `self`.
+    fn is_method(f: &FuncDecl) -> bool {
+        f.params.first().map(|p| p.name == "self").unwrap_or(false)
+    }
+
+    /// Ключ функции для таблиц, где важен владелец: `Тип::имя` для метода
+    /// или ассоциированной функции, просто `имя` для свободной. Без этого
+    /// методы разных типов с одинаковым именем перетирали бы друг друга.
+    pub fn func_key(f: &FuncDecl) -> String {
+        match &f.owner {
+            Some(ty) => format!("{}::{}", ty, f.name),
+            None => f.name.clone(),
+        }
     }
 
     /// Имена параметров функции — только их пути требуют mut-контракта.
@@ -171,7 +221,7 @@ impl Checker {
                 ParamKind::RefIn(path) => {
                     let inner = self.infer_param_type(f, path);
                     self.param_types
-                        .insert((f.name.clone(), p.name.clone()), inner.clone());
+                        .insert((Self::func_key(f), p.name.clone()), inner.clone());
                     (Type::Ref(Box::new(inner)), Some(path.clone()))
                 }
             };
@@ -740,6 +790,48 @@ impl Checker {
                     }
                 }
             }
+            // `x.method(args)` — ищем метод по типу получателя и
+            // проверяем как обычный вызов с `x` первым аргументом.
+            ExprKind::MethodCall { obj, name, args } => {
+                let obj_ty = self.type_of(obj, ctx).deref().clone();
+                let Type::Named(tn) = obj_ty.clone() else {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`{}` — не структура, метод недоступен", obj_ty.name()),
+                    ));
+                    return Type::Void;
+                };
+                let Some(fi) = self.methods.get(&(tn.clone(), name.clone())).cloned() else {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("у типа `{}` нет метода `{}`", tn, name),
+                    ));
+                    return Type::Void;
+                };
+                // Получатель передаётся первым аргументом. Если метод
+                // ждёт ссылку, а получатель — значение, ссылка берётся
+                // неявно: `p.sum()` читается как `Point::sum(&p)`.
+                //
+                // Фиктивный узел `Ref` здесь создавать нельзя: у парсера
+                // и проверщика свои счётчики id, и новый id совпал бы с
+                // id чужого выражения, испортив его тип. Вместо этого
+                // факт неявной ссылки передаётся флагом.
+                let wants_ref = fi
+                    .params
+                    .first()
+                    .map(|p| matches!(p.kind, ParamKind::Ref | ParamKind::RefIn(_)))
+                    .unwrap_or(false);
+                let recv_is_ref = self
+                    .expr_types
+                    .get(&obj.id)
+                    .map(|t| t.is_ref())
+                    .unwrap_or(false);
+                let auto_ref = wants_ref && !recv_is_ref;
+                self.method_recv_ref.insert(e.id, auto_ref);
+                let mut all = vec![(**obj).clone()];
+                all.extend(args.iter().cloned());
+                self.type_of_call_named_ext(name, &fi, &all, ctx, e.line, auto_ref)
+            }
             ExprKind::Index { obj, idx } => {
                 let base = self.type_of(obj, ctx);
                 self.type_of(idx, ctx);
@@ -897,6 +989,34 @@ impl Checker {
             return Type::Void;
         };
 
+        self.type_of_call_named(name, &fi, args, ctx, line)
+    }
+
+    /// Общая часть проверки вызова: арность, типы аргументов, перенос
+    /// mut-контракта на пути вызывающего.
+    fn type_of_call_named(
+        &mut self,
+        name: &str,
+        fi: &FuncInfo,
+        args: &[Expr],
+        ctx: &mut Ctx,
+        line: usize,
+    ) -> Type {
+        self.type_of_call_named_ext(name, fi, args, ctx, line, false)
+    }
+
+    /// То же, но с флагом `auto_ref`: первый аргумент — получатель
+    /// метода, которому ссылка берётся автоматически, поэтому
+    /// требовать `&` от вызывающего не нужно.
+    fn type_of_call_named_ext(
+        &mut self,
+        name: &str,
+        fi: &FuncInfo,
+        args: &[Expr],
+        ctx: &mut Ctx,
+        line: usize,
+        auto_ref: bool,
+    ) -> Type {
         if args.len() != fi.params.len() {
             self.diags.push(Diagnostic::new(
                 line,
@@ -927,6 +1047,10 @@ impl Checker {
                     }
                 }
                 ParamKind::Ref | ParamKind::RefIn(_) => {
+                    // Получатель метода: ссылка берётся автоматически.
+                    if auto_ref && i == 0 {
+                        continue;
+                    }
                     if !t.is_ref() {
                         self.diags.push(Diagnostic::new(
                             a.line,

@@ -140,13 +140,30 @@ impl Parser {
             Ok(Item::Struct(self.parse_struct()?))
         } else if self.at_kw("fn") {
             Ok(Item::Func(self.parse_func()?))
+        } else if self.at_kw("impl") {
+            Ok(Item::Impl(self.parse_impl()?))
         } else {
             Err(format!(
-                "строка {}: ожидалось 'struct' или 'fn', получено {}",
+                "строка {}: ожидалось 'struct', 'fn' или 'impl', получено {}",
                 self.line(),
                 self.describe(self.peek())
             ))
         }
+    }
+
+    /// `impl Type { fn ... }` — блок методов и ассоциированных функций.
+    fn parse_impl(&mut self) -> PResult<ImplDecl> {
+        self.expect_kw("impl")?;
+        let ty = self.ident()?;
+        self.expect_punct("{")?;
+        let mut funcs = Vec::new();
+        while !self.at_punct("}") {
+            self.expect_kw("fn")?;
+            let name = self.ident()?;
+            funcs.push(self.parse_func_rest(name, Some(ty.clone()))?);
+        }
+        self.expect_punct("}")?;
+        Ok(ImplDecl { ty, funcs })
     }
 
     fn parse_struct(&mut self) -> PResult<StructDecl> {
@@ -167,6 +184,12 @@ impl Parser {
     fn parse_func(&mut self) -> PResult<FuncDecl> {
         self.expect_kw("fn")?;
         let name = self.ident()?;
+        self.parse_func_rest(name, None)
+    }
+
+    /// Общая часть после имени: параметры, тип возврата, контракт, тело.
+    /// `owner` — имя типа, если функция объявлена в `impl`-блоке.
+    fn parse_func_rest(&mut self, name: String, owner: Option<String>) -> PResult<FuncDecl> {
         self.expect_punct("(")?;
         let mut params = Vec::new();
         while !self.at_punct(")") {
@@ -200,10 +223,12 @@ impl Parser {
         }
 
         let body = self.parse_block()?;
-        Ok(FuncDecl { name, params, ret, mut_paths, body })
+        Ok(FuncDecl { name, params, ret, mut_paths, body, owner })
     }
 
     fn parse_param(&mut self) -> PResult<Param> {
+        // `self` — первый параметр метода. Тип выводится из `impl`-блока,
+        // но синтаксис требует его явно: `self &T` или `self T`.
         let name = self.ident()?;
 
         // `x in path` — параметр-внутри.
@@ -591,8 +616,27 @@ impl Parser {
             if self.at_punct(".") {
                 self.bump();
                 let name = self.ident()?;
-                let id = self.id();
-                e = Expr { id, line, kind: ExprKind::Field { obj: Box::new(e), name } };
+                // `x.method(args)` — вызов метода; `x.field` — доступ к полю.
+                if self.at_punct("(") {
+                    self.bump();
+                    let mut args = Vec::new();
+                    while !self.at_punct(")") {
+                        args.push(self.parse_expr()?);
+                        if !self.eat_punct(",") {
+                            break;
+                        }
+                    }
+                    self.expect_punct(")")?;
+                    let id = self.id();
+                    e = Expr {
+                        id,
+                        line,
+                        kind: ExprKind::MethodCall { obj: Box::new(e), name, args },
+                    };
+                } else {
+                    let id = self.id();
+                    e = Expr { id, line, kind: ExprKind::Field { obj: Box::new(e), name } };
+                }
             } else if self.at_punct("[") {
                 self.bump();
                 let idx = self.parse_expr()?;
@@ -631,6 +675,14 @@ impl Parser {
             }
             Tok::Ident(s) => {
                 self.bump();
+                // `Type::name` — ассоциированная функция. Склеиваем в
+                // одно имя: `Point::new`.
+                if self.at_punct("::") {
+                    self.bump();
+                    let member = self.ident()?;
+                    let full = format!("{}::{}", s, member);
+                    return Ok(self.mk(line, ExprKind::Ident(full)));
+                }
                 match s.as_str() {
                     "true" => Ok(self.mk(line, ExprKind::Bool(true))),
                     "false" => Ok(self.mk(line, ExprKind::Bool(false))),

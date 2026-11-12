@@ -1,0 +1,87 @@
+// Методы и impl-блоки в Keel.
+//
+// `impl Тип { ... }` объединяет функции, относящиеся к типу:
+//
+//   fn new(...) Тип        — ассоциированная функция, вызов `Тип::new(...)`
+//   fn m(self &Тип) ...    — метод, вызов `объект.m(...)`
+//
+// `self` — обычный параметр. На него действуют те же правила владения,
+// что и на любой другой: он может быть ссылкой (`self &Тип`) или
+// значением (`self Тип`), и писать через него можно только с `mut(self)`.
+
+struct Point {
+    x int;
+    y int;
+}
+
+impl Point {
+    // Ассоциированная функция: `self` нет, вызов через `Point::new(...)`.
+    fn new(x int, y int) Point {
+        return Point(x, y);
+    }
+
+    // Метод: читает поля через `self`. Контракт не нужен — изменений нет.
+    fn sum(self &Point) int {
+        return self.x + self.y;
+    }
+
+    // Метод, который меняет объект. `mut(self)` объявляет это, и
+    // вызывающий знает: его ссылки внутрь `p` после вызова мертвы.
+    fn shift(self &Point) mut(self) {
+        self.x = self.x + 1;
+        self.y = self.y + 1;
+    }
+
+    // Метод может вызывать другой метод того же типа.
+    fn scaled(self &Point, k int) int {
+        return self.sum() * k;
+    }
+}
+
+struct Counter {
+    n int;
+}
+
+impl Counter {
+    fn new() Counter {
+        return Counter(0);
+    }
+
+    fn bump(self &Counter) mut(self) {
+        self.n = self.n + 1;
+    }
+
+    fn value(self &Counter) int {
+        return self.n;
+    }
+}
+
+fn main() int {
+    // Ассоциированная функция — как конструктор.
+    let mut p = Point::new(3, 4);
+
+    println(p.x);              // 3
+    println(p.sum());          // 7
+
+    // Метод, меняющий объект. `p` объявлен `mut` — иначе было бы нельзя.
+    p.shift();
+    println(p.sum());          // 9
+
+    // Метод через метод.
+    println(p.scaled(2));      // 18
+
+    // Второй тип со своими методами. Имена не сталкиваются: в C они
+    // получают вид `k_Point_sum` и `k_Counter_value`.
+    let mut c = Counter::new();
+    c.bump();
+    c.bump();
+    println(c.value());        // 2
+
+    // Метод можно вызвать и на элементе массива.
+    let mut points = [Point(1, 1), Point(2, 2)];
+    points[0].shift();         // (1,1) → (2,2)
+    println(points[0].sum());  // 4
+    println(points[1].sum());  // 4
+
+    return 0;
+}

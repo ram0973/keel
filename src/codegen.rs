@@ -13,6 +13,8 @@ pub struct Codegen<'a> {
     prog: &'a Program,
     types: &'a HashMap<u32, Type>,
     param_types: &'a HashMap<(String, String), Type>,
+    /// id выражения `x.method(...)` → передать получателя ссылкой.
+    method_recv_ref: &'a HashMap<u32, bool>,
     out: String,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -53,6 +55,7 @@ impl<'a> Codegen<'a> {
             prog,
             types: &checker.expr_types,
             param_types: &checker.param_types,
+            method_recv_ref: &checker.method_recv_ref,
             out: String::new(),
             ctype,
             structs,
@@ -112,8 +115,17 @@ impl<'a> Codegen<'a> {
             }
         }
         // Прототипы: в C функция должна быть объявлена до вызова.
+        // Все функции: свободные и из impl-блоков.
+        let mut all_funcs: Vec<&FuncDecl> = Vec::new();
         for item in &self.prog.items {
-            if let Item::Func(f) = item {
+            match item {
+                Item::Func(f) => all_funcs.push(f),
+                Item::Impl(im) => all_funcs.extend(im.funcs.iter()),
+                Item::Struct(_) => {}
+            }
+        }
+        for f in &all_funcs {
+            {
                 if f.name == "main" {
                     continue;
                 }
@@ -129,7 +141,7 @@ impl<'a> Codegen<'a> {
                         ParamKind::RefIn(_) => {
                             let inner = self
                                 .param_types
-                                .get(&(f.name.clone(), p.name.clone()))
+                                .get(&(crate::checker::Checker::func_key(f), p.name.clone()))
                                 .cloned()
                                 .unwrap_or_else(|| p.ty.clone());
                             Type::Ref(Box::new(inner))
@@ -140,7 +152,7 @@ impl<'a> Codegen<'a> {
                 self.out.push_str(&format!(
                     "static {} {}({});\n",
                     ret,
-                    self.fname(&f.name),
+                    self.fname_of(f),
                     params.join(", ")
                 ));
             }
@@ -148,8 +160,14 @@ impl<'a> Codegen<'a> {
         self.out.push('\n');
 
         for item in &self.prog.items {
-            if let Item::Func(f) = item {
-                self.emit_func(f);
+            match item {
+                Item::Func(f) => self.emit_func(f),
+                Item::Impl(im) => {
+                    for f in &im.funcs {
+                        self.emit_func(f);
+                    }
+                }
+                Item::Struct(_) => {}
             }
         }
         self.out
@@ -220,7 +238,7 @@ impl<'a> Codegen<'a> {
                 ParamKind::RefIn(_) => {
                     let inner = self
                         .param_types
-                        .get(&(f.name.clone(), p.name.clone()))
+                        .get(&(crate::checker::Checker::func_key(f), p.name.clone()))
                         .cloned()
                         .unwrap_or_else(|| p.ty.clone());
                     Type::Ref(Box::new(inner))
@@ -246,7 +264,7 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!(
                 "static {} {}({}) {{\n",
                 ret,
-                self.fname(&f.name),
+                self.fname_of(f),
                 params.join(", ")
             ));
         }
@@ -508,11 +526,25 @@ impl<'a> Codegen<'a> {
     /// чтобы не сталкиваться со стандартной библиотекой (`remove` из
     /// stdio.h, `index` из strings.h и т.д.). `main` остаётся как есть —
     /// это точка входа C.
+    ///
+    /// Метод из `impl`-блока получает имя `k_Тип_метод`, чтобы методы
+    /// разных типов с одинаковым именем не сталкивались.
     fn fname(&self, name: &str) -> String {
         if name == "main" {
             name.to_string()
+        } else if let Some((ty, m)) = name.split_once("::") {
+            // Ассоциированная функция: `Point::new` → `k_Point_new`.
+            format!("k_{}_{}", ty, m)
         } else {
             format!("k_{}", name)
+        }
+    }
+
+    /// Имя функции в C с учётом типа-владельца.
+    fn fname_of(&self, f: &FuncDecl) -> String {
+        match &f.owner {
+            Some(ty) => format!("k_{}_{}", ty, f.name),
+            None => self.fname(&f.name),
         }
     }
 
@@ -622,6 +654,26 @@ impl<'a> Codegen<'a> {
                 }
                 let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
                 format!("{}({})", self.fname(name), a.join(", "))
+            }
+            ExprKind::MethodCall { obj, name, args } => {
+                // Метод вызывается как `k_Тип_метод(получатель, args...)`.
+                let obj_ty = self.types.get(&obj.id).map(|t| t.deref().clone());
+                let ty_name = match obj_ty {
+                    Some(Type::Named(n)) => n,
+                    _ => String::new(),
+                };
+                // Если метод ждёт ссылку, а получатель — значение,
+                // передаём адрес: `&p` → `(&p)`. Решение принято
+                // проверщиком и записано по id выражения.
+                let take_ref = self.method_recv_ref.get(&e.id).copied().unwrap_or(false);
+                let recv = if take_ref {
+                    format!("(&{})", self.expr(obj))
+                } else {
+                    self.expr(obj)
+                };
+                let mut a: Vec<String> = vec![recv];
+                a.extend(args.iter().map(|x| self.expr(x)));
+                format!("k_{}_{}({})", ty_name, name, a.join(", "))
             }
             ExprKind::Unary { op, e } => match op {
                 UnOp::Neg => format!("(-{})", self.value_expr(e)),
