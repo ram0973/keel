@@ -1984,3 +1984,190 @@ fn main() int {
 }
 "#);
 }
+
+
+// ============================================================
+// Волна 7 (продолжение): ввод и аргументы командной строки
+// ============================================================
+
+#[test]
+fn read_line_возвращает_строку() {
+    ok(r#"
+fn main() int {
+    let s = read_line();
+    println(s);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn read_line_не_принимает_аргументов() {
+    fails(
+        r#"
+fn main() int {
+    let s = read_line(5);
+    return 0;
+}
+"#,
+        "`read_line` не принимает аргументов",
+    );
+}
+
+#[test]
+fn read_int_возвращает_int() {
+    ok(r#"
+fn main() int {
+    let n = read_int();
+    println(n + 1);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn read_int_не_принимает_аргументов() {
+    fails(
+        r#"
+fn main() int {
+    let n = read_int("5");
+    return 0;
+}
+"#,
+        "`read_int` не принимает аргументов",
+    );
+}
+
+#[test]
+fn read_int_результат_можно_сравнивать() {
+    ok(r#"
+fn main() int {
+    let n = read_int();
+    if n > 0 {
+        println("положительное");
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn read_line_результат_это_строка() {
+    // Строку из read_line можно конкатенировать и мерить.
+    ok(r#"
+fn main() int {
+    let s = read_line();
+    let t = s + "!";
+    println(len(t));
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn argc_возвращает_int() {
+    ok(r#"
+fn main() int {
+    let n = argc();
+    println(n);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn argc_не_принимает_аргументов() {
+    fails(
+        r#"
+fn main() int {
+    println(argc(1));
+    return 0;
+}
+"#,
+        "`argc` не принимает аргументов",
+    );
+}
+
+#[test]
+fn argv_возвращает_строку() {
+    ok(r#"
+fn main() int {
+    let s = argv(0);
+    println(s);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn argv_требует_один_аргумент() {
+    fails(
+        r#"
+fn main() int {
+    println(argv());
+    return 0;
+}
+"#,
+        "`argv` принимает один аргумент",
+    );
+}
+
+#[test]
+fn argv_требует_номер_типа_int() {
+    fails(
+        r#"
+fn main() int {
+    println(argv("0"));
+    return 0;
+}
+"#,
+        "`argv` ждёт номер аргумента типа `int`",
+    );
+}
+
+#[test]
+fn argv_в_цикле_по_argc() {
+    ok(r#"
+fn main() int {
+    for i in 0..argc() {
+        println(i, ": ", argv(i));
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn ввод_в_функции_не_только_в_main() {
+    // Встроенные функции доступны в любой функции, не только в main.
+    ok(r#"
+fn ask() string {
+    println("Имя?");
+    return read_line();
+}
+
+fn main() int {
+    let name = ask();
+    println("Привет, ", name);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn argc_и_argv_доступны_вне_main() {
+    // В C argc/argv есть только в main. В Keel — в любой функции,
+    // иначе встроенные функции бесполезны для реального кода.
+    ok(r#"
+fn show() {
+    for i in 0..argc() {
+        println(argv(i));
+    }
+}
+
+fn main() int {
+    show();
+    return 0;
+}
+"#);
+}

@@ -120,6 +120,53 @@ impl<'a> Codegen<'a> {
 
     pub fn generate(mut self) -> String {
         self.out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+        // Ввод: строка и целое из stdin.
+        //
+        // `read_line` читает строку целиком (до '\n'), а не по слову, как
+        // `scanf("%s")`: в имени может быть пробел. Буфер растёт по мере
+        // надобности; память не освобождается — см. волну 8.
+        //
+        // `read_int` читает СТРОКУ и разбирает её через `strtoll`, а не
+        // `scanf("%lld")`. Это принципиально: `scanf` оставляет '\n' в
+        // буфере ввода, и следующий `read_line` вернул бы пустую строку.
+        // Диагностика на нечисловой ввод — в самой программе (`read_int`
+        // возвращает 0, как `atoi` в C).
+        self.out.push_str(
+            "// Читает строку из stdin до '\\n' (сам '\\n' не входит).\n\
+             // Возвращает NULL в конце ввода (EOF).\n\
+             // Память не освобождается — см. волну 8 в docs/lang-design.md.\n\
+             static char* k_read_line(void) {\n\
+             \x20 size_t cap = 64, len = 0;\n\
+             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 if (!buf) return NULL;\n\
+             \x20 int c;\n\
+             \x20 while ((c = getchar()) != EOF && c != '\\n') {\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   buf[len++] = (char)c;\n\
+             \x20 }\n\
+             \x20 if (c == EOF && len == 0) { free(buf); return NULL; }\n\
+             \x20 buf[len] = '\\0';\n\
+             \x20 return buf;\n\
+             }\n\n\
+             // Читает целое из stdin. Читает СТРОКУ и разбирает её —\n\
+             // иначе перевод строки остался бы в буфере ввода\n\
+             // и сломал бы следующий read_line.\n\
+             static int64_t k_read_int(void) {\n\
+             \x20 char* s = k_read_line();\n\
+             \x20 if (!s) return 0;\n\
+             \x20 return (int64_t)strtoll(s, NULL, 10);\n\
+             }\n\n\
+             // То же, но NULL заменяется пустой строкой: в языке нет\n\
+             // Option, а печатать NULL нельзя.\n\
+             static const char* k_read_line_or_empty(void) {\n\
+             \x20 char* s = k_read_line();\n\
+             \x20 return s ? s : \"\";\n\
+             }\n\n\
+             // Аргументы командной строки. main() кладёт их сюда, чтобы\n\
+             // argc()/argv(i) работали в ЛЮБОЙ функции, а не только в main.\n\
+             static int64_t k_argc = 0;\n\
+             static char** k_argv = 0;\n\n",
+        );
         // Конкатенация строк: результат требует памяти, которой у операндов
         // нет. Копируем в свежий буфер из кучи.
         //
@@ -287,7 +334,7 @@ impl<'a> Codegen<'a> {
                 }
             };
             params.push(self.decl(&pt, &p.name));
-            // Параметр занимает имя в C —登记, чтобы `let` с тем же
+            // Параметр занимает имя в C — регистрируем, чтобы `let` с тем же
             // именем не переопределял его.
             self.shadow_count
                 .borrow_mut()
@@ -297,7 +344,12 @@ impl<'a> Codegen<'a> {
                 .insert(p.name.clone(), p.name.clone());
         }
         if f.name == "main" {
-            self.out.push_str("int main(void) {\n");
+            // `argc`/`argv` доступны из программы: main принимает их
+            // как в C и сразу кладёт в глобальные k_argc/k_argv, чтобы
+            // встроенные argc()/argv(i) работали в любой функции.
+            self.out.push_str("int main(int __k_argc, char** __k_argv) {\n");
+            self.out.push_str("  k_argc = __k_argc;\n");
+            self.out.push_str("  k_argv = __k_argv;\n");
         } else {
             let ret = match &f.ret {
                 Type::Void => "void".to_string(),
@@ -693,6 +745,26 @@ impl<'a> Codegen<'a> {
                     // каждый `printf` возвращает int, но результат
                     // выражения всё равно не используется.
                     return parts.join(", ");
+                }
+                // `read_line` — строка из stdin. NULL при EOF превращаем
+                // в пустую строку: в языке нет Option (волна 8).
+                if name == "read_line" {
+                    return "k_read_line_or_empty()".to_string();
+                }
+                // `read_int` — целое из stdin.
+                if name == "read_int" {
+                    return "k_read_int()".to_string();
+                }
+                // `argc` — сколько аргументов получила программа.
+                if name == "argc" {
+                    return "k_argc".to_string();
+                }
+                // `argv(i)` — i-й аргумент. Выход за границы дал бы
+                // NULL и падение при печати, поэтому подставляем
+                // пустую строку.
+                if name == "argv" {
+                    let i = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
+                    return format!("(k_argv[{0}] ? k_argv[{0}] : \"\")", i);
                 }
                 // `len` — длина строки или массива. Для массива размер
                 // известен из типа и подставляется числом; для строки

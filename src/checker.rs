@@ -1155,6 +1155,66 @@ impl Checker {
             return Type::Int;
         }
 
+        // `read_line` — строка из stdin. Память под неё берётся из кучи
+        // и не освобождается (см. волну 8).
+        if name == "read_line" {
+            if !args.is_empty() {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`read_line` не принимает аргументов, получено {}", args.len()),
+                ));
+            }
+            return Type::Str;
+        }
+
+        // `read_int` — целое из stdin. Читает строку и разбирает её,
+        // поэтому не оставляет мусора в буфере ввода (в отличие от
+        // `scanf`), и `read_line` после него работает ожидаемо.
+        if name == "read_int" {
+            if !args.is_empty() {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`read_int` не принимает аргументов, получено {}", args.len()),
+                ));
+            }
+            return Type::Int;
+        }
+
+        // `argc` — сколько аргументов получила программа, включая
+        // имя самой программы (как в C).
+        if name == "argc" {
+            if !args.is_empty() {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`argc` не принимает аргументов, получено {}", args.len()),
+                ));
+            }
+            return Type::Int;
+        }
+
+        // `argv(i)` — i-й аргумент командной строки. `argv(0)` — имя
+        // программы. Выход за границы не проверяется: размер массива
+        // известен только в рантайме (в Rust это `args()` с `Option`).
+        if name == "argv" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`argv` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`argv` ждёт номер аргумента типа `int`, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, ctx);
+            }
+            return Type::Str;
+        }
+
         let Some(fi) = self.funcs.get(name).cloned() else {
             self.diags.push(Diagnostic::new(line, format!("неизвестная функция `{}`", name)));
             return Type::Void;

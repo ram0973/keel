@@ -112,7 +112,11 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            let st = Command::new(&tmp_bin).status();
+            // Аргументы после имени файла передаются программе:
+            //     keelc run prog.keel один два
+            // внутри программы их видно через argc() и argv(i).
+            let prog_args: Vec<String> = args.iter().skip(3).cloned().collect();
+            let st = Command::new(&tmp_bin).args(&prog_args).status();
             match st {
                 Ok(s) => std::process::exit(s.code().unwrap_or(1)),
                 Err(e) => {

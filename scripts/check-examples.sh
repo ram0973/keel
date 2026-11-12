@@ -13,7 +13,9 @@ for f in examples/*.keel; do
         *" $base "*) echo "$(printf '%-32s' "$f") пропущен (черновик)"; continue ;;
     esac
     printf '%-32s ' "$f"
-    if cargo run --quiet -- run "$f" >/dev/null 2>&1; then
+    # stdin из /dev/null: примеры, читающие ввод (read_line), иначе
+    # ждали бы терминал и подвешивали проверку.
+    if cargo run --quiet -- run "$f" </dev/null >/dev/null 2>&1; then
         echo OK
     else
         echo ОШИБКА
