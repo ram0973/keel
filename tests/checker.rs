@@ -621,3 +621,143 @@ fn main() int {
 }
 "#);
 }
+
+// ============================================================
+// 11. Циклы
+// ============================================================
+
+#[test]
+fn for_по_диапазону_работает() {
+    ok(r#"
+fn main() int {
+    let mut total = 0;
+    for i in 0..10 {
+        total += i;
+    }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn for_по_диапазону_с_границами_переменными() {
+    ok(r#"
+fn main() int {
+    let lo = 2;
+    let hi = 5;
+    let mut n = 0;
+    for i in lo..hi {
+        n += 1;
+    }
+    return n;
+}
+"#);
+}
+
+#[test]
+fn for_по_массиву_работает() {
+    ok(r#"
+fn main() int {
+    let a [int; 3] = [1, 2, 3];
+    let mut total = 0;
+    for v in a {
+        total += v;
+    }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn break_и_continue_работают() {
+    ok(r#"
+fn main() int {
+    let mut n = 0;
+    for i in 0..10 {
+        if i == 3 {
+            break;
+        }
+        if i % 2 == 0 {
+            continue;
+        }
+        n += i;
+    }
+    return n;
+}
+"#);
+}
+
+#[test]
+fn break_вне_цикла_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    break;
+    return 0;
+}
+"#,
+        "`break` используется вне цикла",
+    );
+}
+
+#[test]
+fn continue_вне_цикла_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    continue;
+    return 0;
+}
+"#,
+        "`continue` используется вне цикла",
+    );
+}
+
+#[test]
+fn for_по_не_массиву_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let x = 5;
+    for v in x {
+        print(v);
+    }
+    return 0;
+}
+"#,
+        "работает по массиву",
+    );
+}
+
+#[test]
+fn границы_диапазона_должны_быть_int() {
+    fails(
+        r#"
+fn main() int {
+    for i in 0.."нет" {
+        print(i);
+    }
+    return 0;
+}
+"#,
+        "должна быть int",
+    );
+}
+
+#[test]
+fn вложенные_циклы_с_одним_именем_работают() {
+    // В C область действия `for` — всё тело, поэтому внутренний цикл
+    // с тем же именем перетирает внешний. Компилятор обязан развести
+    // имена.
+    ok(r#"
+fn main() int {
+    let mut n = 0;
+    for i in 0..3 {
+        for i in 0..3 {
+            n += 1;
+        }
+    }
+    return n;
+}
+"#);
+}

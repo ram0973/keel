@@ -1,0 +1,108 @@
+// Циклы: break, continue, for по диапазону, for по массиву.
+
+fn sum_to(n int) int {
+    let mut total int = 0;
+    for i in 0..n {
+        total += i;
+    }
+    return total;
+}
+
+fn first_divisible(a [int; 6], d int) int {
+    // Возвращает индекс первого элемента, кратного d, или -1.
+    let mut found int = -1;
+    for i in 0..6 {
+        if a[i] % d == 0 {
+            found = i;
+            break;
+        }
+    }
+    return found;
+}
+
+fn count_skipped(a [int; 6]) int {
+    // Считает элементы, кратные 3, пропуская остальные.
+    let mut n int = 0;
+    for i in 0..6 {
+        if a[i] % 3 != 0 {
+            continue;
+        }
+        n += 1;
+    }
+    return n;
+}
+
+fn sum_all(a [int; 6]) int {
+    let mut total int = 0;
+    for v in a {
+        total += v;
+    }
+    return total;
+}
+
+fn nested_pairs() int {
+    // Два вложенных цикла с одинаковым именем переменной.
+    let mut n int = 0;
+    for i in 0..3 {
+        for i in 0..3 {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+fn main() int {
+    // for по диапазону: правая граница исключительная, как в Rust и Zeta.
+    // `0..5` — это 0, 1, 2, 3, 4.
+    print(sum_to(5));            // 0+1+2+3+4 = 10
+    print(sum_to(0));            // 0
+
+    let mut counter int = 0;
+    for i in 0..10 {
+        counter += 1;
+        if counter == 3 {
+            break;
+        }
+    }
+    print(counter);              // 3
+
+    let mut skipped int = 0;
+    for i in 0..10 {
+        if i % 2 == 0 {
+            continue;
+        }
+        skipped += i;
+    }
+    print(skipped);              // 1+3+5+7+9 = 25
+
+    // Массив, переданный по значению, перемещается — поэтому каждый
+    // вызов получает свой литерал.
+    print(first_divisible([1, 2, 3, 4, 5, 6], 3));  // 2 (элемент 3, индекс 2)
+    print(count_skipped([1, 2, 3, 4, 5, 6]));       // 2 (3 и 6)
+    print(sum_all([1, 2, 3, 4, 5, 6]));             // 21
+    print(nested_pairs());            // 9
+
+    // for по массиву с break.
+    let data [int; 6] = [1, 2, 3, 4, 5, 6];
+    let mut found int = 0;
+    for v in data {
+        if v == 4 {
+            found = 1;
+            break;
+        }
+    }
+    print(found);                // 1
+
+    // `for v in a` даёт КОПИЮ элемента, а не ссылку. Поэтому изменить
+    // элемент массива через `v` нельзя — это ошибка компиляции.
+    //
+    // Для изменения элемента нужен явный индекс:
+    let mut nums [int; 3] = [1, 2, 3];
+    for i in 0..3 {
+        nums[i] = nums[i] * 10;
+    }
+    print(nums[0]);              // 10
+    print(nums[2]);              // 30
+
+    return 0;
+}

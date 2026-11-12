@@ -354,6 +354,38 @@ impl Parser {
             return Ok(Stmt::While { cond, body });
         }
 
+        if self.at_kw("break") {
+            let line = self.line();
+            self.bump();
+            self.expect_punct(";")?;
+            return Ok(Stmt::Break { line });
+        }
+
+        if self.at_kw("continue") {
+            let line = self.line();
+            self.bump();
+            self.expect_punct(";")?;
+            return Ok(Stmt::Continue { line });
+        }
+
+        if self.at_kw("for") {
+            let line = self.line();
+            self.bump();
+            let var = self.ident()?;
+            self.expect_kw("in")?;
+            // Диапазон: `for i in 0..10`.
+            let first = self.parse_expr()?;
+            if self.at_punct("..") {
+                self.bump();
+                let end = self.parse_expr()?;
+                let body = self.parse_block()?;
+                return Ok(Stmt::ForRange { line, var, start: first, end, body });
+            }
+            // Массив: `for x in arr`.
+            let body = self.parse_block()?;
+            return Ok(Stmt::ForEach { line, var, iter: first, body });
+        }
+
         // Выражение или присваивание.
         let lhs = self.parse_expr()?;
         if self.at_punct("=") {

@@ -227,6 +227,7 @@ impl Checker {
             scope,
             ret: f.ret.clone(),
             declared: declared.clone(),
+            loop_depth: 0,
         };
         self.check_block(&f.body, &mut ctx);
 
@@ -422,10 +423,92 @@ impl Checker {
                 // Тело проверяем дважды: второй проход стартует с состоянием
                 // после первого, поэтому ловит использование ссылки,
                 // инвалидированной в предыдущей итерации.
+                ctx.loop_depth += 1;
                 self.check_block(body, ctx);
                 self.check_block(body, ctx);
+                ctx.loop_depth -= 1;
+            }
+            Stmt::Break { line } => {
+                if ctx.loop_depth == 0 {
+                    self.diags.push(Diagnostic::new(
+                        *line,
+                        "`break` используется вне цикла".to_string(),
+                    ));
+                }
+            }
+            Stmt::Continue { line } => {
+                if ctx.loop_depth == 0 {
+                    self.diags.push(Diagnostic::new(
+                        *line,
+                        "`continue` используется вне цикла".to_string(),
+                    ));
+                }
+            }
+            Stmt::ForRange { line, var, start, end, body } => {
+                let st = self.type_of(start, ctx);
+                let et = self.type_of(end, ctx);
+                for (what, t) in [("начало", &st), ("конец", &et)] {
+                    if *t != Type::Int {
+                        self.diags.push(Diagnostic::new(
+                            *line,
+                            format!(
+                                "граница диапазона ({}) должна быть int, получено `{}`",
+                                what,
+                                t.name()
+                            ),
+                        ));
+                    }
+                }
+                // Переменная цикла — обычная локальная переменная.
+                self.declare_loop_var(var, Type::Int, ctx);
+                ctx.loop_depth += 1;
+                self.check_block(body, ctx);
+                // Как и у `while`, тело проверяем дважды.
+                self.check_block(body, ctx);
+                ctx.loop_depth -= 1;
+            }
+            Stmt::ForEach { line, var, iter, body } => {
+                let it = self.type_of(iter, ctx);
+                let it = it.deref().clone();
+                let elem_ty = match it {
+                    Type::Array(elem, _) => *elem,
+                    other => {
+                        self.diags.push(Diagnostic::new(
+                            *line,
+                            format!(
+                                "`for ... in` работает по массиву, получено `{}`",
+                                other.name()
+                            ),
+                        ));
+                        Type::Int
+                    }
+                };
+                self.declare_loop_var(var, elem_ty, ctx);
+                ctx.loop_depth += 1;
+                self.check_block(body, ctx);
+                self.check_block(body, ctx);
+                ctx.loop_depth -= 1;
             }
         }
+    }
+
+    /// Объявляет переменную цикла как обычную локальную переменную.
+    fn declare_loop_var(&mut self, name: &str, ty: Type, ctx: &mut Ctx) {
+        let uid = self.next_uid;
+        self.next_uid += 1;
+        self.names.insert(uid, name.to_string());
+        ctx.scope.insert(
+            name.to_string(),
+            Local {
+                uid,
+                ty,
+                path: Path::root(&uid.to_string()),
+                ref_target: None,
+                ref_uid: None,
+                moved: false,
+                is_mut: false,
+            },
+        );
     }
 
     fn check_assign(&mut self, lhs: &Expr, rhs: &Expr, ctx: &mut Ctx) {
@@ -978,4 +1061,7 @@ struct Ctx {
     ret: Type,
     /// Пути, объявленные изменяемыми в этой функции.
     declared: Vec<Path>,
+    /// Глубина вложенности циклов. `break` и `continue` допустимы
+    /// только внутри цикла.
+    loop_depth: usize,
 }

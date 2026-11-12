@@ -260,6 +260,31 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
+    /// `break` — выход из ближайшего цикла.
+    Break {
+        line: usize,
+    },
+    /// `continue` — к следующей итерации ближайшего цикла.
+    Continue {
+        line: usize,
+    },
+    /// `for x in a..b` — цикл по диапазону целых чисел.
+    /// Правая граница исключительная, как в Rust и Zeta: `0..3` — это
+    /// 0, 1, 2.
+    ForRange {
+        line: usize,
+        var: String,
+        start: Expr,
+        end: Expr,
+        body: Block,
+    },
+    /// `for x in arr` — цикл по элементам массива.
+    ForEach {
+        line: usize,
+        var: String,
+        iter: Expr,
+        body: Block,
+    },
 }
 
 #[derive(Clone, Debug)]

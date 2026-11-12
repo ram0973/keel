@@ -18,6 +18,16 @@ pub struct Codegen<'a> {
     ctype: HashMap<String, String>,
     /// Объявления структур — нужны для конструкторов и составных литералов.
     structs: HashMap<String, StructDecl>,
+    /// Текущая глубина вложенности циклов — для уникальных имён
+    /// переменных цикла.
+    loop_depth: usize,
+    /// Имена переменных цикла: имя в Keel -> имя в C. Нужно, потому что
+    /// в C область  — всё тело, и вложенные циклы с одинаковым
+    /// именем перетирают друг друга.
+    loop_vars: HashMap<String, String>,
+    /// Сейчас идёт инициализация структуры: литералы массивов в ней
+    /// должны быть в форме `{...}`, а не составными литералами C.
+    in_struct_init: std::cell::Cell<bool>,
 }
 
 impl<'a> Codegen<'a> {
@@ -37,6 +47,9 @@ impl<'a> Codegen<'a> {
             out: String::new(),
             ctype,
             structs,
+            loop_depth: 0,
+            loop_vars: HashMap::new(),
+            in_struct_init: std::cell::Cell::new(false),
         }
     }
 
@@ -265,7 +278,91 @@ impl<'a> Codegen<'a> {
                 }
                 self.out.push_str("  }\n");
             }
+            Stmt::Break { .. } => {
+                self.out.push_str("  break;\n");
+            }
+            Stmt::Continue { .. } => {
+                self.out.push_str("  continue;\n");
+            }
+            Stmt::ForRange { var, start, end, body, .. } => {
+                // Правая граница исключительная, как в Rust и Zeta:
+                // `0..3` — это 0, 1, 2. Поэтому условие `<`.
+                // Переменная цикла объявлена в самом `for` — иначе два
+                // вложенных цикла с одинаковым именем конфликтуют в C.
+                // В C область действия `for` охватывает всё тело, поэтому
+                // внутренний цикл с тем же именем перетирает внешний. Чтобы
+                // этого не было, внутренние циклы получают своё имя
+                // (по номеру вложенности).
+                let (cvar, _cstart) = self.loop_var(var);
+                self.out.push_str(&format!(
+                    "  for ({} = {}; {} < {}; {}++) {{\n",
+                    self.decl(&Type::Int, &cvar),
+                    self.expr(start),
+                    cvar,
+                    self.expr(end),
+                    cvar
+                ));
+                // На время тела цикла имя переменной в Keel отображается
+                // в имя в C.
+                self.loop_vars.insert(var.clone(), cvar);
+                for s in &body.stmts {
+                    self.emit_stmt(s);
+                }
+                self.loop_vars.remove(var);
+                self.loop_depth -= 1;
+                self.out.push_str("  }\n");
+            }
+            Stmt::ForEach { var, iter, body, .. } => {
+                // Обход массива: индексируемся, копия элемента попадает
+                // в переменную цикла.
+                let arr = self.expr(iter);
+                let (elem_ty, len) = self.array_info(iter);
+                let (cvar, _) = self.loop_var(var);
+                self.out.push_str(&format!(
+                    "  for (int64_t __ki = 0; __ki < {}; __ki++) {{\n",
+                    len
+                ));
+                self.out.push_str(&format!(
+                    "    {} = {}[__ki];\n",
+                    self.decl(&elem_ty, &cvar),
+                    arr
+                ));
+                self.loop_vars.insert(var.clone(), cvar);
+                for s in &body.stmts {
+                    self.emit_stmt(s);
+                }
+                self.loop_vars.remove(var);
+                self.loop_depth -= 1;
+                self.out.push_str("  }\n");
+            }
         }
+    }
+
+    /// Имя переменной цикла в C. Вложенные циклы с одинаковым именем
+    /// перетирают друг друга (в C область `for` — всё тело), поэтому
+    /// каждый уровень вложенности получает свой суффикс.
+    fn loop_var(&mut self, var: &str) -> (String, String) {
+        let depth = self.loop_depth;
+        self.loop_depth += 1;
+        let name = if depth == 0 {
+            var.to_string()
+        } else {
+            format!("{}__{}", var, depth)
+        };
+        (name, var.to_string())
+    }
+
+    /// Тип элемента и длина массива — для обхода `for ... in`.
+    fn array_info(&self, iter: &Expr) -> (Type, usize) {
+        let t = match self.types.get(&iter.id) {
+            Some(Type::Array(elem, n)) => Some((elem.as_ref().clone(), *n)),
+            Some(Type::Ref(inner)) => match inner.as_ref() {
+                Type::Array(elem, n) => Some((elem.as_ref().clone(), *n)),
+                _ => None,
+            },
+            _ => None,
+        };
+        t.unwrap_or((Type::Int, 0))
     }
 
     /// Элементы массива-литерала.
@@ -286,6 +383,7 @@ impl<'a> Codegen<'a> {
             _ => vec![],
         };
         let mut out = Vec::new();
+        let prev = self.in_struct_init.replace(true);
         for (i, f) in s.fields.iter().enumerate() {
             let v = match args.get(i) {
                 Some(a) => self.expr(a),
@@ -293,6 +391,7 @@ impl<'a> Codegen<'a> {
             };
             out.push(format!(".{} = {}", f.name, v));
         }
+        self.in_struct_init.set(prev);
         out
     }
 
@@ -337,7 +436,10 @@ impl<'a> Codegen<'a> {
                 out.push('"');
                 out
             }
-            ExprKind::Ident(name) => name.clone(),
+            ExprKind::Ident(name) => match self.loop_vars.get(name) {
+                Some(cname) => cname.clone(),
+                None => name.clone(),
+            },
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
@@ -387,6 +489,7 @@ impl<'a> Codegen<'a> {
                 if let Some(s) = self.structs.get(name) {
                     let cname = self.ctype.get(name).cloned().unwrap_or_else(|| name.clone());
                     let mut items = Vec::new();
+                    let prev = self.in_struct_init.replace(true);
                     for (i, f) in s.fields.iter().enumerate() {
                         let v = match args.get(i) {
                             Some(a) => self.expr(a),
@@ -394,6 +497,7 @@ impl<'a> Codegen<'a> {
                         };
                         items.push(format!(".{} = {}", f.name, v));
                     }
+                    self.in_struct_init.set(prev);
                     return format!("({}){{{}}}", cname, items.join(", "));
                 }
                 let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
@@ -446,8 +550,23 @@ impl<'a> Codegen<'a> {
                 )
             }
             ExprKind::Array(items) => {
+                // В выражении литерал массива — это составной литерал C
+                // `(T[]){...}`. Голые `{...}` допустимы только в
+                // инициализации, но не как аргумент вызова.
+                //
+                // Но в инициализации структуры (`World { entities = [...] }`)
+                // C требует константный инициализатор, а составной литерал
+                // им не является. Поэтому там оставляем `{...}`.
+                if self.in_struct_init.get() {
+                    let elems: Vec<String> = items.iter().map(|x| self.expr(x)).collect();
+                    return format!("{{{}}}", elems.join(", "));
+                }
                 let elems: Vec<String> = items.iter().map(|x| self.expr(x)).collect();
-                format!("{{{}}}", elems.join(", "))
+                let elem_ty = match self.types.get(&e.id) {
+                    Some(Type::Array(t, _)) => self.ty(t),
+                    _ => "int64_t".to_string(),
+                };
+                format!("({}[]){{{}}}", elem_ty, elems.join(", "))
             }
             ExprKind::Ref(inner) => {
                 // &expr → &(expr). Если expr — уже ссылка, разыменовываем.
