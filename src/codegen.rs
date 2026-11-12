@@ -435,6 +435,16 @@ impl<'a> Codegen<'a> {
                 };
                 format!("({} {} {})", ls, opstr, rs)
             }
+            ExprKind::If { cond, then_expr, else_expr } => {
+                // Тернарный оператор C: значение — результат выбранной
+                // ветви, типы у обеих ветвей совпадают (проверил checker).
+                format!(
+                    "({} ? {} : {})",
+                    self.value_expr(cond),
+                    self.value_expr(then_expr),
+                    self.value_expr(else_expr)
+                )
+            }
             ExprKind::Array(items) => {
                 let elems: Vec<String> = items.iter().map(|x| self.expr(x)).collect();
                 format!("{{{}}}", elems.join(", "))

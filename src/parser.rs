@@ -320,6 +320,17 @@ impl Parser {
         }
 
         if self.at_kw("if") {
+            // Сначала пробуем форму выражения: `if cond { a } else { b }`.
+            // Если ветви — не одиночные выражения, откатываемся к форме
+            // оператора (`if cond { stmts } else { stmts }`).
+            let save = (self.pos, self.next_id);
+            match self.parse_if_expr() {
+                Ok(e) => return Ok(Stmt::Expr(e)),
+                Err(_) => {
+                    self.pos = save.0;
+                    self.next_id = save.1;
+                }
+            }
             self.bump();
             let cond = self.parse_expr()?;
             let then_block = self.parse_block()?;
@@ -351,13 +362,71 @@ impl Parser {
             self.expect_punct(";")?;
             return Ok(Stmt::Assign { lhs, rhs });
         }
+        // Составное присваивание: `x += e` → `x = x + e`.
+        // Десугарь здесь, в парсере: проверка и кодогенерация не меняются.
+        for (punct, op) in [
+            ("+=", BinOp::Add),
+            ("-=", BinOp::Sub),
+            ("*=", BinOp::Mul),
+            ("/=", BinOp::Div),
+            ("%=", BinOp::Rem),
+        ] {
+            if self.at_punct(punct) {
+                self.bump();
+                let rhs = self.parse_expr()?;
+                self.expect_punct(";")?;
+                let line = lhs.line;
+                // Копия левой части — с новым id, чтобы не совпадала с
+                // исходным выражением в дереве.
+                let lhs_copy = Expr { id: self.id(), line, kind: lhs.kind.clone() };
+                let bin = Expr {
+                    id: self.id(),
+                    line,
+                    kind: ExprKind::Binary {
+                        op,
+                        l: Box::new(lhs_copy),
+                        r: Box::new(rhs),
+                    },
+                };
+                return Ok(Stmt::Assign { lhs, rhs: bin });
+            }
+        }
         self.expect_punct(";")?;
         let _ = line;
         Ok(Stmt::Expr(lhs))
     }
 
     fn parse_expr(&mut self) -> PResult<Expr> {
+        // `if` как выражение — наименьший приоритет: оно не входит в
+        // состав бинарных операций (`1 + if ...` не допускается).
+        if self.at_kw("if") {
+            return self.parse_if_expr();
+        }
         self.parse_or()
+    }
+
+    /// `if cond { expr } else { expr }` — значение выбранной ветви.
+    /// Ветви — одиночные выражения: блоки с операторами разбираются формой
+    /// оператора `if`.
+    fn parse_if_expr(&mut self) -> PResult<Expr> {
+        let line = self.line();
+        self.expect_kw("if")?;
+        let cond = self.parse_expr()?;
+        self.expect_punct("{")?;
+        let then_expr = self.parse_expr()?;
+        self.expect_punct("}")?;
+        self.expect_kw("else")?;
+        self.expect_punct("{")?;
+        let else_expr = self.parse_expr()?;
+        self.expect_punct("}")?;
+        Ok(self.mk(
+            line,
+            ExprKind::If {
+                cond: Box::new(cond),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            },
+        ))
     }
 
     fn parse_or(&mut self) -> PResult<Expr> {
@@ -524,6 +593,11 @@ impl Parser {
                 match s.as_str() {
                     "true" => Ok(self.mk(line, ExprKind::Bool(true))),
                     "false" => Ok(self.mk(line, ExprKind::Bool(false))),
+                    "if" => Err(format!(
+                        "строка {}: `if` как выражение используется целиком: \
+                         `1 + if ...` не допускается",
+                        line
+                    )),
                     _ => Ok(self.mk(line, ExprKind::Ident(s))),
                 }
             }

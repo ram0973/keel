@@ -198,6 +198,13 @@ pub enum ExprKind {
     Unary { op: UnOp, e: Box<Expr> },
     Binary { op: BinOp, l: Box<Expr>, r: Box<Expr> },
     Ref(Box<Expr>),
+    /// `if cond { a } else { b }` как выражение. Ветви — одиночные
+    /// выражения; значение — результат выбранной ветви.
+    If {
+        cond: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
 }
 
 #[derive(Clone, Debug)]

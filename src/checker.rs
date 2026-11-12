@@ -130,8 +130,18 @@ impl Checker {
     }
 
     /// Имена параметров функции — только их пути требуют mut-контракта.
-    fn param_names(f: &FuncDecl) -> Vec<String> {
-        f.params.iter().map(|p| p.name.clone()).collect()
+    /// Имена параметров-ссылок: только они требуют mut-контракта.
+    ///
+    /// Параметр по значению перемещён в функцию — мутация его не видна
+    /// вызывающему, поэтому объявлять её не нужно (как и локальные
+    /// переменные). Контракт нужен только для ссылок: там мутация
+    /// инвалидирует ссылки вызывающего.
+    fn ref_param_names(f: &FuncDecl) -> Vec<String> {
+        f.params
+            .iter()
+            .filter(|p| !matches!(p.kind, ParamKind::Owned))
+            .map(|p| p.name.clone())
+            .collect()
     }
 
     // --------------------------------------------------------
@@ -223,7 +233,7 @@ impl Checker {
         // Проверка mut-контракта: тело не должно менять то, что не объявлено.
         // Локальные переменные — собственность функции, их объявлять не нужно;
         // контракт касается только путей, уходящих в параметры.
-        let params = Self::param_names(f);
+        let params = Self::ref_param_names(f);
         for (path, _is_replace) in self.modified.clone() {
             // Пропускаем изменения локальных переменных.
             if !params.contains(&path.root) {
@@ -712,6 +722,34 @@ impl Checker {
                         Type::Int
                     }
                 }
+            }
+            ExprKind::If { cond, then_expr, else_expr } => {
+                self.type_of(cond, ctx);
+                let tt = self.type_of(then_expr, ctx);
+                let et = self.type_of(else_expr, ctx);
+                // Ветви должны давать одно значение: иначе результат
+                // `if` зависит от того, какая ветвь выполнилась, и тип
+                // выражения становится неопределённым.
+                if !self.types_compatible(tt.clone(), &et) {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!(
+                            "несовпадение типов в ветвях `if`: `{}` и `{}`",
+                            tt.name(),
+                            et.name()
+                        ),
+                    ));
+                }
+                // Ветвь забирает значение — значит, перемещение. Ветви
+                // обе: выполнится только одна, но после `if` обе
+                // переменные считаются перемещёнными (как в Rust).
+                if !tt.is_ref() {
+                    self.record_move(then_expr, ctx);
+                }
+                if !et.is_ref() {
+                    self.record_move(else_expr, ctx);
+                }
+                tt
             }
         }
     }
