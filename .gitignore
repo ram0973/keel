@@ -12,3 +12,7 @@ msg-fix.txt
 reword.sh
 seq-editor.sh
 
+# Черновики и временные примеры пользователя.
+examples/users-manual.keel
+examples/_*.keel
+

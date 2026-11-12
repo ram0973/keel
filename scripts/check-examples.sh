@@ -5,7 +5,13 @@ set -e
 cd "$(dirname "$0")/.."
 
 echo "=== примеры ==="
+# Черновики пользователя — не наши, проверять их не нужно.
+SKIP="users-manual.keel"
 for f in examples/*.keel; do
+    base=$(basename "$f")
+    case " $SKIP " in
+        *" $base "*) echo "$(printf '%-32s' "$f") пропущен (черновик)"; continue ;;
+    esac
     printf '%-32s ' "$f"
     if cargo run --quiet -- run "$f" >/dev/null 2>&1; then
         echo OK

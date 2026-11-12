@@ -844,3 +844,36 @@ fn main() int {
         "инвалидирована",
     );
 }
+
+#[test]
+fn затенение_переменной_работает() {
+    // Второе `let x` затеняет первое. В C это «redefinition» — нужно
+    // развести имена, иначе сгенерированный код не компилируется.
+    ok(r#"
+struct Counter { n int; }
+fn main() int {
+    let a = Counter(10);
+    let a = Counter(20);
+    println(a.n);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn затенение_не_ломает_прежнее_значение() {
+    // Первое значение используется ДО затенения — оно должно остаться
+    // доступным.
+    ok(r#"
+struct Counter { n int; }
+fn take(c Counter) int { return c.n; }
+fn main() int {
+    let a = Counter(10);
+    let first = take(a);
+    let a = Counter(20);
+    println(first);
+    println(a.n);
+    return 0;
+}
+"#);
+}

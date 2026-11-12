@@ -28,6 +28,15 @@ pub struct Codegen<'a> {
     /// Сейчас идёт инициализация структуры: литералы массивов в ней
     /// должны быть в форме `{...}`, а не составными литералами C.
     in_struct_init: std::cell::Cell<bool>,
+    /// Текущее имя переменной в C для каждого имени в Keel. Второе
+    /// `let x` затеняет первое, но в C это «redefinition» — поэтому
+    /// затенённая переменная получает другое имя: `x`, `x__1`, `x__2`.
+    ///
+    /// Область видимости в Keel плоская, поэтому после `let x` все
+    /// обращения к `x` относятся к новой переменной — и карта это знает.
+    var_names: std::cell::RefCell<HashMap<String, String>>,
+    /// Счётчик затенений по каждому имени.
+    shadow_count: std::cell::RefCell<HashMap<String, usize>>,
 }
 
 impl<'a> Codegen<'a> {
@@ -50,6 +59,8 @@ impl<'a> Codegen<'a> {
             loop_depth: 0,
             loop_vars: HashMap::new(),
             in_struct_init: std::cell::Cell::new(false),
+            shadow_count: std::cell::RefCell::new(HashMap::new()),
+            var_names: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -148,6 +159,9 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_func(&mut self, f: &FuncDecl) {
+        // Имена переменных — свои в каждой функции.
+        self.var_names.borrow_mut().clear();
+        self.shadow_count.borrow_mut().clear();
         let mut params = Vec::new();
         for p in &f.params {
             let pt = match &p.kind {
@@ -164,6 +178,14 @@ impl<'a> Codegen<'a> {
                 }
             };
             params.push(self.decl(&pt, &p.name));
+            // Параметр занимает имя в C —登记, чтобы `let` с тем же
+            // именем не переопределял его.
+            self.shadow_count
+                .borrow_mut()
+                .insert(p.name.clone(), 1);
+            self.var_names
+                .borrow_mut()
+                .insert(p.name.clone(), p.name.clone());
         }
         if f.name == "main" {
             self.out.push_str("int main(void) {\n");
@@ -196,6 +218,8 @@ impl<'a> Codegen<'a> {
                     Some(t) => t.clone(),
                     None => self.types.get(&init.id).cloned().unwrap_or(Type::Int),
                 };
+                // Затенение: второе `let x` получает другое имя в C.
+                let name = &self.fresh_var_name(name);
                 match &t {
                     Type::Array(elem, n) => {
                         let items = self.array_items(init);
@@ -346,6 +370,34 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Новое имя переменной в C с учётом затенений: первое объявление
+    /// `x`, второе — `x__1`, третье — `x__2`. Иначе C скажет
+    /// «redefinition». Имя запоминается в `var_names`, чтобы обращения
+    /// к переменной шли к правильному объявлению.
+    fn fresh_var_name(&self, name: &str) -> String {
+        let mut counts = self.shadow_count.borrow_mut();
+        let n = counts.get(name).copied().unwrap_or(0);
+        counts.insert(name.to_string(), n + 1);
+        let cname = if n == 0 {
+            name.to_string()
+        } else {
+            format!("{}__{}", name, n)
+        };
+        self.var_names
+            .borrow_mut()
+            .insert(name.to_string(), cname.clone());
+        cname
+    }
+
+    /// Имя переменной в C по её имени в Keel (с учётом затенений).
+    fn var_name(&self, name: &str) -> String {
+        self.var_names
+            .borrow()
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string())
+    }
+
     /// Имя переменной цикла в C. Вложенные циклы с одинаковым именем
     /// перетирают друг друга (в C область `for` — всё тело), поэтому
     /// каждый уровень вложенности получает свой суффикс.
@@ -446,7 +498,7 @@ impl<'a> Codegen<'a> {
             }
             ExprKind::Ident(name) => match self.loop_vars.get(name) {
                 Some(cname) => cname.clone(),
-                None => name.clone(),
+                None => self.var_name(name),
             },
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
