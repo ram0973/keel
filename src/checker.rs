@@ -44,6 +44,14 @@ impl Diagnostic {
 // Локальные переменные
 // ============================================================
 
+/// Ссылка на локальную переменную, спрятанная внутри значения.
+///
+/// Первый элемент — путь ВНУТРИ значения (например `[Field("r")]` для
+/// поля `r` структуры), второй — путь, на который эта ссылка указывает.
+/// Нужен, чтобы поймать `let h = H(&i); return h;`: сам `h` — не ссылка,
+/// но внутри него лежит ссылка на локальную `i`.
+type Escape = (Vec<Seg>, Path);
+
 #[derive(Clone)]
 struct Local {
     /// Уникальный идентификатор локальной переменной.
@@ -59,6 +67,9 @@ struct Local {
     moved: bool,
     /// Переменную разрешено переприсваивать.
     is_mut: bool,
+    /// Ссылки на локальные переменные, лежащие внутри значения.
+    /// Пусто у всего, что не содержит ссылок на локальные.
+    escapes: Vec<Escape>,
 }
 
 #[derive(Clone)]
@@ -330,6 +341,7 @@ impl Checker {
                 ref_uid: None,
                 moved: false,
                 is_mut: p.mutable,
+                escapes: Vec::new(),
             };
 
             // Путь параметра-ссылки должен начинаться с его же имени либо
@@ -522,6 +534,11 @@ impl Checker {
                     Path::root(&uid.to_string())
                 };
 
+                // Ссылки на локальные, спрятанные внутри значения:
+                // `let h = H(&i);` — сам `h` не ссылка, но внутри
+                // лежит ссылка на локальную `i`.
+                let escapes = self.escapes_in(init, ctx);
+
                 ctx.scope.insert(
                     name.clone(),
                     Local {
@@ -532,6 +549,7 @@ impl Checker {
                         ref_uid,
                         moved: false,
                         is_mut: *mutable,
+                        escapes,
                     },
                 );
             }
@@ -554,6 +572,8 @@ impl Checker {
                             ),
                         ));
                     }
+                    // Ссылка не должна пережить кадр, в котором создана.
+                    self.check_return_escapes(e, ctx);
                     self.record_move(e, ctx);
                 }
             }
@@ -661,6 +681,7 @@ impl Checker {
                 ref_uid: None,
                 moved: false,
                 is_mut: false,
+                escapes: Vec::new(),
             },
         );
     }
@@ -751,6 +772,29 @@ impl Checker {
         }
 
         self.record_move(rhs, ctx);
+
+        // Ссылка на локальную переменную не должна уехать из функции
+        // через присваивание: `h.r = &i;` в поле ПАРАМЕТРА кладёт
+        // ссылку в кадр вызывающего, который переживёт наш кадр.
+        if root_kind_is_param(&path) {
+            for (segs, target) in self.escapes_in(rhs, ctx) {
+                let what = if segs.is_empty() {
+                    format!("`{}`", self.render(&path))
+                } else {
+                    format!("поле `{}` в `{}`", self.render_segs(&segs), self.render(&path))
+                };
+                self.diags.push(Diagnostic::new(
+                    rhs.line,
+                    format!(
+                        "{} получает ссылку на локальную переменную `{}` — \
+                         она перестанет существовать после возврата; \
+                         ссылаться можно только на параметр",
+                        what,
+                        self.render(&target)
+                    ),
+                ));
+            }
+        }
 
         // Присваивание ЗАМЕНЯЕТ значение по пути.
         self.modified.push((path.clone(), true));
@@ -1322,6 +1366,192 @@ impl Checker {
         }
     }
 
+    // --------------------------------------------------------
+    // Анализ выхода (escape analysis)
+    // --------------------------------------------------------
+    //
+    // Ссылка не должна пережить кадр, в котором создана. Проверяем
+    // это на границе функции: значение, содержащее ссылку на локальную
+    // переменную, не может быть возвращено наружу.
+    //
+    // Почему это нужно. Путь ссылки привязан к локальной переменной,
+    // а переменная умирает вместе с кадром. Ссылка, уехавшая в
+    // структуре, переживает кадр — и чтение поля после возврата даёт
+    // мусор (use-after-free). Компилятор C такое не ловит: он видит
+    // обычный указатель.
+
+    /// Ссылки на локальные переменные, спрятанные внутри значения.
+    ///
+    /// Возвращает список пар «путь внутри значения → цель ссылки».
+    /// Для `H(&i)` это `[([Field("r")], i)]`: в поле `r` лежит ссылка
+    /// на локальную `i`.
+    ///
+    /// Ссылка на ПАРАМЕТР сюда не попадает: параметр живёт в кадре
+    /// вызывающего, а не в нашем, поэтому возвращать его наружу
+    /// безопасно.
+    fn escapes_in(&mut self, e: &Expr, ctx: &mut Ctx) -> Vec<Escape> {
+        match &e.kind {
+            // Ссылка на локальную переменную — утечка.
+            ExprKind::Ref(inner) => {
+                let Some(path) = self.place_path_of(inner, ctx) else {
+                    return Vec::new();
+                };
+                if self.path_is_local(&path, ctx) {
+                    vec![(Vec::new(), path)]
+                } else {
+                    Vec::new()
+                }
+            }
+            // Переменная: её собственные утечки. Если это ссылка,
+            // `escapes` уже содержит её саму.
+            ExprKind::Ident(name) => {
+                let Some(local) = ctx.scope.get(name).cloned() else {
+                    return Vec::new();
+                };
+                // Ссылка-переменная: цель лежит прямо в ней.
+                if let Some(t) = local.ref_target {
+                    if self.path_is_local(&t, ctx) {
+                        return vec![(Vec::new(), t)];
+                    }
+                    return Vec::new();
+                }
+                local.escapes
+            }
+            // Поле: утечки объекта, у которых этот сегмент — первый.
+            //
+            // Если первым сегментом утечки стоит именно это поле, значит
+            // мы достали саму ссылку — сегмент «схлопывается». Иначе
+            // в этом поле ссылки нет, и утечка не проходит.
+            ExprKind::Field { obj, name } => {
+                let seg = Seg::Field(name.clone());
+                self.escapes_in(obj, ctx)
+                    .into_iter()
+                    .filter_map(|(mut segs, t)| {
+                        if segs.is_empty() {
+                            // Само значение — ссылка; поле читается
+                            // внутри неё.
+                            segs.insert(0, seg.clone());
+                            Some((segs, t))
+                        } else if segs[0] == seg {
+                            segs.remove(0);
+                            Some((segs, t))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            // Индекс: то же, с сегментом индекса.
+            ExprKind::Index { obj, idx } => {
+                let seg = match &idx.kind {
+                    ExprKind::Int(n) => Seg::Idx(*n),
+                    _ => Seg::Elems,
+                };
+                self.escapes_in(obj, ctx)
+                    .into_iter()
+                    .filter_map(|(mut segs, t)| {
+                        if segs.is_empty() {
+                            segs.insert(0, seg.clone());
+                            Some((segs, t))
+                        } else if segs[0] == seg {
+                            segs.remove(0);
+                            Some((segs, t))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            // Конструктор структуры: утечки каждого аргумента
+            // с именем соответствующего поля.
+            ExprKind::Call { callee, args } => {
+                let ExprKind::Ident(cname) = &callee.kind else {
+                    return Vec::new();
+                };
+                let Some(s) = self.structs.get(cname).cloned() else {
+                    return Vec::new();
+                };
+                let mut out = Vec::new();
+                for (i, a) in args.iter().enumerate() {
+                    let Some(field) = s.fields.get(i) else { break };
+                    for (mut segs, t) in self.escapes_in(a, ctx) {
+                        segs.insert(0, Seg::Field(field.name.clone()));
+                        out.push((segs, t));
+                    }
+                }
+                out
+            }
+            // Литерал массива: утечки каждого элемента.
+            ExprKind::Array(items) => {
+                let mut out = Vec::new();
+                for (i, a) in items.iter().enumerate() {
+                    for (mut segs, t) in self.escapes_in(a, ctx) {
+                        segs.insert(0, Seg::Idx(i as i64));
+                        out.push((segs, t));
+                    }
+                }
+                out
+            }
+            // Ветвление: объединяем утечки обеих ветвей.
+            ExprKind::If { then_expr, else_expr, .. } => {
+                let mut out = self.escapes_in(then_expr, ctx);
+                out.extend(self.escapes_in(else_expr, ctx));
+                out
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Указывает ли путь на локальную переменную (а не на параметр).
+    ///
+    /// Корень пути локальной переменной — её числовой uid; корень
+    /// параметра — его имя. Это и различает случаи: вернуть ссылку
+    /// на параметр можно, на локальную — нет.
+    fn path_is_local(&self, p: &Path, _ctx: &Ctx) -> bool {
+        p.root.parse::<u32>().is_ok()
+    }
+
+    /// Проверяет, что возвращаемое значение не тащит наружу ссылку
+    /// на локальную переменную.
+    fn check_return_escapes(&mut self, e: &Expr, ctx: &mut Ctx) {
+        let escapes = self.escapes_in(e, ctx);
+        for (segs, target) in escapes {
+            let where_ = if segs.is_empty() {
+                "возвращаемое значение".to_string()
+            } else {
+                format!("поле `{}` возвращаемого значения", self.render_segs(&segs))
+            };
+            self.diags.push(Diagnostic::new(
+                e.line,
+                format!(
+                    "{} содержит ссылку на локальную переменную `{}` — \
+                     она перестанет существовать после возврата; \
+                     вернуть можно только ссылку на параметр",
+                    where_,
+                    self.render(&target)
+                ),
+            ));
+        }
+    }
+
+    /// Путь внутри значения в читаемом виде: `r`, `items[0].r`.
+    fn render_segs(&self, segs: &[Seg]) -> String {
+        let mut s = String::new();
+        for seg in segs {
+            match seg {
+                Seg::Field(f) => {
+                    if !s.is_empty() {
+                        s.push('.');
+                    }
+                    s.push_str(f);
+                }
+                Seg::Idx(i) => s.push_str(&format!("[{}]", i)),
+                Seg::Elems => s.push_str("[]"),
+            }
+        }
+        s
+    }
+
     /// Помечает источник перемещённым, если он не Copy.
     fn record_move(&mut self, e: &Expr, ctx: &mut Ctx) {
         let ExprKind::Ident(name) = &e.kind else { return };
@@ -1382,6 +1612,14 @@ impl Checker {
 enum RootKind {
     Owned(u32),
     ThroughRef,
+}
+
+/// Указывает ли путь на параметр функции (корень — имя, не uid).
+///
+/// Параметр живёт в кадре ВЫЗЫВАЮЩЕГО, поэтому всё, что мы запишем
+/// по его пути, переживёт наш кадр. Локальная переменная — нет.
+fn root_kind_is_param(p: &Path) -> bool {
+    p.root.parse::<u32>().is_err()
 }
 
 struct Ctx {
