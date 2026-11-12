@@ -1062,6 +1062,78 @@ fn main() int {
 }
 
 #[test]
+fn ссылка_вместо_значения_ловится() {
+    // Параметр по значению, а передан адрес. Раньше это проходило
+    // проверку и падало уже в C-компиляторе, где причина не видна.
+    fails(
+        r#"
+struct User { name string; age int; }
+fn take(u User) { println(u.age); }
+fn main() int {
+    let u = User("John", 26);
+    take(&u);
+    return 0;
+}
+"#,
+        "ожидает `User`, получен `&User`",
+    );
+}
+
+#[test]
+fn значение_вместо_ссылки_ловится() {
+    // Обратный случай: параметр-ссылка, а передан объект.
+    fails(
+        r#"
+struct User { name string; age int; }
+fn take(u &User) { println(u.age); }
+fn main() int {
+    let u = User("John", 26);
+    take(u);
+    return 0;
+}
+"#,
+        "ожидает ссылку",
+    );
+}
+
+#[test]
+fn поглощающий_метод_забирает_объект() {
+    // `self User` уместен, когда метод действительно потребляет объект:
+    // `into_name` возвращает поле, сам объект больше не нужен.
+    ok(r#"
+struct User { name string; age int; }
+impl User {
+    fn into_name(self User) string { return self.name; }
+}
+fn main() int {
+    let u = User("John", 26);
+    let n = u.into_name();
+    println(n);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn мутация_своей_копии_не_требует_mut_у_вызывающего() {
+    // Параметр по значению перемещён в функцию: его изменение
+    // вызывающему не видно, поэтому `mut` у владельца не нужен.
+    // Иначе `bumped(u)` требовал бы `let mut u`, хотя `u` уходит.
+    ok(r#"
+struct User { name string; age int; }
+fn bumped(u User mut) int {
+    u.age = u.age + 1;
+    return u.age;
+}
+fn main() int {
+    let u = User("John", 26);
+    println(bumped(u));
+    return 0;
+}
+"#);
+}
+
+#[test]
 fn неизвестный_метод_ловится() {
     fails(
         r#"

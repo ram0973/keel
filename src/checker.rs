@@ -1041,6 +1041,20 @@ impl Checker {
             let Some(param) = fi.params.get(i) else { continue };
             match param.kind {
                 ParamKind::Owned => {
+                    // Тип проверяется и здесь: `take(&u)` там, где ждут
+                    // значение, — ошибка. Без этой проверки она всплывала
+                    // только в C-компиляторе, где причина не видна.
+                    if !self.types_compatible(param.ty.clone(), &t) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!(
+                                "параметр `{}` ожидает `{}`, получен `{}`",
+                                param.name,
+                                param.ty.name(),
+                                t.name()
+                            ),
+                        ));
+                    }
                     // Передача владения — перемещение.
                     if !self.is_copy(&t) {
                         self.record_move(a, ctx);
@@ -1076,7 +1090,11 @@ impl Checker {
                 continue;
             };
             let effective = Path { root: base.root.clone(), segs: mp.segs.clone() };
-            self.check_owner_is_mut(&effective, line, ctx);
+            // Параметр по значению перемещён в функцию — его изменение
+            // вызывающему не видно, поэтому `mut` у владельца не нужен.
+            if !matches!(fi.params[idx].kind, ParamKind::Owned) {
+                self.check_owner_is_mut(&effective, line, ctx);
+            }
             self.modified.push((effective.clone(), false));
             self.invalidate_inside(&effective);
         }
@@ -1097,7 +1115,10 @@ impl Checker {
                 }
                 _ => Path { root: base.root.clone(), segs: Vec::new() },
             };
-            self.check_owner_is_mut(&effective, line, ctx);
+            // Своя копия параметра по значению: вызывающий не при чём.
+            if !matches!(p.kind, ParamKind::Owned) {
+                self.check_owner_is_mut(&effective, line, ctx);
+            }
             self.modified.push((effective.clone(), false));
             self.invalidate_inside(&effective);
         }
