@@ -509,7 +509,7 @@ impl Checker {
                 }
                 // Перемещение: только для владения, не для ссылок.
                 if !init_ty.is_ref() {
-                    self.record_move(init, ctx);
+                    self.record_move(init, &init_ty, ctx);
                 }
                 let uid = self.next_uid;
                 self.next_uid += 1;
@@ -576,7 +576,7 @@ impl Checker {
                         }
                         // Ссылка не должна пережить кадр, в котором создана.
                         self.check_return_escapes(e, ctx);
-                        self.record_move(e, ctx);
+                        self.record_move(e, &t, ctx);
                     }
                     // `return;` без значения — только из функции, которая
                     // ничего не возвращает. Иначе в C получилось бы
@@ -794,7 +794,7 @@ impl Checker {
             }
         }
 
-        self.record_move(rhs, ctx);
+        self.record_move(rhs, &rhs_ty, ctx);
 
         // Ссылка на локальную переменную не должна уехать из функции
         // через присваивание: `h.r = &i;` в поле ПАРАМЕТРА кладёт
@@ -868,7 +868,21 @@ impl Checker {
     /// Инвалидирует ссылки на путь и на всё внутри него (замена значения).
     fn invalidate_replace(&mut self, path: &Path) {
         for r in self.refs.iter_mut() {
+            // Ссылка на сам путь и на всё внутри него — объект по этому
+            // пути заменён.
             if path.is_prefix_of(&r.target) {
+                r.dead = true;
+                continue;
+            }
+            // Ссылка на элемент с НЕИЗВЕСТНЫМ индексом хранит путь-группу
+            // (`a[]`). Запись в конкретный элемент (`a[0]`) могла затронуть
+            // именно тот элемент, на который указывает ссылка, — значит,
+            // ссылка гаснет.
+            //
+            // Без этого проверка `path.is_prefix_of(&r.target)` давала
+            // ложь: `Idx(0)` не является префиксом `Elems`, хотя группа
+            // содержит этот элемент.
+            if path.overlaps(&r.target) {
                 r.dead = true;
             }
         }
@@ -878,6 +892,13 @@ impl Checker {
     fn invalidate_inside(&mut self, path: &Path) {
         for r in self.refs.iter_mut() {
             if path.is_prefix_of(&r.target) && r.target != *path {
+                r.dead = true;
+                continue;
+            }
+            // Ссылка на элемент с неизвестным индексом (`a[]`) — та же
+            // история: изменение содержимого любого элемента коллекции
+            // затрагивает и его.
+            if path.overlaps(&r.target) {
                 r.dead = true;
             }
         }
@@ -1015,9 +1036,9 @@ impl Checker {
                 for (i, it) in items.iter().enumerate() {
                     let t = self.type_of(it, ctx);
                     if i == 0 {
-                        elem = t;
+                        elem = t.clone();
                     }
-                    self.record_move(it, ctx);
+                    self.record_move(it, &t, ctx);
                 }
                 Type::Array(Box::new(elem), items.len())
             }
@@ -1092,10 +1113,10 @@ impl Checker {
                 // обе: выполнится только одна, но после `if` обе
                 // переменные считаются перемещёнными (как в Rust).
                 if !tt.is_ref() {
-                    self.record_move(then_expr, ctx);
+                    self.record_move(then_expr, &tt, ctx);
                 }
                 if !et.is_ref() {
-                    self.record_move(else_expr, ctx);
+                    self.record_move(else_expr, &et, ctx);
                 }
                 tt
             }
@@ -1134,7 +1155,7 @@ impl Checker {
                         ),
                     ));
                 }
-                self.record_move(a, ctx);
+                self.record_move(a, &at, ctx);
             }
             return Type::Named(name.clone());
         }
@@ -1143,8 +1164,8 @@ impl Checker {
         // `print` печатает без перевода строки, `println` — с переводом.
         if name == "print" || name == "println" {
             for a in args {
-                self.type_of(a, ctx);
-                self.record_move(a, ctx);
+                let at = self.type_of(a, ctx);
+                self.record_move(a, &at, ctx);
             }
             return Type::Void;
         }
@@ -1233,7 +1254,7 @@ impl Checker {
                         format!("`argv` ждёт номер аргумента типа `int`, получен `{}`", t.name()),
                     ));
                 }
-                self.record_move(a, ctx);
+                self.record_move(a, &t, ctx);
             }
             return Type::Str;
         }
@@ -1311,7 +1332,7 @@ impl Checker {
                     }
                     // Передача владения — перемещение.
                     if !self.is_copy(&t) {
-                        self.record_move(a, ctx);
+                        self.record_move(a, &t, ctx);
                     }
                 }
                 ParamKind::Ref | ParamKind::RefIn(_) => {
@@ -1636,14 +1657,45 @@ impl Checker {
     }
 
     /// Помечает источник перемещённым, если он не Copy.
-    fn record_move(&mut self, e: &Expr, ctx: &mut Ctx) {
-        let ExprKind::Ident(name) = &e.kind else { return };
-        let Some(local) = ctx.scope.get(name).cloned() else { return };
-        if self.is_copy(&local.ty) {
+    ///
+    /// Перемещать можно только из локальной переменной — целого
+    /// владельца. Из поля структуры или элемента коллекции перемещать
+    /// нельзя: в контейнере осталась бы дыра — место, за которое уже
+    /// никто не отвечает. Rust запрещает то же самое («cannot move out
+    /// of index»).
+    ///
+    /// Копируемые типы (int, bool, string, &T) проблемы не имеют:
+    /// чтение `a[0].name` копирует значение, а не забирает его.
+    fn record_move(&mut self, e: &Expr, ty: &Type, ctx: &mut Ctx) {
+        if self.is_copy(ty) {
             return;
         }
-        if let Some(l) = ctx.scope.get_mut(name) {
-            l.moved = true;
+        match &e.kind {
+            ExprKind::Ident(name) => {
+                if let Some(l) = ctx.scope.get_mut(name) {
+                    l.moved = true;
+                }
+            }
+            ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                let place = self
+                    .place_path_of(e, ctx)
+                    .map(|p| self.render(&p))
+                    .unwrap_or_default();
+                let where_ = if matches!(&e.kind, ExprKind::Field { .. }) {
+                    "в структуре"
+                } else {
+                    "в коллекции"
+                };
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!(
+                        "перемещение из `{}` запрещено: {} осталась бы дыра — значение, \
+                         которого больше нет. Возьмите ссылку `&{}`",
+                        place, where_, place
+                    ),
+                ));
+            }
+            _ => {}
         }
     }
 

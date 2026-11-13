@@ -98,6 +98,40 @@ impl Path {
         self.is_prefix_of(other) && self.segs.len() < other.segs.len()
     }
 
+    /// Могут ли пути указывать на один и тот же объект — хотя бы по
+    /// одному элементу коллекции?
+    ///
+    /// Путь `a[]` — это группа элементов (индекс неизвестен), а `a[0]` —
+    /// конкретный элемент. Они могут указывать на один объект: группа
+    /// содержит все элементы сразу. Поэтому запись в `a[0]` затрагивает
+    /// ссылку на `a[]` — она могла указывать именно на `a[0]`.
+    ///
+    /// Используется при инвалидации: ссылка на элемент с динамическим
+    /// индексом хранит путь-группу, и любая запись в элемент этой
+    /// коллекции её гасит.
+    pub fn overlaps(&self, other: &Path) -> bool {
+        if self.root != other.root {
+            return false;
+        }
+        if self.segs.len() != other.segs.len() {
+            return false;
+        }
+        let mut cross = false;
+        for (a, b) in self.segs.iter().zip(other.segs.iter()) {
+            match (a, b) {
+                // Группа и конкретный элемент — один и тот же объект.
+                (Seg::Elems, Seg::Idx(_)) | (Seg::Idx(_), Seg::Elems) => cross = true,
+                (Seg::Elems, Seg::Elems) => {}
+                (x, y) => {
+                    if x != y {
+                        return false;
+                    }
+                }
+            }
+        }
+        cross
+    }
+
     pub fn render(&self) -> String {
         let mut s = self.root.clone();
         for seg in &self.segs {

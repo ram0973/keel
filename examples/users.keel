@@ -106,9 +106,14 @@ fn remove(reg &Registry mut, name string) int {
         println("пользователя нет");
         return 0;
     }
+    // Сдвиг влево. Перенести запись целиком нельзя: move из
+    // элемента коллекции запрещён (в Rust — «cannot move out of
+    // index»). Поэтому копируем поля по одному — все поля User
+    // копируемые, поэтому дыры не остаётся.
     let mut j = i;
     while j < reg.count - 1 {
-        reg.users[j] = reg.users[j + 1];
+        reg.users[j].name = reg.users[j + 1].name;
+        reg.users[j].age = reg.users[j + 1].age;
         j = j + 1;
     }
     reg.count = reg.count - 1;

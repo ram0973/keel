@@ -111,9 +111,15 @@ fn remove(book &Book mut, id int) int {
         println("записи нет");
         return 0;
     }
+    // Сдвиг влево. Перенести запись целиком нельзя: move из
+    // элемента коллекции запрещён (в Rust — «cannot move out of
+    // index»). Поэтому копируем поля по одному — все поля Entry
+    // копируемые, поэтому дыры не остаётся.
     let mut j = i;
     while j < book.count - 1 {
-        book.entries[j] = book.entries[j + 1];
+        book.entries[j].id = book.entries[j + 1].id;
+        book.entries[j].name = book.entries[j + 1].name;
+        book.entries[j].phone = book.entries[j + 1].phone;
         j = j + 1;
     }
     book.count = book.count - 1;
