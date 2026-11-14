@@ -246,7 +246,7 @@ impl Checker {
                     self.enums.insert(e.name.clone(), e.clone());
                 }
                 Item::Func(f) => {
-                    self.declare_func(f, None);
+                    self.declare_func(f, None, f.public);
                 }
                 Item::Impl(im) => {
                     for f in &im.funcs {
@@ -271,12 +271,11 @@ impl Checker {
                                     ret: f.ret.clone(),
                                     mut_paths: f.mut_paths.clone(),
                                     file: f.file.clone(),
-                                    // Метод виден там же, где его тип.
-                                    public: true,
+                                    public: im.public,
                                 },
                             );
                         } else {
-                            self.declare_func(f, Some(&im.ty));
+                            self.declare_func(f, Some(&im.ty), im.public);
                         }
                     }
                 }
@@ -413,7 +412,7 @@ impl Checker {
     /// Повторное имя — не мелочь: в C это «redefinition of 'k_f'» в
     /// сгенерированном коде, где причина не видна. Два `main` — тем
     /// более: C соберёт только один, и поведение зависит от порядка.
-    fn declare_func(&mut self, f: &FuncDecl, owner: Option<&str>) {
+    fn declare_func(&mut self, f: &FuncDecl, owner: Option<&str>, public: bool) {
         let key = match owner {
             Some(ty) => format!("{}::{}", ty, f.name),
             None => f.name.clone(),
@@ -438,8 +437,7 @@ impl Checker {
                 ret: f.ret.clone(),
                 mut_paths: f.mut_paths.clone(),
                 file: f.file.clone(),
-                // Ассоциированная функция видна там же, где её тип.
-                public: owner.is_some() || f.public,
+                public,
             },
         );
     }
@@ -1942,6 +1940,15 @@ impl Checker {
                     ));
                     return Type::Void;
                 };
+                let bad = self
+                    .methods
+                    .get(&(tn.clone(), name.clone()))
+                    .filter(|fi| !fi.public && fi.file != self.diags.file)
+                    .map(|fi| fi.file.clone());
+                if let Some(file) = bad {
+                    self.private(e.line, "метод", name, &file);
+                    return Type::Void;
+                }
                 let Some(fi) = self.methods.get(&(tn.clone(), name.clone())).cloned() else {
                     self.diags.push(Diagnostic::new(
                         e.line,

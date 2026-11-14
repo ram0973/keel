@@ -336,6 +336,8 @@ pub struct ImplDecl {
     /// Имя типа, для которого объявлен блок.
     pub ty: String,
     pub funcs: Vec<FuncDecl>,
+    /// `pub` — методы видны из других файлов. Без него — только свой файл.
+    pub public: bool,
 }
 
 #[derive(Clone, Debug)]

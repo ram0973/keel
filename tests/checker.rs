@@ -1323,6 +1323,30 @@ fn приватная_функция_не_видна_из_другого_фай�
 }
 
 #[test]
+fn приватный_метод_не_виден_из_другого_файла() {
+    let dir = std::env::temp_dir().join(format!("keel_pubimpl_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("lib.keel"),
+        "pub struct S { v int; }\nimpl S {\n    fn get(self &S) int { return self.v; }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.keel"),
+        "import \"lib.keel\";\nfn main() int { let s = S(7); return s.get(); }\n",
+    )
+    .unwrap();
+    let r = keelc::compile_file(&dir.join("main.keel")).expect("должно разобраться");
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(
+        text.contains("метод `get` объявлен без `pub`"),
+        "получено:\n{}",
+        text
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn import_подключает_имена_из_другого_файла() {
     // Главная проверка: файл видит объявления из подключённого файла,
     // и сгенерированный C компилируется и работает.
@@ -1331,7 +1355,7 @@ fn import_подключает_имена_из_другого_файла() {
     std::fs::write(
         dir.join("user.keel"),
         "pub struct User { name string; age int; }\n\
-         impl User {\n\
+         pub impl User {\n\
          \x20   fn get_name(self &User) string { return self.name; }\n\
          }\n",
     )

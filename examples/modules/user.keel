@@ -5,7 +5,7 @@ pub struct User {
     age int;
 }
 
-impl User {
+pub impl User {
     // Читающий метод: объект остаётся у вызывающего.
     fn get_name(self &User) string {
         return self.name;

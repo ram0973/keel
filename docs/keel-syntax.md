@@ -46,7 +46,7 @@ enum_decl    = "enum" ident "{" variant ("," variant)* ","? "}"
 variant      = ident ("(" type ("," type)* ")")?   ; вариант, возможно с данными
 
 import_decl  = "import" string ";"                 ; сделано
-impl_decl    = "impl" ident "{" func_decl* "}"     ; сделано
+impl_decl    = "pub"? "impl" ident "{" func_decl* "}"   ; сделано
 const_decl   = "const" ident "=" const_value ";"   ; сделано
 const_value  = literal | ident | const_value op const_value
 struct_decl  = "struct" ident generic_params? "{" field* "}"
@@ -685,8 +685,9 @@ fn main() int {
 | Нет файла — ошибка | `не удалось открыть '.../nope.keel'` |
 
 **Приватность:** имя из подключённого файла видно, только если
-объявлено `pub`. Без `pub` оно остаётся в своём файле. Чего нет:
-префиксов, `import as`, `from ... import`.
+объявлено `pub`. Без `pub` оно остаётся в своём файле. Методы видны,
+только если `impl` объявлен `pub`. Чего нет: префиксов, `import as`,
+`from ... import`.
 
 **Диагностика называет файл:** при сборке из нескольких файлов ошибка
 указывает имя файла и строку:

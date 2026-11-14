@@ -184,7 +184,7 @@ impl Parser {
         } else if self.at_kw("fn") {
             Ok(Item::Func(self.parse_func(is_pub)?))
         } else if self.at_kw("impl") {
-            Ok(Item::Impl(self.parse_impl()?))
+            Ok(Item::Impl(self.parse_impl(is_pub)?))
         } else if self.at_kw("import") {
             Ok(Item::Import(self.parse_import()?))
         } else {
@@ -298,7 +298,7 @@ impl Parser {
     }
 
     /// `impl Type { fn ... }` — блок методов и ассоциированных функций.
-    fn parse_impl(&mut self) -> PResult<ImplDecl> {
+    fn parse_impl(&mut self, is_pub: bool) -> PResult<ImplDecl> {
         self.expect_kw("impl")?;
         let ty = self.ident()?;
         self.expect_punct("{")?;
@@ -309,7 +309,7 @@ impl Parser {
             funcs.push(self.parse_func_rest(name, Some(ty.clone()), false)?);
         }
         self.expect_punct("}")?;
-        Ok(ImplDecl { ty, funcs })
+        Ok(ImplDecl { ty, funcs, public: is_pub })
     }
 
     fn parse_struct(&mut self, is_pub: bool) -> PResult<StructDecl> {
