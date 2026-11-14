@@ -3567,3 +3567,80 @@ fn main() int {
         "перемещён",
     );
 }
+
+// ============================================================
+// Именованный конструктор структуры
+// ============================================================
+
+#[test]
+fn именованный_конструктор_работает() {
+    ok(r#"
+struct Point { x int; y int; }
+
+fn main() int {
+    let p = Point { x: 3, y: 4 };
+    println(p.x);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn именованный_конструктор_без_поля() {
+    fails(
+        r#"
+struct Point { x int; y int; }
+
+fn main() int {
+    let p = Point { x: 3 };
+    return 0;
+}
+"#,
+        "не задано поле `y`",
+    );
+}
+
+#[test]
+fn именованный_конструктор_чужое_поле() {
+    fails(
+        r#"
+struct Point { x int; }
+
+fn main() int {
+    let p = Point { x: 3, z: 4 };
+    return 0;
+}
+"#,
+        "нет поля `z`",
+    );
+}
+
+#[test]
+fn именованный_конструктор_тип_поля() {
+    fails(
+        r#"
+struct Point { x int; }
+
+fn main() int {
+    let p = Point { x: true };
+    return 0;
+}
+"#,
+        "поле `x` ожидает `int`",
+    );
+}
+
+#[test]
+fn именованный_конструктор_повтор_поля() {
+    fails(
+        r#"
+struct Point { x int; }
+
+fn main() int {
+    let p = Point { x: 1, x: 2 };
+    return 0;
+}
+"#,
+        "поле `x` задано дважды",
+    );
+}

@@ -1721,6 +1721,54 @@ impl Checker {
                     Type::Void
                 }
             },
+            ExprKind::StructInit { name, fields } => {
+                let Some(s) = self.structs.get(name).cloned() else {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("неизвестная структура `{}`", name),
+                    ));
+                    return Type::Void;
+                };
+                for f in &s.fields {
+                    if !fields.iter().any(|(n, _)| n == &f.name) {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("в конструкторе `{}` не задано поле `{}`", name, f.name),
+                        ));
+                    }
+                }
+                for (i, (n, _)) in fields.iter().enumerate() {
+                    if fields[..i].iter().any(|(m, _)| m == n) {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("поле `{}` задано дважды", n),
+                        ));
+                    }
+                }
+                for (n, val) in fields {
+                    let Some(f) = s.fields.iter().find(|f| &f.name == n) else {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("у структуры `{}` нет поля `{}`", name, n),
+                        ));
+                        self.type_of(val, ctx);
+                        continue;
+                    };
+                    let vt = self.type_of(val, ctx);
+                    if !self.types_compatible(f.ty.clone(), &vt) {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!(
+                                "поле `{}` ожидает `{}`, получено `{}`",
+                                n,
+                                f.ty.name(),
+                                vt.name()
+                            ),
+                        ));
+                    }
+                }
+                Type::Named(name.clone())
+            },
             ExprKind::Field { obj, name } => {
                 let base = self.type_of(obj, ctx);
                 let base = base.deref().clone();
@@ -2522,6 +2570,17 @@ impl Checker {
                 }
                 out
             }
+            // Именованный конструктор: утечки каждого поля.
+            ExprKind::StructInit { fields, .. } => {
+                let mut out = Vec::new();
+                for (fname, a) in fields {
+                    for (mut segs, t) in self.escapes_in(a, ctx) {
+                        segs.insert(0, Seg::Field(fname.clone()));
+                        out.push((segs, t));
+                    }
+                }
+                out
+            }
             // Литерал массива: утечки каждого элемента.
             ExprKind::Array(items) => {
                 let mut out = Vec::new();
@@ -2631,6 +2690,15 @@ impl Checker {
                         place, where_, place
                     ),
                 ));
+            }
+            ExprKind::StructInit { fields, .. } => {
+                let vals: Vec<(Expr, Type)> = fields
+                    .iter()
+                    .map(|(_, v)| (v.clone(), self.type_of(v, ctx)))
+                    .collect();
+                for (v, vt) in vals {
+                    self.record_move(&v, &vt, ctx);
+                }
             }
             _ => {}
         }
@@ -2791,6 +2859,9 @@ pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
                 || mentions_ident(else_expr, name)
         }
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
+        ExprKind::StructInit { fields, .. } => {
+            fields.iter().any(|(_, e)| mentions_ident(e, name))
+        }
         ExprKind::Variant { .. } => false,
     }
 }

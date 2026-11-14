@@ -319,6 +319,8 @@ pub enum ExprKind {
     Call { callee: Box<Expr>, args: Vec<Expr> },
     /// `Type::Variant` — значение варианта enum.
     Variant { ty: String, name: String },
+    /// `Point { x: 3, y: 4 }` — именованный конструктор структуры.
+    StructInit { name: String, fields: Vec<(String, Expr)> },
     /// `x.method(args)` — вызов метода. Отличается от `Field` наличием
     /// скобок; разрешается в обычный вызов с получателем первым
     /// аргументом.

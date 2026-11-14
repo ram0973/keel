@@ -1318,6 +1318,14 @@ impl<'a> Codegen<'a> {
                 }
                 format!("Keel_{}_{}", ty, name)
             }
+            ExprKind::StructInit { name, fields } => {
+                let c = self.ctype.get(name).cloned().unwrap_or_else(|| name.clone());
+                let inits: Vec<String> = fields
+                    .iter()
+                    .map(|(f, v)| format!(".{} = {}", f, self.expr(v)))
+                    .collect();
+                format!("({}){{ {} }}", c, inits.join(", "))
+            }
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);

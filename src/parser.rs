@@ -1131,6 +1131,11 @@ impl Parser {
                     let full = format!("{}::{}", s, member);
                     return Ok(self.mk(line, ExprKind::Ident(full)));
                 }
+                // `Point { x: 3, y: 4 }` — именованный конструктор.
+                // Отличаем от блока по `{ ident :`.
+                if self.at_punct("{") && self.peek_field_init() {
+                    return self.parse_struct_init(s, line);
+                }
                 match s.as_str() {
                     "true" => Ok(self.mk(line, ExprKind::Bool(true))),
                     "false" => Ok(self.mk(line, ExprKind::Bool(false))),
@@ -1181,5 +1186,29 @@ impl Parser {
                 self.describe(&other)
             )),
         }
+    }
+
+    /// `{ ident :` — начало именованного конструктора, а не блока.
+    fn peek_field_init(&self) -> bool {
+        matches!(&self.toks[self.pos].tok, Tok::Punct(p) if p == "{")
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.tok), Some(Tok::Ident(_)))
+            && matches!(self.toks.get(self.pos + 2).map(|t| &t.tok), Some(Tok::Punct(p)) if p == ":")
+    }
+
+    fn parse_struct_init(&mut self, name: String, line: usize) -> PResult<Expr> {
+        self.expect_punct("{")?;
+        let mut fields = Vec::new();
+        while !self.at_punct("}") {
+            let fname = self.ident()?;
+            self.expect_punct(":")?;
+            let val = self.parse_expr()?;
+            fields.push((fname, val));
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct("}")?;
+        let id = self.id();
+        Ok(Expr { id, line, kind: ExprKind::StructInit { name, fields } })
     }
 }
