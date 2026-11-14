@@ -15,6 +15,10 @@ pub struct Codegen<'a> {
     param_types: &'a HashMap<(String, String), Type>,
     /// id выражения `x.method(...)` → передать получателя ссылкой.
     method_recv_ref: &'a HashMap<u32, bool>,
+    /// Конкретные инстанциации встроенных `Option<T>`.
+    option_insts: &'a [Type],
+    /// Конкретные инстанциации встроенных `Result<T, E>`.
+    result_insts: &'a [(Type, Type)],
     out: String,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -80,6 +84,8 @@ impl<'a> Codegen<'a> {
             types: &checker.expr_types,
             param_types: &checker.param_types,
             method_recv_ref: &checker.method_recv_ref,
+            option_insts: &checker.option_insts,
+            result_insts: &checker.result_insts,
             out: String::new(),
             ctype,
             structs,
@@ -109,6 +115,10 @@ impl<'a> Codegen<'a> {
                 t => format!("{}*", self.ty(t)),
             },
             Type::Array(elem, n) => format!("{}[{}]", self.ty(elem), n),
+            Type::Option(inner) => format!("Keel_Option_{}", inner.mangle()),
+            Type::Result(ok, err) => {
+                format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())
+            }
         }
     }
 
@@ -229,6 +239,7 @@ impl<'a> Codegen<'a> {
                 self.emit_enum(e);
             }
         }
+        self.emit_builtin_enums();
         for item in &self.prog.items {
             if let Item::Struct(s) = item {
                 self.emit_struct(s);
@@ -306,6 +317,36 @@ impl<'a> Codegen<'a> {
             }
         }
         self.out
+    }
+
+    /// Встроенные `Option<T>`/`Result<T,E>`: мономорфизация в C.
+    fn emit_builtin_enums(&mut self) {
+        for ty in self.option_insts {
+            let Type::Option(inner) = ty else { continue };
+            let cname = format!("Keel_Option_{}", inner.mangle());
+            let field = self.decl(inner, "_0");
+            self.out.push_str(&format!(
+                "typedef enum {{\n  {}_None = 0,\n  {}_Some = 1\n}} {}_tag;\n\n",
+                cname, cname, cname
+            ));
+            self.out.push_str(&format!(
+                "typedef struct {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Some;\n  }} data;\n}} {};\n\n",
+                cname, field, cname
+            ));
+        }
+        for (ok, err) in self.result_insts {
+            let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+            let ok_field = self.decl(ok, "_0");
+            let err_field = self.decl(err, "_0");
+            self.out.push_str(&format!(
+                "typedef enum {{\n  {}_Ok = 0,\n  {}_Err = 1\n}} {}_tag;\n\n",
+                cname, cname, cname
+            ));
+            self.out.push_str(&format!(
+                "typedef struct {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Ok;\n    struct {{\n      {};\n    }} Err;\n  }} data;\n}} {};\n\n",
+                cname, ok_field, err_field, cname
+            ));
+        }
     }
 
     fn emit_struct(&mut self, s: &StructDecl) {
@@ -562,6 +603,14 @@ impl<'a> Codegen<'a> {
                 format!("({}){{0}}", c)
             }
             // Массив вернуть из функции в C нельзя — сюда не дойдём.
+            Type::Option(inner) => {
+                let c = format!("Keel_Option_{}", inner.mangle());
+                format!("({}){{ .tag = {}_None }}", c, c)
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                format!("({}){{ .tag = {}_Ok }}", c, c)
+            }
             Type::Array(..) | Type::Void => "0".to_string(),
         }
     }
@@ -662,20 +711,50 @@ impl<'a> Codegen<'a> {
             Stmt::Match { subject, arms, .. } => {
                 // Субъект читается по значению: ссылка разыменовывается.
                 let subj = self.value_expr(subject);
-                // Enum с данными — тег + union; без данных — обычный C enum.
-                let is_payload = self
-                    .types
-                    .get(&subject.id)
-                    .map(|t| match t {
-                        Type::Ref(inner) => inner.as_ref(),
-                        other => other,
-                    })
-                    .and_then(|t| match t {
-                        Type::Named(n) => self.enums.get(n),
-                        _ => None,
-                    })
-                    .map(|e| e.variants.iter().any(|v| !v.payload.is_empty()))
-                    .unwrap_or(false);
+                let subj_ty = self.types.get(&subject.id).cloned().unwrap_or(Type::Int);
+                let subj_ty = match subj_ty {
+                    Type::Ref(inner) => *inner,
+                    t => t,
+                };
+                // (C-имя типа, варианты (имя, payload), есть ли данные)
+                let (cname, variants, is_payload) = match &subj_ty {
+                    Type::Option(inner) => {
+                        let c = format!("Keel_Option_{}", inner.mangle());
+                        let vs = vec![
+                            ("Some".to_string(), vec![(**inner).clone()]),
+                            ("None".to_string(), Vec::new()),
+                        ];
+                        (c, vs, true)
+                    }
+                    Type::Result(ok, err) => {
+                        let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                        let vs = vec![
+                            ("Ok".to_string(), vec![(**ok).clone()]),
+                            ("Err".to_string(), vec![(**err).clone()]),
+                        ];
+                        (c, vs, true)
+                    }
+                    Type::Named(n) => {
+                        let e = self.enums.get(n);
+                        let vs: Vec<(String, Vec<Type>)> = e
+                            .map(|e| {
+                                e.variants
+                                    .iter()
+                                    .map(|v| (v.name.clone(), v.payload.clone()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let payload = e
+                            .map(|e| e.variants.iter().any(|v| !v.payload.is_empty()))
+                            .unwrap_or(false);
+                        (
+                            self.ctype.get(n).cloned().unwrap_or_else(|| n.clone()),
+                            vs,
+                            payload,
+                        )
+                    }
+                    _ => (String::new(), Vec::new(), false),
+                };
                 let tag = if is_payload {
                     format!("{}.tag", subj)
                 } else {
@@ -683,16 +762,17 @@ impl<'a> Codegen<'a> {
                 };
                 self.out.push_str(&format!("  switch ({}) {{\n", tag));
                 for arm in arms {
-                    self.out.push_str(&format!(
-                        "    case Keel_{}_{}: {{\n",
-                        arm.ty, arm.variant
-                    ));
+                    let case = if is_payload {
+                        format!("{}_{}", cname, arm.variant)
+                    } else {
+                        format!("Keel_{}_{}", arm.ty, arm.variant)
+                    };
+                    self.out.push_str(&format!("    case {}: {{\n", case));
                     // Привязки данных: `Some(x)` → `int64_t x = ...`.
-                    let payload: Vec<Type> = self
-                        .enums
-                        .get(&arm.ty)
-                        .and_then(|e| e.variants.iter().find(|v| v.name == arm.variant))
-                        .map(|v| v.payload.clone())
+                    let payload: Vec<Type> = variants
+                        .iter()
+                        .find(|(n, _)| n == &arm.variant)
+                        .map(|(_, p)| p.clone())
                         .unwrap_or_default();
                     let saved: Vec<(String, Option<String>)> = arm
                         .bindings
@@ -973,6 +1053,18 @@ impl<'a> Codegen<'a> {
                 out.push('"');
                 out
             }
+            ExprKind::Ident(name) if name == "None" => {
+                let t = self
+                    .types
+                    .get(&e.id)
+                    .cloned()
+                    .unwrap_or(Type::Option(Box::new(Type::Int)));
+                if let Type::Option(inner) = t {
+                    let c = format!("Keel_Option_{}", inner.mangle());
+                    return format!("({}){{ .tag = {}_None }}", c, c);
+                }
+                "0".to_string()
+            }
             ExprKind::Ident(name) => match self.loop_vars.get(name) {
                 Some(cname) => cname.clone(),
                 None => self.var_name(name),
@@ -1011,6 +1103,43 @@ impl<'a> Codegen<'a> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return "0".to_string();
                 };
+                // Встроенные конструкторы Option/Result.
+                if name == "Some" {
+                    let t = self
+                        .types
+                        .get(&e.id)
+                        .cloned()
+                        .unwrap_or(Type::Option(Box::new(Type::Int)));
+                    if let Type::Option(inner) = t {
+                        let c = format!("Keel_Option_{}", inner.mangle());
+                        let v = args
+                            .first()
+                            .map(|a| self.expr(a))
+                            .unwrap_or_else(|| "0".to_string());
+                        return format!(
+                            "({}){{ .tag = {}_Some, .data.Some = {{ ._0 = {} }} }}",
+                            c, c, v
+                        );
+                    }
+                }
+                if name == "Ok" || name == "Err" {
+                    let t = self.types.get(&e.id).cloned().unwrap_or(Type::Result(
+                        Box::new(Type::Int),
+                        Box::new(Type::Str),
+                    ));
+                    if let Type::Result(ok, err) = t {
+                        let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                        let v = args
+                            .first()
+                            .map(|a| self.expr(a))
+                            .unwrap_or_else(|| "0".to_string());
+                        let variant = if name == "Ok" { "Ok" } else { "Err" };
+                        return format!(
+                            "({}){{ .tag = {}_{}, .data.{} = {{ ._0 = {} }} }}",
+                            c, c, variant, variant, v
+                        );
+                    }
+                }
                 // Конструктор варианта enum: `Option::Some(5)`.
                 if let Some((ty, variant)) = name.split_once("::") {
                     if let Some(e) = self.enums.get(ty) {

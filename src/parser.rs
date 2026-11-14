@@ -627,6 +627,20 @@ impl Parser {
             "bool" => Ok(Type::Bool),
             "string" => Ok(Type::Str),
             "void" => Ok(Type::Void),
+            "Option" => {
+                self.expect_punct("<")?;
+                let inner = self.parse_type()?;
+                self.expect_punct(">")?;
+                Ok(Type::Option(Box::new(inner)))
+            }
+            "Result" => {
+                self.expect_punct("<")?;
+                let ok = self.parse_type()?;
+                self.expect_punct(",")?;
+                let err = self.parse_type()?;
+                self.expect_punct(">")?;
+                Ok(Type::Result(Box::new(ok), Box::new(err)))
+            }
             "Vec" => Err(format!(
                 "строка {}: обобщённые типы не поддерживаются в MVP, используйте массивы [T; N]",
                 self.line()
@@ -745,9 +759,24 @@ impl Parser {
             let mut arms = Vec::new();
             while !self.at_punct("}") {
                 let aline = self.line();
-                let ty = self.ident()?;
-                self.expect_punct("::")?;
-                let variant = self.ident()?;
+                let first = self.ident()?;
+                let (ty, variant) = if self.eat_punct("::") {
+                    let variant = self.ident()?;
+                    (first, variant)
+                } else {
+                    // Голые имена встроенных вариантов: `Some`/`None`/`Ok`/`Err`.
+                    let ty = match first.as_str() {
+                        "Some" | "None" => "Option".to_string(),
+                        "Ok" | "Err" => "Result".to_string(),
+                        _ => {
+                            return Err(format!(
+                                "строка {}: ветвь `{}` должна быть `Тип::Вариант`",
+                                aline, first
+                            ))
+                        }
+                    };
+                    (ty, first)
+                };
                 let mut bindings = Vec::new();
                 if self.eat_punct("(") {
                     while !self.at_punct(")") {

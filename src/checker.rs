@@ -113,6 +113,10 @@ pub struct Checker {
     /// ссылкой. Метод, объявленный как `self &T`, при вызове на значении
     /// получает адрес; кодогенератор должен знать это по id выражения.
     pub method_recv_ref: HashMap<u32, bool>,
+    /// Конкретные инстанциации встроенных `Option<T>` — для кодогенератора.
+    pub option_insts: Vec<Type>,
+    /// Конкретные инстанциации встроенных `Result<T, E>`.
+    pub result_insts: Vec<(Type, Type)>,
     diags: Vec<Diagnostic>,
 }
 
@@ -138,6 +142,8 @@ impl Checker {
             expr_types: HashMap::new(),
             param_types: HashMap::new(),
             method_recv_ref: HashMap::new(),
+            option_insts: Vec::new(),
+            result_insts: Vec::new(),
             diags: Vec::new(),
         }
     }
@@ -594,6 +600,108 @@ impl Checker {
         ty
     }
 
+    /// Общая проверка `match` по фиксированному набору вариантов:
+    /// пользовательский enum, `Option` или `Result`.
+    fn check_match_variants(
+        &mut self,
+        line: usize,
+        arms: &[MatchArm],
+        en: &str,
+        variants: &[(String, Vec<Type>)],
+        ctx: &mut Ctx,
+    ) {
+        let mut seen: Vec<String> = Vec::new();
+        for arm in arms {
+            let variant = variants.iter().find(|(n, _)| n == &arm.variant).cloned();
+            if arm.ty != en {
+                self.diags.push(Diagnostic::new(
+                    arm.line,
+                    format!(
+                        "ветвь `{}::{}` не относится к enum `{}`",
+                        arm.ty, arm.variant, en
+                    ),
+                ));
+            } else if variant.is_none() {
+                self.diags.push(Diagnostic::new(
+                    arm.line,
+                    format!("у enum `{}` нет варианта `{}`", en, arm.variant),
+                ));
+            } else if seen.contains(&arm.variant) {
+                self.diags.push(Diagnostic::new(
+                    arm.line,
+                    format!("вариант `{}` разобран дважды", arm.variant),
+                ));
+            } else {
+                seen.push(arm.variant.clone());
+            }
+
+            // Привязки данных варианта: `Some(x)`.
+            let mut saved: Vec<(String, Option<Local>)> = Vec::new();
+            if let Some((_, payload)) = &variant {
+                if payload.len() != arm.bindings.len() {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        format!(
+                            "вариант `{}::{}` несёт {}, в ветви привязано {}",
+                            en,
+                            arm.variant,
+                            аргументов(payload.len()),
+                            arm.bindings.len()
+                        ),
+                    ));
+                }
+                for (b, pt) in arm.bindings.iter().zip(payload.iter()) {
+                    saved.push((b.clone(), ctx.scope.get(b).cloned()));
+                    let uid = self.next_uid;
+                    self.next_uid += 1;
+                    self.names.insert(uid, b.clone());
+                    ctx.scope.insert(
+                        b.clone(),
+                        Local {
+                            uid,
+                            ty: pt.clone(),
+                            path: Path::root(&uid.to_string()),
+                            ref_target: None,
+                            ref_uid: None,
+                            moved: false,
+                            is_mut: false,
+                            escapes: Vec::new(),
+                        },
+                    );
+                }
+            }
+            self.check_block(&arm.body, ctx);
+            for (b, prev) in saved {
+                match prev {
+                    Some(l) => {
+                        ctx.scope.insert(b, l);
+                    }
+                    None => {
+                        ctx.scope.remove(&b);
+                    }
+                }
+            }
+        }
+        let missing: Vec<String> = variants
+            .iter()
+            .filter(|(n, _)| !seen.contains(n))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if !missing.is_empty() {
+            self.diags.push(Diagnostic::new(
+                line,
+                format!(
+                    "`match` не исчерпывающий: не разобраны варианты {}",
+                    missing
+                        .iter()
+                        .map(|v| format!("`{}::{}`", en, v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+    }
+
     fn check_block(&mut self, b: &Block, ctx: &mut Ctx) {
         for stmt in &b.stmts {
             self.check_stmt(stmt, ctx);
@@ -603,7 +711,7 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &Stmt, ctx: &mut Ctx) {
         match stmt {
             Stmt::Let { name, mutable, ty, init } => {
-                let mut init_ty = self.type_of(init, ctx);
+                let mut init_ty = self.type_of_expected(init, ty.as_ref(), ctx);
                 // Пустой литерал `[]` не позволяет вывести тип элемента:
                 // элементов нет, а значит нет и их типа. Если тип
                 // объявлен явно, пустой литерал наследует его.
@@ -704,7 +812,8 @@ impl Checker {
             Stmt::Return { line, value } => {
                 match value {
                     Some(e) => {
-                        let t = self.type_of(e, ctx);
+                        let ret = ctx.ret.clone();
+                        let t = self.type_of_expected(e, Some(&ret), ctx);
                         if !self.types_compatible(ctx.ret.clone(), &t) {
                             self.diags.push(Diagnostic::new(
                                 e.line,
@@ -743,6 +852,22 @@ impl Checker {
             }
             Stmt::Match { line, subject, arms } => {
                 let t = self.type_of(subject, ctx).deref().clone();
+                if let Type::Option(inner) = &t {
+                    let variants = vec![
+                        ("Some".to_string(), vec![(**inner).clone()]),
+                        ("None".to_string(), Vec::new()),
+                    ];
+                    self.check_match_variants(*line, arms, "Option", &variants, ctx);
+                    return;
+                }
+                if let Type::Result(ok, err) = &t {
+                    let variants = vec![
+                        ("Ok".to_string(), vec![(**ok).clone()]),
+                        ("Err".to_string(), vec![(**err).clone()]),
+                    ];
+                    self.check_match_variants(*line, arms, "Result", &variants, ctx);
+                    return;
+                }
                 let enum_name = match &t {
                     Type::Named(n) if self.enums.contains_key(n) => Some(n.clone()),
                     _ => None,
@@ -758,101 +883,12 @@ impl Checker {
                     return;
                 };
                 let decl = self.enums.get(&en).cloned().unwrap();
-                let mut seen: Vec<String> = Vec::new();
-                for arm in arms {
-                    let variant = decl
-                        .variants
-                        .iter()
-                        .find(|v| v.name == arm.variant)
-                        .cloned();
-                    if arm.ty != en {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!(
-                                "ветвь `{}::{}` не относится к enum `{}`",
-                                arm.ty, arm.variant, en
-                            ),
-                        ));
-                    } else if variant.is_none() {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!("у enum `{}` нет варианта `{}`", en, arm.variant),
-                        ));
-                    } else if seen.contains(&arm.variant) {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!("вариант `{}` разобран дважды", arm.variant),
-                        ));
-                    } else {
-                        seen.push(arm.variant.clone());
-                    }
-
-                    // Привязки данных варианта: `Some(x)`.
-                    let mut saved: Vec<(String, Option<Local>)> = Vec::new();
-                    if let Some(v) = &variant {
-                        if v.payload.len() != arm.bindings.len() {
-                            self.diags.push(Diagnostic::new(
-                                arm.line,
-                                format!(
-                                    "вариант `{}::{}` несёт {}, в ветви привязано {}",
-                                    en,
-                                    arm.variant,
-                                    аргументов(v.payload.len()),
-                                    arm.bindings.len()
-                                ),
-                            ));
-                        }
-                        for (b, pt) in arm.bindings.iter().zip(v.payload.iter()) {
-                            saved.push((b.clone(), ctx.scope.get(b).cloned()));
-                            let uid = self.next_uid;
-                            self.next_uid += 1;
-                            self.names.insert(uid, b.clone());
-                            ctx.scope.insert(
-                                b.clone(),
-                                Local {
-                                    uid,
-                                    ty: pt.clone(),
-                                    path: Path::root(&uid.to_string()),
-                                    ref_target: None,
-                                    ref_uid: None,
-                                    moved: false,
-                                    is_mut: false,
-                                    escapes: Vec::new(),
-                                },
-                            );
-                        }
-                    }
-                    self.check_block(&arm.body, ctx);
-                    for (b, prev) in saved {
-                        match prev {
-                            Some(l) => {
-                                ctx.scope.insert(b, l);
-                            }
-                            None => {
-                                ctx.scope.remove(&b);
-                            }
-                        }
-                    }
-                }
-                let missing: Vec<String> = decl
+                let variants: Vec<(String, Vec<Type>)> = decl
                     .variants
                     .iter()
-                    .filter(|v| !seen.contains(&v.name))
-                    .map(|v| v.name.clone())
+                    .map(|v| (v.name.clone(), v.payload.clone()))
                     .collect();
-                if !missing.is_empty() {
-                    self.diags.push(Diagnostic::new(
-                        *line,
-                        format!(
-                            "`match` не исчерпывающий: не разобраны варианты {}",
-                            missing
-                                .iter()
-                                .map(|v| format!("`{}::{}`", en, v))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    ));
-                }
+                self.check_match_variants(*line, arms, &en, &variants, ctx);
             }
             Stmt::If { cond, then_block, else_block } => {
                 self.type_of(cond, ctx);
@@ -1158,11 +1194,184 @@ impl Checker {
         t
     }
 
+    /// Тип выражения с учётом ожидаемого типа. Нужен конструкторам
+    /// `None`/`Ok`/`Err`, у которых часть параметров не выводится из
+    /// аргументов: `let o Option<int> = None;`.
+    fn type_of_expected(&mut self, e: &Expr, expected: Option<&Type>, ctx: &mut Ctx) -> Type {
+        let t = self.type_of_expected_inner(e, expected, ctx);
+        self.expr_types.insert(e.id, t.clone());
+        t
+    }
+
+    fn type_of_expected_inner(
+        &mut self,
+        e: &Expr,
+        expected: Option<&Type>,
+        ctx: &mut Ctx,
+    ) -> Type {
+        match &e.kind {
+            ExprKind::Ident(name) if name == "None" => {
+                let inner = match expected {
+                    Some(Type::Option(t)) => (**t).clone(),
+                    _ => {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            "не удалось вывести тип `None`: укажите тип, \
+                             например `let o Option<int> = None;`"
+                                .to_string(),
+                        ));
+                        Type::Int
+                    }
+                };
+                self.check_payload_type(e.line, &inner, "Option");
+                let ty = Type::Option(Box::new(inner));
+                self.record_option_inst(&ty);
+                ty
+            }
+            ExprKind::Call { callee, args } => {
+                let ExprKind::Ident(name) = &callee.kind else {
+                    return self.type_of(e, ctx);
+                };
+                match name.as_str() {
+                    "Some" => {
+                        if args.len() != 1 {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!("`Some` принимает один аргумент, получено {}", args.len()),
+                            ));
+                        }
+                        let inner_expected = match expected {
+                            Some(Type::Option(t)) => Some((**t).clone()),
+                            _ => None,
+                        };
+                        let at = match args.first() {
+                            Some(a) => self.type_of_expected(a, inner_expected.as_ref(), ctx),
+                            None => Type::Int,
+                        };
+                        self.check_payload_type(e.line, &at, "Option");
+                        let ty = Type::Option(Box::new(at));
+                        self.record_option_inst(&ty);
+                        ty
+                    }
+                    "Ok" => {
+                        if args.len() != 1 {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!("`Ok` принимает один аргумент, получено {}", args.len()),
+                            ));
+                        }
+                        let (t_expected, e_expected) = match expected {
+                            Some(Type::Result(t, e)) => {
+                                (Some((**t).clone()), Some((**e).clone()))
+                            }
+                            _ => (None, None),
+                        };
+                        let at = match args.first() {
+                            Some(a) => self.type_of_expected(a, t_expected.as_ref(), ctx),
+                            None => Type::Int,
+                        };
+                        self.check_payload_type(e.line, &at, "Result");
+                        let et = match e_expected {
+                            Some(t) => t,
+                            None => {
+                                self.diags.push(Diagnostic::new(
+                                    e.line,
+                                    "не удалось вывести тип ошибки `Ok`: укажите тип, \
+                                     например `let r Result<int, string> = Ok(5);`"
+                                        .to_string(),
+                                ));
+                                Type::Str
+                            }
+                        };
+                        let ty = Type::Result(Box::new(at), Box::new(et));
+                        self.record_result_inst(&ty);
+                        ty
+                    }
+                    "Err" => {
+                        if args.len() != 1 {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!("`Err` принимает один аргумент, получено {}", args.len()),
+                            ));
+                        }
+                        let (t_expected, e_expected) = match expected {
+                            Some(Type::Result(t, e)) => {
+                                (Some((**t).clone()), Some((**e).clone()))
+                            }
+                            _ => (None, None),
+                        };
+                        let et = match args.first() {
+                            Some(a) => self.type_of_expected(a, e_expected.as_ref(), ctx),
+                            None => Type::Str,
+                        };
+                        self.check_payload_type(e.line, &et, "Result");
+                        let tt = match t_expected {
+                            Some(t) => t,
+                            None => {
+                                self.diags.push(Diagnostic::new(
+                                    e.line,
+                                    "не удалось вывести тип значения `Err`: укажите тип, \
+                                     например `let r Result<int, string> = Err(\"bad\");`"
+                                        .to_string(),
+                                ));
+                                Type::Int
+                            }
+                        };
+                        let ty = Type::Result(Box::new(tt), Box::new(et));
+                        self.record_result_inst(&ty);
+                        ty
+                    }
+                    _ => self.type_of(e, ctx),
+                }
+            }
+            _ => self.type_of(e, ctx),
+        }
+    }
+
+    fn record_option_inst(&mut self, ty: &Type) {
+        if !self.option_insts.contains(ty) {
+            self.option_insts.push(ty.clone());
+        }
+    }
+
+    fn record_result_inst(&mut self, ty: &Type) {
+        if let Type::Result(t, e) = ty {
+            let pair = ((**t).clone(), (**e).clone());
+            if !self.result_insts.contains(&pair) {
+                self.result_insts.push(pair);
+            }
+        }
+    }
+
+    /// Допустим ли тип как данные `Option`/`Result`.
+    fn check_payload_type(&mut self, line: usize, t: &Type, wrapper: &str) {
+        if !self.payload_type_ok(t) {
+            self.diags.push(Diagnostic::new(
+                line,
+                format!(
+                    "тип `{}` нельзя хранить в `{}`: допустимы int, bool, string, \
+                     enum и Option/Result",
+                    t.name(),
+                    wrapper
+                ),
+            ));
+        }
+    }
+
     fn type_of_inner(&mut self, e: &Expr, ctx: &mut Ctx) -> Type {
         match &e.kind {
             ExprKind::Int(_) => Type::Int,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Str(_) => Type::Str,
+            ExprKind::Ident(name) if name == "None" => {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    "не удалось вывести тип `None`: укажите тип, \
+                     например `let o Option<int> = None;`"
+                        .to_string(),
+                ));
+                Type::Option(Box::new(Type::Int))
+            }
             ExprKind::Ident(name) => {
                 let Some(local) = ctx.scope.get(name).cloned() else {
                     self.diags.push(Diagnostic::new(
@@ -1321,7 +1530,14 @@ impl Checker {
             ExprKind::Array(items) => {
                 let mut elem = Type::Void;
                 for (i, it) in items.iter().enumerate() {
-                    let t = self.type_of(it, ctx);
+                    // Тип элемента — по первому элементу; остальные
+                    // получают его как ожидаемый, чтобы `[Some(1), None]`
+                    // вывел тип `None`.
+                    let t = if i == 0 {
+                        self.type_of(it, ctx)
+                    } else {
+                        self.type_of_expected(it, Some(&elem), ctx)
+                    };
                     if i == 0 {
                         elem = t.clone();
                     }
@@ -1361,14 +1577,9 @@ impl Checker {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                         // Enum с данными — структура в C; сравнивать её
                         // оператором нельзя. Разбирайте через `match`.
-                        let payload_cmp = [&lt, &rt].into_iter().any(|t| match t {
-                            Type::Named(n) => self
-                                .enums
-                                .get(n)
-                                .map(|en| en.variants.iter().any(|v| !v.payload.is_empty()))
-                                .unwrap_or(false),
-                            _ => false,
-                        });
+                        let payload_cmp = [&lt, &rt]
+                            .into_iter()
+                            .any(|t| self.is_payload_enum_type(t));
                         if payload_cmp {
                             self.diags.push(Diagnostic::new(
                                 e.line,
@@ -1434,6 +1645,58 @@ impl Checker {
             return Type::Void;
         };
 
+        // Встроенные конструкторы Option/Result. Здесь — без ожидаемого
+        // типа: `Some` выводит T из аргумента, `Ok`/`Err` без контекста
+        // не могут вывести второй параметр и сообщают об этом.
+        if name == "Some" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`Some` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            let at = match args.first() {
+                Some(a) => self.type_of(a, ctx),
+                None => Type::Int,
+            };
+            self.check_payload_type(line, &at, "Option");
+            let ty = Type::Option(Box::new(at));
+            self.record_option_inst(&ty);
+            return ty;
+        }
+        if name == "Ok" || name == "Err" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                ));
+            }
+            let at = match args.first() {
+                Some(a) => self.type_of(a, ctx),
+                None => Type::Int,
+            };
+            self.check_payload_type(line, &at, "Result");
+            let ty = if name == "Ok" {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    "не удалось вывести тип ошибки `Ok`: укажите тип, \
+                     например `let r Result<int, string> = Ok(5);`"
+                        .to_string(),
+                ));
+                Type::Result(Box::new(at), Box::new(Type::Str))
+            } else {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    "не удалось вывести тип значения `Err`: укажите тип, \
+                     например `let r Result<int, string> = Err(\"bad\");`"
+                        .to_string(),
+                ));
+                Type::Result(Box::new(Type::Int), Box::new(at))
+            };
+            self.record_result_inst(&ty);
+            return ty;
+        }
+
         // Конструктор варианта enum: `Option::Some(5)`.
         if let Some((ty, variant)) = name.split_once("::") {
             if let Some(e) = self.enums.get(ty).cloned() {
@@ -1452,7 +1715,7 @@ impl Checker {
                             ));
                         }
                         for (a, pt) in args.iter().zip(v.payload.iter()) {
-                            let at = self.type_of(a, ctx);
+                            let at = self.type_of_expected(a, Some(pt), ctx);
                             if !self.types_compatible(pt.clone(), &at) {
                                 self.diags.push(Diagnostic::new(
                                     a.line,
@@ -1493,7 +1756,7 @@ impl Checker {
                 ));
             }
             for (a, f) in args.iter().zip(s.fields.iter()) {
-                let at = self.type_of(a, ctx);
+                let at = self.type_of_expected(a, Some(&f.ty), ctx);
                 if !self.types_compatible(f.ty.clone(), &at) {
                     self.diags.push(Diagnostic::new(
                         a.line,
@@ -1516,14 +1779,7 @@ impl Checker {
             for a in args {
                 let at = self.type_of(a, ctx);
                 let base = at.deref().clone();
-                let is_payload = match &base {
-                    Type::Named(n) => self
-                        .enums
-                        .get(n)
-                        .map(|en| en.variants.iter().any(|v| !v.payload.is_empty()))
-                        .unwrap_or(false),
-                    _ => false,
-                };
+                let is_payload = self.is_payload_enum_type(&base);
                 if is_payload {
                     self.diags.push(Diagnostic::new(
                         a.line,
@@ -1675,12 +1931,18 @@ impl Checker {
         // перенести mut-контракт вызываемой функции на вызывающего.
         let mut arg_paths: Vec<Option<Path>> = Vec::new();
         for (i, a) in args.iter().enumerate() {
-            let t = self.type_of(a, ctx);
+            let param = fi.params.get(i);
+            let t = match param {
+                Some(p) if matches!(p.kind, ParamKind::Owned) => {
+                    self.type_of_expected(a, Some(&p.ty), ctx)
+                }
+                _ => self.type_of(a, ctx),
+            };
             // Путь есть только у «мест» (переменных и их полей).
             let p = self.place_path_of(a, ctx);
             arg_paths.push(p);
 
-            let Some(param) = fi.params.get(i) else { continue };
+            let Some(param) = param else { continue };
             match param.kind {
                 ParamKind::Owned => {
                     // Тип проверяется и здесь: `take(&u)` там, где ждут
@@ -2075,6 +2337,8 @@ impl Checker {
         match t {
             Type::Int | Type::Bool | Type::Str => true,
             Type::Named(n) => self.enums.contains_key(n),
+            Type::Option(inner) => self.payload_type_ok(inner),
+            Type::Result(ok, err) => self.payload_type_ok(ok) && self.payload_type_ok(err),
             _ => false,
         }
     }
@@ -2110,6 +2374,21 @@ impl Checker {
         // Enum — это тег: он ничего не владеет, поэтому копируется.
         matches!(t, Type::Int | Type::Bool | Type::Str | Type::Ref(_))
             || matches!(t, Type::Named(n) if self.enums.contains_key(n))
+            || matches!(t, Type::Option(_) | Type::Result(_, _))
+    }
+
+    /// Enum с данными (включая `Option`/`Result`): в C это структура,
+    /// поэтому `==` и печать оператором не поддерживаются.
+    fn is_payload_enum_type(&self, t: &Type) -> bool {
+        match t {
+            Type::Option(_) | Type::Result(_, _) => true,
+            Type::Named(n) => self
+                .enums
+                .get(n)
+                .map(|en| en.variants.iter().any(|v| !v.payload.is_empty()))
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn types_compatible(&self, a: Type, b: &Type) -> bool {
@@ -2126,7 +2405,14 @@ impl Checker {
         if a.is_ref() || b.is_ref() {
             return a == *b;
         }
-        a == *b
+        match (&a, b) {
+            (Type::Option(x), Type::Option(y)) => self.types_compatible((**x).clone(), y),
+            (Type::Result(x1, x2), Type::Result(y1, y2)) => {
+                self.types_compatible((**x1).clone(), y1)
+                    && self.types_compatible((**x2).clone(), y2)
+            }
+            _ => a == *b,
+        }
     }
 
     fn dead_ref(&self, uid: u32) -> Option<&RefLocal> {

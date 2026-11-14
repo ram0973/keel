@@ -15,6 +15,10 @@ pub enum Type {
     Named(String),
     Ref(Box<Type>),
     Array(Box<Type>, usize),
+    /// Встроенный `Option<T>`: `None` или `Some(T)`.
+    Option(Box<Type>),
+    /// Встроенный `Result<T, E>`: `Ok(T)` или `Err(E)`.
+    Result(Box<Type>, Box<Type>),
 }
 
 impl Type {
@@ -39,6 +43,23 @@ impl Type {
             Type::Named(n) => n.clone(),
             Type::Ref(t) => format!("&{}", t.name()),
             Type::Array(t, n) => format!("[{}; {}]", t.name(), n),
+            Type::Option(t) => format!("Option<{}>", t.name()),
+            Type::Result(t, e) => format!("Result<{}, {}>", t.name(), e.name()),
+        }
+    }
+
+    /// Имя типа в C для мономорфизации встроенных обобщённых типов.
+    pub fn mangle(&self) -> String {
+        match self {
+            Type::Int => "int".into(),
+            Type::Bool => "bool".into(),
+            Type::Str => "string".into(),
+            Type::Void => "void".into(),
+            Type::Named(n) => n.clone(),
+            Type::Ref(t) => format!("ref_{}", t.mangle()),
+            Type::Array(t, n) => format!("arr{}_{}", n, t.mangle()),
+            Type::Option(t) => format!("Option_{}", t.mangle()),
+            Type::Result(t, e) => format!("Result_{}_{}", t.mangle(), e.mangle()),
         }
     }
 }
