@@ -590,6 +590,24 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> PResult<Type> {
+        if self.at_kw("fn") {
+            self.bump();
+            self.expect_punct("(")?;
+            let mut args = Vec::new();
+            while !self.at_punct(")") {
+                args.push(self.parse_type()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct(")")?;
+            let ret = if self.eat_punct("->") {
+                self.parse_type()?
+            } else {
+                Type::Void
+            };
+            return Ok(Type::Fn(args, Box::new(ret)));
+        }
         if self.eat_punct("&") {
             let inner = self.parse_type()?;
             return Ok(Type::Ref(Box::new(inner)));
@@ -1199,6 +1217,30 @@ impl Parser {
                     }
                     _ => Ok(self.mk(line, ExprKind::Ident(s))),
                 }
+            }
+            Tok::Punct(p) if p == "|" => {
+                self.bump();
+                let mut params = Vec::new();
+                while !self.at_punct("|") {
+                    let name = self.ident()?;
+                    let ty = if self.at_punct(",") || self.at_punct("|") {
+                        Type::Void
+                    } else {
+                        self.parse_type()?
+                    };
+                    params.push(Param { name, ty, kind: ParamKind::Owned, mutable: false });
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct("|")?;
+                let body = if self.at_punct("{") {
+                    self.parse_block()?
+                } else {
+                    let e = self.parse_expr()?;
+                    Block { stmts: vec![Stmt::Expr(e)] }
+                };
+                Ok(self.mk(line, ExprKind::Closure { params, body }))
             }
             Tok::Punct(p) if p == "(" => {
                 self.bump();

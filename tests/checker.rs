@@ -3819,3 +3819,33 @@ fn main() int {
 }
 "#);
 }
+
+// ============================================================
+// Замыкания
+// ============================================================
+
+#[test]
+fn замыкание_вызов() {
+    ok(r#"
+fn main() int {
+    let inc fn(int) -> int = |x int| x + 1;
+    println(inc(5));
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn замыкание_в_функции() {
+    ok(r#"
+fn apply(f fn(int) -> int, x int) int {
+    f(x)
+}
+
+fn main() int {
+    let inc fn(int) -> int = |x int| x + 1;
+    println(apply(inc, 10));
+    return 0;
+}
+"#);
+}

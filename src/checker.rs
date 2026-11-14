@@ -928,6 +928,17 @@ impl Checker {
         }
     }
 
+    fn check_closure_body(&mut self, body: &Block, ctx: &mut Ctx) -> Type {
+        let mut ret = Type::Void;
+        for stmt in &body.stmts {
+            self.check_stmt(stmt, ctx);
+            if let Stmt::Expr(e) = stmt {
+                ret = self.type_of(e, ctx);
+            }
+        }
+        ret
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt, ctx: &mut Ctx) {
         match stmt {
             Stmt::Let { name, mutable, ty, init } => {
@@ -2000,6 +2011,45 @@ impl Checker {
                     }
                 }
             }
+            ExprKind::Closure { params, body } => {
+                let mut param_tys = Vec::new();
+                for p in params {
+                    if p.ty == Type::Void {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("у параметра `{}` замыкания должен быть указан тип", p.name),
+                        ));
+                    }
+                    param_tys.push(p.ty.clone());
+                }
+                let mut ctx = Ctx {
+                    scope: HashMap::new(),
+                    ret: Type::Void,
+                    declared: Vec::new(),
+                    loop_depth: 0,
+                    is_main: false,
+                };
+                for p in params {
+                    let uid = self.next_uid;
+                    self.next_uid += 1;
+                    self.names.insert(uid, p.name.clone());
+                    ctx.scope.insert(
+                        p.name.clone(),
+                        Local {
+                            uid,
+                            ty: p.ty.clone(),
+                            path: Path::root(&uid.to_string()),
+                            ref_target: None,
+                            ref_uid: None,
+                            moved: false,
+                            is_mut: false,
+                            escapes: Vec::new(),
+                        },
+                    );
+                }
+                let ret = self.check_closure_body(body, &mut ctx);
+                Type::Fn(param_tys, Box::new(ret))
+            }
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.type_of(cond, ctx);
                 let tt = self.type_of(then_expr, ctx);
@@ -2036,6 +2086,40 @@ impl Checker {
             self.diags.push(Diagnostic::new(line, "вызов: поддерживается только имя функции".into()));
             return Type::Void;
         };
+
+        // Вызов замыкания: `f(args)`, где `f` — локальная типа `fn(...)`.
+        if let Some(local) = ctx.scope.get(name) {
+            if let Type::Fn(param_tys, ret) = &local.ty {
+                self.expr_types.insert(callee.id, local.ty.clone());
+                let param_tys = param_tys.clone();
+                let ret = (**ret).clone();
+                if args.len() != param_tys.len() {
+                    self.diags.push(Diagnostic::new(
+                        line,
+                        format!(
+                            "замыкание `{}` принимает {} аргументов, передано {}",
+                            name,
+                            param_tys.len(),
+                            args.len()
+                        ),
+                    ));
+                }
+                for (a, pt) in args.iter().zip(&param_tys) {
+                    let at = self.type_of(a, ctx);
+                    if !self.types_compatible(pt.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!(
+                                "аргумент замыкания: ожидался `{}`, получен `{}`",
+                                pt.name(),
+                                at.name()
+                            ),
+                        ));
+                    }
+                }
+                return ret;
+            }
+        }
 
         // `Vec::new()` без ожидаемого типа: элемент не выводится.
         if name == "Vec::new" {
@@ -2943,6 +3027,7 @@ pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
             fields.iter().any(|(_, e)| mentions_ident(e, name))
         }
         ExprKind::Variant { .. } => false,
+        ExprKind::Closure { .. } => false,
     }
 }
 

@@ -26,6 +26,8 @@ pub enum Type {
     Tuple(Vec<Type>),
     /// Срез `[T]`: указатель на элементы + длина.
     Slice(Box<Type>),
+    /// Функция `fn(T, U) -> V`.
+    Fn(Vec<Type>, Box<Type>),
 }
 
 impl Type {
@@ -59,6 +61,11 @@ impl Type {
                 ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
             ),
             Type::Slice(t) => format!("[{}]", t.name()),
+            Type::Fn(args, ret) => format!(
+                "fn({}) -> {}",
+                args.iter().map(|t| t.name()).collect::<Vec<_>>().join(", "),
+                ret.name()
+            ),
         }
     }
 
@@ -81,6 +88,11 @@ impl Type {
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
             ),
             Type::Slice(t) => format!("Slice_{}", t.mangle()),
+            Type::Fn(args, ret) => format!(
+                "Fn_{}_{}",
+                args.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_"),
+                ret.mangle()
+            ),
         }
     }
 }
@@ -358,6 +370,11 @@ pub enum ExprKind {
         cond: Box<Expr>,
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
+    },
+    /// Замыкание `|x| expr` или `|x| { ... }`.
+    Closure {
+        params: Vec<Param>,
+        body: Block,
     },
 }
 
