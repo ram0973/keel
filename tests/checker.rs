@@ -2956,3 +2956,56 @@ fn main() int {
     assert!(r.c_code.contains("Keel_Color_Red"));
     assert!(r.c_code.contains("switch"));
 }
+
+// ============================================================
+// Цепочка инвалидации
+// ============================================================
+
+#[test]
+fn диагностика_показывает_цепочку_присваивания() {
+    let r = compile(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let mut c = Color::Red;
+    let r &Color = &c;
+    c = Color::Green;
+    match r { Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    let err = format_diagnostics(&r.diagnostics);
+    assert!(err.contains("создана в строке 5"), "err = {}", err);
+    assert!(
+        err.contains("погашена в строке 6: присваивание"),
+        "err = {}",
+        err
+    );
+}
+
+#[test]
+fn диагностика_цепочки_называет_вызов_с_mut() {
+    let r = compile(
+        r#"
+struct S { v int; }
+fn bump(s &S) int mut(s) { s.v = s.v + 1; return s.v; }
+fn main() int {
+    let mut s = S(1);
+    let r &int = &s.v;
+    let x = bump(&s);
+    println(r);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    let err = format_diagnostics(&r.diagnostics);
+    assert!(err.contains("создана в строке 6"), "err = {}", err);
+    assert!(
+        err.contains("погашена в строке 7: вызов функции с `mut(...)`"),
+        "err = {}",
+        err
+    );
+}

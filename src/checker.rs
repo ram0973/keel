@@ -77,6 +77,10 @@ struct RefLocal {
     uid: u32,
     target: Path,
     dead: bool,
+    /// Строка, где ссылка создана (0 — параметр: у него нет строки).
+    created_line: usize,
+    /// Строка и причина, погасившие ссылку.
+    killed: Option<(usize, String)>,
 }
 
 // ============================================================
@@ -387,7 +391,13 @@ impl Checker {
 
             if let Some(t) = &local.ref_target {
                 local.ref_uid = Some(uid);
-                self.refs.push(RefLocal { uid, target: t.clone(), dead: false });
+                self.refs.push(RefLocal {
+                    uid,
+                    target: t.clone(),
+                    dead: false,
+                    created_line: 0,
+                    killed: None,
+                });
             }
 
             scope.insert(p.name.clone(), local);
@@ -614,7 +624,13 @@ impl Checker {
                     None
                 };
                 let ref_uid = ref_target.as_ref().map(|t| {
-                    self.refs.push(RefLocal { uid, target: t.clone(), dead: false });
+                    self.refs.push(RefLocal {
+                        uid,
+                        target: t.clone(),
+                        dead: false,
+                        created_line: init.line,
+                        killed: None,
+                    });
                     uid
                 });
 
@@ -975,7 +991,7 @@ impl Checker {
 
         // Присваивание ЗАМЕНЯЕТ значение по пути.
         self.modified.push((path.clone(), true));
-        self.invalidate_replace(&path);
+        self.invalidate_replace(&path, lhs.line, "присваивание");
     }
 
     // --------------------------------------------------------
@@ -1020,40 +1036,30 @@ impl Checker {
     }
 
     /// Инвалидирует ссылки на путь и на всё внутри него (замена значения).
-    fn invalidate_replace(&mut self, path: &Path) {
+    fn invalidate_replace(&mut self, path: &Path, line: usize, reason: &str) {
         for r in self.refs.iter_mut() {
             // Ссылка на сам путь и на всё внутри него — объект по этому
-            // пути заменён.
-            if path.is_prefix_of(&r.target) {
-                r.dead = true;
-                continue;
-            }
-            // Ссылка на элемент с НЕИЗВЕСТНЫМ индексом хранит путь-группу
-            // (`a[]`). Запись в конкретный элемент (`a[0]`) могла затронуть
-            // именно тот элемент, на который указывает ссылка, — значит,
-            // ссылка гаснет.
-            //
-            // Без этого проверка `path.is_prefix_of(&r.target)` давала
-            // ложь: `Idx(0)` не является префиксом `Elems`, хотя группа
-            // содержит этот элемент.
-            if path.overlaps(&r.target) {
-                r.dead = true;
+            // пути заменён. Ссылка на элемент с НЕИЗВЕСТНЫМ индексом
+            // хранит путь-группу (`a[]`): запись в конкретный элемент
+            // могла затронуть именно тот элемент, на который она
+            // указывает, — значит, ссылка гаснет.
+            if path.is_prefix_of(&r.target) || path.overlaps(&r.target) {
+                if !r.dead {
+                    r.dead = true;
+                    r.killed = Some((line, reason.to_string()));
+                }
             }
         }
     }
 
     /// Инвалидирует ссылки строго внутри пути (содержимое изменено).
-    fn invalidate_inside(&mut self, path: &Path) {
+    fn invalidate_inside(&mut self, path: &Path, line: usize, reason: &str) {
         for r in self.refs.iter_mut() {
-            if path.is_prefix_of(&r.target) && r.target != *path {
+            let hit = (path.is_prefix_of(&r.target) && r.target != *path)
+                || path.overlaps(&r.target);
+            if hit && !r.dead {
                 r.dead = true;
-                continue;
-            }
-            // Ссылка на элемент с неизвестным индексом (`a[]`) — та же
-            // история: изменение содержимого любого элемента коллекции
-            // затрагивает и его.
-            if path.overlaps(&r.target) {
-                r.dead = true;
+                r.killed = Some((line, reason.to_string()));
             }
         }
     }
@@ -1089,13 +1095,27 @@ impl Checker {
                 }
                 // Использование ссылки: проверяем, что она ещё жива.
                 if let Some(uid) = local.ref_uid {
-                    if self.ref_dead(uid) {
+                    let dead = self
+                        .dead_ref(uid)
+                        .map(|r| (r.created_line, r.killed.clone()));
+                    if let Some((created_line, killed)) = dead {
+                        let mut chain = String::new();
+                        if created_line > 0 {
+                            chain.push_str(&format!(", создана в строке {}", created_line));
+                        }
+                        if let Some((kline, reason)) = killed {
+                            chain.push_str(&format!(
+                                ", погашена в строке {}: {}",
+                                kline, reason
+                            ));
+                        }
                         self.diags.push(Diagnostic::new(
                             e.line,
                             format!(
-                                "ссылка `{}` инвалидирована: объект `{}` был изменён или уничтожен",
+                                "ссылка `{}` инвалидирована: объект `{}` был изменён или уничтожен{}",
                                 name,
-                                self.render(local.ref_target.as_ref().unwrap_or(&Path::root("?")))
+                                self.render(local.ref_target.as_ref().unwrap_or(&Path::root("?"))),
+                                chain
                             ),
                         ));
                     }
@@ -1542,7 +1562,7 @@ impl Checker {
                 self.check_owner_is_mut(&effective, line, ctx);
             }
             self.modified.push((effective.clone(), false));
-            self.invalidate_inside(&effective);
+            self.invalidate_inside(&effective, line, "вызов функции с `mut(...)`");
         }
         // Параметры, помеченные `mut`, тоже объявляют мутацию.
         for (i, p) in fi.params.iter().enumerate() {
@@ -1566,7 +1586,7 @@ impl Checker {
                 self.check_owner_is_mut(&effective, line, ctx);
             }
             self.modified.push((effective.clone(), false));
-            self.invalidate_inside(&effective);
+            self.invalidate_inside(&effective, line, "вызов функции с `mut`-параметром");
         }
 
         fi.ret.clone()
@@ -1897,8 +1917,8 @@ impl Checker {
         a == *b
     }
 
-    fn ref_dead(&self, uid: u32) -> bool {
-        self.refs.iter().any(|r| r.uid == uid && r.dead)
+    fn dead_ref(&self, uid: u32) -> Option<&RefLocal> {
+        self.refs.iter().find(|r| r.uid == uid && r.dead)
     }
 
     fn render(&self, p: &Path) -> String {
