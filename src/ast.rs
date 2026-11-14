@@ -204,6 +204,11 @@ pub struct FuncDecl {
     pub params: Vec<Param>,
     pub ret: Type,
     pub mut_paths: Vec<MutPath>,
+    /// Предусловия `pre(...)`: проверяются на входе в функцию.
+    pub pre: Vec<Expr>,
+    /// Постусловия `post(...)`: проверяются перед каждым `return`.
+    /// В выражениях доступно имя `result` — возвращаемое значение.
+    pub post: Vec<Expr>,
     pub body: Block,
     /// Для функции из `impl`-блока — имя типа-владельца. У свободной
     /// функции `None`. Нужно, чтобы методы разных типов с одинаковым

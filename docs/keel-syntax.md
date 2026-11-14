@@ -47,7 +47,8 @@ const_decl   = "const" ident "=" const_value ";"   ; сделано
 const_value  = literal | ident | const_value op const_value
 struct_decl  = "struct" ident generic_params? "{" field* "}"
 field        = ident type ";"
-func_decl    = "fn" ident generic_params? "(" param* ")" type? mut_clause? block
+func_decl    = "fn" ident generic_params? "(" param* ")" type? mut_clause? contract* block
+contract     = "pre" "(" expr ("," expr)* ")" | "post" "(" expr ("," expr)* ")"
 generic_params = "<" ident ("," ident)* ">"
 
 param        = ident type "mut"?                    ; обычный параметр
@@ -211,6 +212,31 @@ fn birthday(self &User) User {
 
 **Что в `impl` пока нельзя:** дженерики (`impl Vec<T>`), методы для
 встроенных типов, наследование/трейты. Это отдельные волны.
+
+### 2.2.2. Контракты `pre`/`post`
+
+Проверки на границе функции — **в рантайме**, с сообщением и выходом:
+
+```
+fn withdraw(balance int, amount int) int
+    pre(amount > 0, amount <= balance)
+    post(result >= 0)
+{
+    return balance - amount;
+}
+```
+
+`pre(...)` проверяется на входе, `post(...)` — перед каждым `return`.
+В `post` доступно имя `result` — возвращаемое значение; в функции с
+`void` его нет. Условия — обычные выражения типа `bool`; несколько
+условий перечисляются через запятую.
+
+Нарушение печатает в stderr `нарушен контракт pre функции `f` (строка N)`
+и завершает программу с кодом 1. Это не доказательство, а проверка:
+контракт говорит «здесь значение гарантированно есть», а не «поверьте».
+
+Контракты не заменяют `Option`/`Result` — они лишь делают отказ явным
+там, где функция уже решила, что значение есть (см. §7.2 дизайн-документа).
 
 ### 2.3. Типы
 

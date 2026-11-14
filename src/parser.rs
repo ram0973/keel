@@ -345,8 +345,13 @@ impl Parser {
         }
         self.expect_punct(")")?;
 
-        // Возвращаемый тип. Если дальше `mut(...)` — возвращаемого типа нет.
-        let ret = if self.at_punct("{") || self.at_kw("mut") {
+        // Возвращаемый тип. Если дальше `mut(...)` или контракт —
+        // возвращаемого типа нет.
+        let ret = if self.at_punct("{")
+            || self.at_kw("mut")
+            || self.at_kw("pre")
+            || self.at_kw("post")
+        {
             Type::Void
         } else {
             self.parse_type()?
@@ -367,8 +372,54 @@ impl Parser {
             self.expect_punct(")")?;
         }
 
+        // Контракты pre/post: проверки на границе функции. Каждый —
+        // не более одного раза, в любом порядке.
+        let mut pre = Vec::new();
+        let mut post = Vec::new();
+        loop {
+            if self.at_kw("pre") {
+                let cline = self.line();
+                self.bump();
+                if !pre.is_empty() {
+                    return Err(format!("строка {}: контракт `pre` указан дважды", cline));
+                }
+                pre = self.parse_contract_list("pre")?;
+            } else if self.at_kw("post") {
+                let cline = self.line();
+                self.bump();
+                if !post.is_empty() {
+                    return Err(format!("строка {}: контракт `post` указан дважды", cline));
+                }
+                post = self.parse_contract_list("post")?;
+            } else {
+                break;
+            }
+        }
+
         let body = self.parse_block()?;
-        Ok(FuncDecl { name, params, ret, mut_paths, body, owner, line })
+        Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line })
+    }
+
+    /// Список условий контракта: `(expr, expr, ...)`. Пустой список —
+    /// ошибка: контракт без условия ничего не проверяет.
+    fn parse_contract_list(&mut self, kind: &str) -> PResult<Vec<Expr>> {
+        self.expect_punct("(")?;
+        if self.at_punct(")") {
+            return Err(format!(
+                "строка {}: контракт `{}` пуст — нужно хотя бы одно условие",
+                self.line(),
+                kind
+            ));
+        }
+        let mut out = Vec::new();
+        loop {
+            out.push(self.parse_expr()?);
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct(")")?;
+        Ok(out)
     }
 
     fn parse_param(&mut self) -> PResult<Param> {
