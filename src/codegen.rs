@@ -320,10 +320,6 @@ impl<'a> Codegen<'a> {
                 if f.name == "main" {
                     continue;
                 }
-                let ret = match &f.ret {
-                    Type::Void => "void".to_string(),
-                    t => self.ty(t),
-                };
                 let mut params = Vec::new();
                 for p in &f.params {
                     let pt = match &p.kind {
@@ -340,12 +336,8 @@ impl<'a> Codegen<'a> {
                     };
                     params.push(self.decl(&pt, &p.name));
                 }
-                self.out.borrow_mut().push_str(&format!(
-                    "static {} {}({});\n",
-                    ret,
-                    self.fname_of(f),
-                    params.join(", ")
-                ));
+                let decl = self.func_decl(f, &params);
+                self.out.borrow_mut().push_str(&format!("static {};\n", decl));
             }
         }
         self.out.borrow_mut().push('\n');
@@ -889,6 +881,21 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Декларация функции: `Ret name(params)`, а для возврата
+    /// функции-указателя — `Ret (*name(params))(args)`.
+    fn func_decl(&self, f: &FuncDecl, params: &[String]) -> String {
+        match &f.ret {
+            Type::Fn(args, ret) => format!(
+                "{} (*{}({}))({})",
+                self.ty(ret),
+                self.fname_of(f),
+                params.join(", "),
+                args.iter().map(|t| self.ty(t)).collect::<Vec<_>>().join(", ")
+            ),
+            t => format!("{} {}({})", self.ty(t), self.fname_of(f), params.join(", ")),
+        }
+    }
+
     fn emit_func(&mut self, f: &FuncDecl) {
         // Имена переменных — свои в каждой функции.
         self.var_names.borrow_mut().clear();
@@ -933,16 +940,8 @@ impl<'a> Codegen<'a> {
             self.out.borrow_mut().push_str("  k_argc = __k_argc;\n");
             self.out.borrow_mut().push_str("  k_argv = __k_argv;\n");
         } else {
-            let ret = match &f.ret {
-                Type::Void => "void".to_string(),
-                t => self.ty(t),
-            };
-            self.out.borrow_mut().push_str(&format!(
-                "static {} {}({}) {{\n",
-                ret,
-                self.fname_of(f),
-                params.join(", ")
-            ));
+            let decl = self.func_decl(f, &params);
+            self.out.borrow_mut().push_str(&format!("static {} {{\n", decl));
         }
 
         // Предусловия — на входе в функцию, после связывания параметров.

@@ -3849,3 +3849,18 @@ fn main() int {
 }
 "#);
 }
+
+#[test]
+fn замыкание_возврат_из_функции() {
+    ok(r#"
+fn make_adder() fn(int) -> int {
+    |x int| x + 1
+}
+
+fn main() int {
+    let f fn(int) -> int = make_adder();
+    println(f(5));
+    return 0;
+}
+"#);
+}
