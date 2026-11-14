@@ -388,7 +388,65 @@ impl Checker {
             loop_depth: 0,
             is_main: f.name == "main",
         };
+
+        // Контракты: `pre` проверяется на входе, `post` — перед каждым
+        // `return`. Условия — обычные выражения типа bool.
+        for e in &f.pre {
+            let t = self.type_of(e, &mut ctx);
+            if t != Type::Bool && t != Type::Void {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("условие `pre` должно быть bool, получено `{}`", t.name()),
+                ));
+            }
+        }
+
         self.check_block(&f.body, &mut ctx);
+
+        // `post` видит конечное состояние тела и имя `result` —
+        // возвращаемое значение. В `void`-функции `result` нет.
+        let mut post_ctx = Ctx {
+            scope: ctx.scope.clone(),
+            ret: ctx.ret.clone(),
+            declared: ctx.declared.clone(),
+            loop_depth: 0,
+            is_main: ctx.is_main,
+        };
+        if f.ret != Type::Void {
+            let uid = self.next_uid;
+            self.next_uid += 1;
+            self.names.insert(uid, "result".to_string());
+            post_ctx.scope.insert(
+                "result".to_string(),
+                Local {
+                    uid,
+                    ty: f.ret.clone(),
+                    path: Path::root("result"),
+                    ref_target: None,
+                    ref_uid: None,
+                    moved: false,
+                    is_mut: false,
+                    escapes: Vec::new(),
+                },
+            );
+        }
+        for e in &f.post {
+            if f.ret == Type::Void && mentions_ident(e, "result") {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    "`result` доступен только в post функции, возвращающей значение"
+                        .to_string(),
+                ));
+                continue;
+            }
+            let t = self.type_of(e, &mut post_ctx);
+            if t != Type::Bool && t != Type::Void {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("условие `post` должно быть bool, получено `{}`", t.name()),
+                ));
+            }
+        }
 
         // Проверка mut-контракта: тело не должно менять то, что не объявлено.
         // Локальные переменные — собственность функции, их объявлять не нужно;
@@ -1762,6 +1820,35 @@ enum RootKind {
 /// по его пути, переживёт наш кадр. Локальная переменная — нет.
 fn root_kind_is_param(p: &Path) -> bool {
     p.root.parse::<u32>().is_err()
+}
+
+/// Встречается ли имя `name` как идентификатор в выражении.
+///
+/// Нужно для точной диагностики: `result` в `post` функции с `void` —
+/// не «неизвестная переменная», а «у этой функции нет возвращаемого
+/// значения».
+fn mentions_ident(e: &Expr, name: &str) -> bool {
+    match &e.kind {
+        ExprKind::Ident(n) => n == name,
+        ExprKind::Field { obj, .. } => mentions_ident(obj, name),
+        ExprKind::Index { obj, idx } => mentions_ident(obj, name) || mentions_ident(idx, name),
+        ExprKind::Array(items) => items.iter().any(|i| mentions_ident(i, name)),
+        ExprKind::Call { callee, args } => {
+            mentions_ident(callee, name) || args.iter().any(|a| mentions_ident(a, name))
+        }
+        ExprKind::MethodCall { obj, args, .. } => {
+            mentions_ident(obj, name) || args.iter().any(|a| mentions_ident(a, name))
+        }
+        ExprKind::Unary { e, .. } => mentions_ident(e, name),
+        ExprKind::Binary { l, r, .. } => mentions_ident(l, name) || mentions_ident(r, name),
+        ExprKind::Ref(inner) => mentions_ident(inner, name),
+        ExprKind::If { cond, then_expr, else_expr } => {
+            mentions_ident(cond, name)
+                || mentions_ident(then_expr, name)
+                || mentions_ident(else_expr, name)
+        }
+        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
+    }
 }
 
 struct Ctx {
