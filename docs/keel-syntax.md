@@ -48,7 +48,7 @@ const_value  = literal | ident | const_value op const_value
 struct_decl  = "struct" ident generic_params? "{" field* "}"
 field        = ident type ";"
 func_decl    = "fn" ident generic_params? "(" param* ")" type? mut_clause? contract* block
-contract     = "pre" "(" expr ("," expr)* ")" | "post" "(" expr ("," expr)* ")"
+contract     = "pre" "(" expr ("," expr)* ")" | "post" "(" expr ("," expr)* ")"   ; сделано
 generic_params = "<" ident ("," ident)* ">"
 
 param        = ident type "mut"?                    ; обычный параметр

@@ -2688,3 +2688,112 @@ fn main() int {
         "инвалидирована",
     );
 }
+
+// ============================================================
+// Контракты pre/post
+// ============================================================
+
+#[test]
+fn контракты_pre_post_компилируются() {
+    ok(r#"
+fn withdraw(balance int, amount int) int
+    pre(amount > 0, amount <= balance)
+    post(result >= 0)
+{
+    return balance - amount;
+}
+
+fn main() int {
+    return withdraw(100, 30);
+}
+"#);
+}
+
+#[test]
+fn условие_pre_должно_быть_bool() {
+    fails(
+        r#"
+fn f(x int) int pre(x) { return x; }
+fn main() int { return f(1); }
+"#,
+        "условие `pre` должно быть bool",
+    );
+}
+
+#[test]
+fn условие_post_должно_быть_bool() {
+    fails(
+        r#"
+fn f(x int) int post(result) { return x; }
+fn main() int { return f(1); }
+"#,
+        "условие `post` должно быть bool",
+    );
+}
+
+#[test]
+fn result_в_void_функции_ловится() {
+    fails(
+        r#"
+fn f(x int) post(result > 0) { print(x); }
+fn main() int { f(1); return 0; }
+"#,
+        "`result` доступен только в post функции, возвращающей значение",
+    );
+}
+
+#[test]
+fn result_в_pre_неизвестен() {
+    fails(
+        r#"
+fn f(x int) int pre(result > 0) { return x; }
+fn main() int { return f(1); }
+"#,
+        "неизвестная переменная `result`",
+    );
+}
+
+#[test]
+fn повторный_контракт_pre_ловится() {
+    parse_fails(
+        r#"
+fn f(x int) int pre(x > 0) pre(x < 10) { return x; }
+fn main() int { return f(1); }
+"#,
+        "контракт `pre` указан дважды",
+    );
+}
+
+#[test]
+fn пустой_контракт_ловится() {
+    parse_fails(
+        r#"
+fn f(x int) int pre() { return x; }
+fn main() int { return f(1); }
+"#,
+        "контракт `pre` пуст",
+    );
+}
+
+#[test]
+fn post_видит_поле_result() {
+    ok(r#"
+struct P { x int; }
+fn mk(x int) P post(result.x > 0) { return P(x); }
+fn main() int { let p = mk(4); return p.x; }
+"#);
+}
+
+#[test]
+fn контракты_попадают_в_сгенерированный_c() {
+    let r = compile(
+        r#"
+fn f(x int) int pre(x > 0) post(result > 0) { return x; }
+fn main() int { return f(1); }
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(r.c_code.contains("k_contract_fail"));
+    assert!(r.c_code.contains("__k_result"));
+}

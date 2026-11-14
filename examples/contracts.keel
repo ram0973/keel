@@ -1,0 +1,48 @@
+// Контракты pre/post — проверки на границе функции.
+//
+// pre(...) проверяется на входе, post(...) — перед каждым return.
+// В post доступно имя result — возвращаемое значение.
+// Нарушение печатает в stderr имя функции, вид контракта и строку
+// и завершает программу с кодом 1.
+//
+// Это не доказательство, а проверка: контракт говорит «здесь значение
+// гарантированно есть», а не «поверьте». Поэтому он дешевле Option/Result
+// и не требует менять типы во всём коде.
+
+struct Account { balance int; }
+
+// Снять деньги: сумма положительна и не больше остатка, а остаток
+// после операции неотрицателен.
+fn withdraw(balance int, amount int) int
+    pre(amount > 0, amount <= balance)
+    post(result >= 0)
+{
+    return balance - amount;
+}
+
+impl Account {
+    // Метод с контрактом: self — обычный параметр, доступен в pre/post.
+    fn take(self &Account, amount int) int
+        pre(amount > 0, amount <= self.balance)
+        post(result >= 0)
+    {
+        return self.balance - amount;
+    }
+}
+
+fn main() int {
+    // Оба контракта выполнены.
+    let left = withdraw(100, 30);
+    println("после снятия:", left);            // 70
+
+    let a = Account(50);
+    let left2 = a.take(20);
+    println("после снятия со счёта:", left2);  // 30
+
+    // Нарушение контракта — программа остановится с сообщением:
+    //   нарушен контракт pre функции `withdraw` (строка N)
+    // Раскомментируйте, чтобы увидеть:
+    // let bad = withdraw(10, 50);
+
+    return 0;
+}
