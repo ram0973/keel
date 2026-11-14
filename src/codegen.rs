@@ -1993,6 +1993,10 @@ impl<'a> Codegen<'a> {
                     let cmp = match op {
                         BinOp::Eq => "==",
                         BinOp::Ne => "!=",
+                        BinOp::Lt => "<",
+                        BinOp::Gt => ">",
+                        BinOp::Le => "<=",
+                        BinOp::Ge => ">=",
                         _ => "",
                     };
                     if !cmp.is_empty() {

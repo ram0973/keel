@@ -4,12 +4,12 @@
 // `import "user.keel";` в другом файле пишут просто `User(...)`,
 // а не `user::User(...)`.
 
-struct User {
+pub struct User {
     name string;
     age int;
 }
 
-impl User {
+pub impl User {
     fn get_name(self &User) string {
         return self.name;
     }

@@ -277,3 +277,152 @@ fn main() int {
         "bool",
     );
 }
+
+// 12. Утечка из then не теряется при слиянии ветвей.
+#[test]
+fn if_then_escape_merged() {
+    fails(
+        r#"
+struct H { r &int; }
+fn bad(p &int, c bool) H {
+    let mut h = H(p);
+    let i = 1;
+    if c { h.r = &i; }
+    return h;
+}
+fn main() int { return 0; }
+"#,
+        "локальную",
+    );
+}
+
+// 13. x = f(x) после consume(x) — использование перемещённого.
+#[test]
+fn reassign_uses_moved_rhs() {
+    fails(
+        r#"
+struct S { x int; }
+fn consume(s S) int { return s.x; }
+fn f(x S) S { return x; }
+fn main() int {
+    let mut x = S(1);
+    consume(x);
+    x = f(x);
+    return 0;
+}
+"#,
+        "перемещён",
+    );
+}
+
+// 14. Цель ссылки — все ref-аргументы, а не первый с путём.
+#[test]
+fn call_ref_targets_all_ref_args() {
+    fails(
+        r#"
+fn pick(count int, a &int, b &int) &int { return a; }
+fn main() int {
+    let mut x = 1;
+    let mut y = 2;
+    let r = pick(0, &x, &y);
+    y = 5;
+    println(r);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// 15. Метод-ссылка отслеживается.
+#[test]
+fn method_ref_target_tracked() {
+    fails(
+        r#"
+struct W { items [int; 2]; }
+impl W {
+    fn first(self &W) &int { return &self.items[0]; }
+}
+fn main() int {
+    let mut w = W([1, 2]);
+    let r = w.first();
+    w.items[0] = 3;
+    println(r);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// 16. Срез — заимствование массива: мутация гасит.
+#[test]
+fn slice_tracks_array() {
+    fails(
+        r#"
+fn main() int {
+    let mut arr [int; 3] = [1, 2, 3];
+    let s [int] = arr;
+    arr[0] = 9;
+    println(s[0]);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// 17. store(&h, &i) кладёт ссылку в локальный контейнер.
+#[test]
+fn store_into_local_container() {
+    fails(
+        r#"
+struct H { r &int; }
+fn store(h &H, r &int) mut(h) { h.r = r; }
+fn bad(p &int) H {
+    let mut h = H(p);
+    let i = 1;
+    store(&h, &i);
+    return h;
+}
+fn main() int { return 0; }
+"#,
+        "локальную",
+    );
+}
+
+// 18. Обе ветви перемещают — после if переменная перемещена, но
+// использования после нет: ошибки быть не должно.
+#[test]
+fn if_both_branches_move_ok() {
+    ok(
+        r#"
+struct S { x int; }
+fn consume(s S) int { return s.x; }
+fn main() int {
+    let a = S(1);
+    let c = true;
+    if c { consume(a); } else { consume(a); }
+    return 0;
+}
+"#,
+    );
+}
+
+// 19. Ветвь с return не вносит своё состояние.
+#[test]
+fn if_diverging_branch_ignored() {
+    ok(
+        r#"
+struct S { x int; }
+fn consume(s S) int { return s.x; }
+fn main() int {
+    let a = S(1);
+    let bad = true;
+    if bad { consume(a); return 0; }
+    println(a.x);
+    return 0;
+}
+"#,
+    );
+}

@@ -3982,3 +3982,44 @@ fn main() int {
         "`close` ждёт fd типа `int`",
     );
 }
+
+// Строки сравниваются по содержимому и по порядку — через strcmp,
+// а не указателями (иначе `"apple" < "banana"` — unspecified behavior).
+#[test]
+fn строки_сравниваются_по_порядку_через_strcmp() {
+    let r = compile(
+        r#"
+fn main() int {
+    if "apple" < "banana" {
+        return 1;
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(
+        r.c_code.contains("strcmp(\"apple\", \"banana\") < 0"),
+        "ожидался strcmp, получено:\n{}",
+        r.c_code
+    );
+}
+
+// Обход массива даёт копию элемента: массив остаётся доступен после
+// цикла, в том числе если это поле структуры.
+#[test]
+fn for_по_массиву_не_перемещает_массив() {
+    ok(r#"
+struct S { x int; }
+struct R { items [S; 2]; }
+fn main() int {
+    let r = R([S(1), S(2)]);
+    let mut total = 0;
+    for s in r.items {
+        total += s.x;
+    }
+    return total + len(r.items);
+}
+"#);
+}
