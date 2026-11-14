@@ -713,12 +713,40 @@ impl<'a> Codegen<'a> {
             ));
         }
 
-        for stmt in &f.body.stmts {
+        // Liveness: для каждого Vec-локального находим последний
+        // top-level оператор, который его упоминает, и освобождаем
+        // сразу после него. Не упомянутые вовсе — в конце.
+        let drops = self
+            .vec_drops
+            .get(&crate::checker::Checker::func_key(f))
+            .cloned()
+            .unwrap_or_default();
+        let last_use: Vec<(String, Type, usize)> = drops
+            .into_iter()
+            .map(|(name, ty)| {
+                let idx = f
+                    .body
+                    .stmts
+                    .iter()
+                    .rposition(|s| stmt_mentions(s, &name))
+                    .unwrap_or(usize::MAX);
+                (name, ty, idx)
+            })
+            .collect();
+        for (i, stmt) in f.body.stmts.iter().enumerate() {
             self.emit_stmt(stmt);
+            for (name, ty, idx) in &last_use {
+                if *idx == i {
+                    if let Type::Vec(inner) = ty {
+                        let m = inner.mangle();
+                        let cname = self.var_name(name);
+                        self.out.push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                    }
+                }
+            }
         }
-        // Автоматическое освобождение Vec-локальных в конце функции.
-        if let Some(drops) = self.vec_drops.get(&crate::checker::Checker::func_key(f)) {
-            for (name, ty) in drops {
+        for (name, ty, idx) in &last_use {
+            if *idx == usize::MAX {
                 if let Type::Vec(inner) = ty {
                     let m = inner.mangle();
                     let cname = self.var_name(name);
@@ -1619,4 +1647,46 @@ impl<'a> Codegen<'a> {
             }
         }
     }
+}
+
+/// Упоминает ли оператор имя (для liveness `Vec`).
+fn stmt_mentions(s: &Stmt, name: &str) -> bool {
+    match s {
+        Stmt::Let { init, .. } => crate::checker::mentions_ident(init, name),
+        Stmt::Assign { lhs, rhs } => {
+            crate::checker::mentions_ident(lhs, name) || crate::checker::mentions_ident(rhs, name)
+        }
+        Stmt::Expr(e) => crate::checker::mentions_ident(e, name),
+        Stmt::Return { value, .. } => value
+            .as_ref()
+            .is_some_and(|e| crate::checker::mentions_ident(e, name)),
+        Stmt::If { cond, then_block, else_block } => {
+            crate::checker::mentions_ident(cond, name)
+                || block_mentions(then_block, name)
+                || else_block.as_ref().is_some_and(|b| block_mentions(b, name))
+        }
+        Stmt::While { cond, body } => {
+            crate::checker::mentions_ident(cond, name) || block_mentions(body, name)
+        }
+        Stmt::DoWhile { body, cond } => {
+            block_mentions(body, name) || crate::checker::mentions_ident(cond, name)
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
+        Stmt::ForRange { start, end, body, .. } => {
+            crate::checker::mentions_ident(start, name)
+                || crate::checker::mentions_ident(end, name)
+                || block_mentions(body, name)
+        }
+        Stmt::ForEach { iter, body, .. } => {
+            crate::checker::mentions_ident(iter, name) || block_mentions(body, name)
+        }
+        Stmt::Match { subject, arms, .. } => {
+            crate::checker::mentions_ident(subject, name)
+                || arms.iter().any(|a| block_mentions(&a.body, name))
+        }
+    }
+}
+
+fn block_mentions(b: &Block, name: &str) -> bool {
+    b.stmts.iter().any(|s| stmt_mentions(s, name))
 }

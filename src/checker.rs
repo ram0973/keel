@@ -2770,7 +2770,7 @@ fn root_kind_is_param(p: &Path) -> bool {
 /// Нужно для точной диагностики: `result` в `post` функции с `void` —
 /// не «неизвестная переменная», а «у этой функции нет возвращаемого
 /// значения».
-fn mentions_ident(e: &Expr, name: &str) -> bool {
+pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
     match &e.kind {
         ExprKind::Ident(n) => n == name,
         ExprKind::Field { obj, .. } => mentions_ident(obj, name),
