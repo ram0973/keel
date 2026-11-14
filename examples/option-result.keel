@@ -1,0 +1,68 @@
+// Option и Result — встроенные enum'ы.
+//
+// Option<T> — значение есть (Some) или нет (None). Result<T, E> —
+// успех (Ok) или ошибка (Err). Оба разбираются через `match`, и
+// компилятор требует разобрать все варианты: «забыть обработать»
+// нельзя.
+//
+// Тип `None`/`Ok`/`Err` выводится из контекста: объявленного типа
+// переменной, типа возврата функции или типа параметра. Если контекста
+// нет — компилятор просит указать тип явно.
+
+fn find(xs &[int; 5], n int, target int) Option<int> {
+    let mut i int = 0;
+    while i < n {
+        if xs[i] == target { return Some(i); }
+        i = i + 1;
+    }
+    return None;
+}
+
+fn div(a int, b int) Result<int, string> {
+    if b == 0 { return Err("деление на ноль"); }
+    return Ok(a / b);
+}
+
+fn main() int {
+    let xs [int; 5] = [10, 20, 30, 40, 50];
+
+    // Option: поиск.
+    let found Option<int> = find(&xs, 5, 30);
+    match found {
+        Some(i) => { println("нашли по индексу ", i); }
+        None => { println("не нашли"); }
+    }
+
+    let missing Option<int> = find(&xs, 5, 99);
+    match missing {
+        Some(i) => { println("нашли по индексу ", i); }
+        None => { println("не нашли"); }
+    }
+
+    // Result: деление.
+    let good Result<int, string> = div(10, 2);
+    match good {
+        Ok(v) => { println("10 / 2 = ", v); }
+        Err(e) => { println("ошибка: ", e); }
+    }
+
+    let bad Result<int, string> = div(10, 0);
+    match bad {
+        Ok(v) => { println("10 / 0 = ", v); }
+        Err(e) => { println("ошибка: ", e); }
+    }
+
+    // Option<Option<int>>: вложенность.
+    let nested Option<Option<int>> = Some(None);
+    match nested {
+        Some(inner) => {
+            match inner {
+                Some(x) => { println("внутри: ", x); }
+                None => { println("внутри пусто"); }
+            }
+        }
+        None => { println("снаружи пусто"); }
+    }
+
+    return 0;
+}

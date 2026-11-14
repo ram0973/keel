@@ -271,11 +271,45 @@ enum. Рекурсивный enum (`enum E { A(E) }`) запрещён — он 
 инвалидируются. С копируемыми данными ссылок внутрь нет, но правило
 то же, что понадобится не-Copy данным.
 
+### 2.2.4. `Option` и `Result`
+
+```
+let o Option<int> = Some(5);
+let n Option<int> = None;
+let r Result<int, string> = Ok(7);
+let e Result<int, string> = Err("плохо");
+```
+
+`Option<T>` — встроенный enum с вариантами `Some(T)` и `None`;
+`Result<T, E>` — `Ok(T)` и `Err(E)`. Разбор — `match` с голыми именами
+вариантов:
+
+```
+match o {
+    Some(x) => { println(x); }
+    None => { println("нет"); }
+}
+```
+
+Тип `None`/`Ok`/`Err` выводится из контекста: объявленного типа
+переменной, типа возврата функции или типа параметра. Если контекста
+нет, компилятор просит указать тип явно. `Some(x)` выводит `T` из
+аргумента.
+
+Данные ограничены копируемыми типами (`int`, `bool`, `string`, enum,
+другой `Option`/`Result`). Ссылки и массивы в данных отложены.
+Сравнение `==` и печать `Option`/`Result` не поддерживаются — разбирайте
+через `match`.
+
+В C каждый конкретный `Option<T>`/`Result<T,E>` мономорфизируется в
+отдельный tagged union (`Keel_Option_int`, `Keel_Result_int_string`).
+
 ### 2.3. Типы
 
 ```
 type        = base_type ("<" type ("," type)* ">")?
 base_type   = "int" | "float" | "string" | "bool" | "void"
+            | "Option" | "Result"             ; встроенные обобщённые
             | ident                          ; имя структуры или enum
             | "&" type                       ; ссылка
             | "[" type ";" int "]"            ; массив фиксированного размера

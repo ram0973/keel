@@ -3196,3 +3196,231 @@ fn main() int {
         "печать enum с данными не поддерживается",
     );
 }
+
+// ============================================================
+// Option / Result — встроенные обобщённые enum'ы
+// ============================================================
+
+#[test]
+fn option_конструирование_и_match() {
+    ok(
+        r#"
+fn find(xs [int; 3], target int) Option<int> {
+    let mut i int = 0;
+    while i < 3 {
+        if xs[i] == target { return Some(i); }
+        i = i + 1;
+    }
+    return None;
+}
+
+fn main() int {
+    let xs [int; 3] = [10, 20, 30];
+    let o Option<int> = find(xs, 20);
+    match o {
+        Some(i) => { println(i); }
+        None => { println(-1); }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn none_без_типа_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let o = None;
+    return 0;
+}
+"#,
+        "не удалось вывести тип `None`",
+    );
+}
+
+#[test]
+fn ok_без_типа_ошибки_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let r = Ok(5);
+    return 0;
+}
+"#,
+        "не удалось вывести тип ошибки `Ok`",
+    );
+}
+
+#[test]
+fn option_неисчерпывающий_match() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    match o {
+        Some(x) => { println(x); }
+    }
+    return 0;
+}
+"#,
+        "не разобраны варианты `Option::None`",
+    );
+}
+
+#[test]
+fn option_неверный_вариант() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    match o {
+        Ok(x) => { println(x); }
+        Err(e) => { println(e); }
+    }
+    return 0;
+}
+"#,
+        "не относится к enum `Option`",
+    );
+}
+
+#[test]
+fn option_в_c_как_tagged_union() {
+    let r = compile(
+        r#"
+fn main() int {
+    let o Option<int> = Some(5);
+    match o {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(r.c_code.contains("Keel_Option_int_tag"));
+    assert!(r.c_code.contains("Keel_Option_int_Some"));
+    assert!(r.c_code.contains("Keel_Option_int_None"));
+    assert!(r.c_code.contains(".data.Some"));
+}
+
+#[test]
+fn result_ok_err() {
+    ok(
+        r#"
+fn div(a int, b int) Result<int, string> {
+    if b == 0 { return Err("деление на ноль"); }
+    return Ok(a / b);
+}
+
+fn main() int {
+    let r Result<int, string> = div(10, 2);
+    match r {
+        Ok(v) => { println(v); }
+        Err(e) => { println(e); }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn option_печать_запрещена() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    println(o);
+    return 0;
+}
+"#,
+        "печать enum с данными не поддерживается",
+    );
+}
+
+#[test]
+fn option_сравнение_запрещено() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    if o == o { return 1; }
+    return 0;
+}
+"#,
+        "сравнение enum с данными не поддерживается",
+    );
+}
+
+#[test]
+fn option_параметр_выводит_none() {
+    ok(
+        r#"
+fn take(o Option<int>) int {
+    match o {
+        Some(x) => { return x; }
+        None => { return -1; }
+    }
+}
+
+fn main() int {
+    let x = take(None);
+    println(x);
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn option_в_option() {
+    ok(
+        r#"
+fn main() int {
+    let o Option<Option<int>> = Some(None);
+    match o {
+        Some(inner) => {
+            match inner {
+                Some(x) => { println(x); }
+                None => { println(0); }
+            }
+        }
+        None => { println(-1); }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn option_в_поле_и_массиве() {
+    ok(
+        r#"
+struct Holder { o Option<int>; }
+
+fn main() int {
+    let h Holder = Holder(None);
+    match h.o {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    let arr [Option<int>; 2] = [Some(1), None];
+    let mut i int = 0;
+    while i < 2 {
+        match arr[i] {
+            Some(x) => { println(x); }
+            None => { println(-1); }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+"#,
+    );
+}
