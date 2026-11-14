@@ -127,8 +127,9 @@ sh scripts/check-examples.sh
 ```
 
 `check-examples.sh` в конце прогоняет все примеры ещё раз под
-ASan + UBSan + LSan (`scripts/check-sanitizers.sh`): утечка или UB —
-ошибка.
+ASan + UBSan + LSan (`scripts/check-sanitizers.sh`). Известные утечки
+строк/файлов (волна 8) видны как ошибки прогона; остальные проверки
+при этом всё равно выполняются.
 
 ### 6. Туториал `play/`
 

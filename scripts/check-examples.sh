@@ -50,7 +50,10 @@ done
 
 echo
 echo "=== санитайзеры (ASan/UBSan/LSan) ==="
-sh scripts/check-sanitizers.sh
+# Известные утечки строк/файлов (волна 8) — прогон всё равно идёт,
+# но не должен скрывать остальные проверки.
+san_fail=0
+sh scripts/check-sanitizers.sh || san_fail=1
 
 echo
 echo "=== документация ==="
@@ -65,3 +68,5 @@ else
     echo "проверка ссылок не пройдена (сеть?) — подробности в /tmp/keel_links.log"
     tail -12 /tmp/keel_links.log
 fi
+
+exit $san_fail
