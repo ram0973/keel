@@ -71,6 +71,8 @@ pub struct Codegen<'a> {
     cur_post: Vec<Expr>,
     /// Имя текущей функции для сообщения о нарушении контракта.
     cur_fn_name: String,
+    /// Файл текущей функции — для `#line` в сгенерированном C.
+    cur_file: String,
 }
 
 /// Вид определения типа для топологической сортировки.
@@ -128,6 +130,7 @@ impl<'a> Codegen<'a> {
             cur_ret: Type::Void,
             cur_post: Vec::new(),
             cur_fn_name: String::new(),
+            cur_file: String::new(),
         }
     }
 
@@ -962,6 +965,7 @@ impl<'a> Codegen<'a> {
             Some(ty) => format!("{}::{}", ty, f.name),
             None => f.name.clone(),
         };
+        self.cur_file = if f.file.is_empty() { "<keel>".to_string() } else { f.file.clone() };
         let mut params = Vec::new();
         for p in &f.params {
             let pt = match &p.kind {
@@ -1158,6 +1162,13 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_stmt(&mut self, stmt: &Stmt) {
+        // `#line` привязывает ошибки C к строке Keel: gcc сообщает
+        // `file.keel:строка`, а не строку сгенерированного C.
+        self.out.borrow_mut().push_str(&format!(
+            "#line {} \"{}\"\n",
+            stmt.line(),
+            self.cur_file
+        ));
         match stmt {
             Stmt::Let { name, ty, init, .. } => {
                 let t = match ty {

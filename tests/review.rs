@@ -593,3 +593,18 @@ fn main() int {
     assert!(text.contains("[E003]"), "нет кода ошибки:\n{}", text);
     assert!(text.contains("подсказка:"), "нет подсказки:\n{}", text);
 }
+
+// 27. `#line` привязывает ошибки C к строке Keel.
+#[test]
+fn c_errors_point_to_keel_line() {
+    let r = compile(
+        r#"
+fn main() int {
+    let x = 1;
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.c_code.contains("#line 3"), "нет #line:\n{}", r.c_code);
+}
