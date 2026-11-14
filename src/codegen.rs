@@ -26,7 +26,7 @@ pub struct Codegen<'a> {
     /// Конкретные типы срезов.
     slice_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
-    vec_drops: &'a HashMap<String, Vec<(String, Type)>>,
+    vec_drops: &'a HashMap<String, Vec<(String, Type, Vec<String>)>>,
     /// Тела замыканий — эмитятся после функций.
     closures: std::cell::RefCell<Vec<String>>,
     /// Отложенные замыкания: (имя, параметры, тело, тип).
@@ -1018,12 +1018,15 @@ impl<'a> Codegen<'a> {
             .unwrap_or_default();
         let last_use: Vec<(String, Type, usize)> = drops
             .into_iter()
-            .map(|(name, ty)| {
+            .map(|(name, ty, aliases)| {
                 let idx = f
                     .body
                     .stmts
                     .iter()
-                    .rposition(|s| stmt_mentions(s, &name))
+                    .rposition(|s| {
+                        stmt_mentions(s, &name)
+                            || aliases.iter().any(|a| stmt_mentions(s, a))
+                    })
                     .unwrap_or(usize::MAX);
                 (name, ty, idx)
             })

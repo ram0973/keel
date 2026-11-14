@@ -550,3 +550,25 @@ fn main() int {
     );
 }
 
+
+// 25. Vec не освобождается, пока жива ссылка на его элемент.
+#[test]
+fn vec_free_after_last_alias_use() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let r = &v[0];
+    println(r);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    let p = r.c_code.find("printf").expect("нет printf");
+    let f = r.c_code.find("k_vec_int_free").expect("нет free");
+    assert!(p < f, "Vec освобождён до последнего использования ссылки");
+}
+

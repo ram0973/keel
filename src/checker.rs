@@ -154,7 +154,7 @@ pub struct Checker {
     /// `Vec`-локальные, которые надо освободить в конце функции:
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
-    pub vec_drops: HashMap<String, Vec<(String, Type)>>,
+    pub vec_drops: HashMap<String, Vec<(String, Type, Vec<String>)>>,
     diags: Diags,
 }
 
@@ -685,7 +685,7 @@ impl Checker {
         // явно. Это конец области видимости, а не liveness (п. 3.10):
         // liveness требует отслеживания последнего использования и
         // вставки free раньше — следующий шаг.
-        let mut drops: Vec<(String, Type)> = Vec::new();
+        let mut drops: Vec<(String, Type, Vec<String>)> = Vec::new();
         for (name, l) in &ctx.scope {
             if l.moved {
                 continue;
@@ -697,7 +697,27 @@ impl Checker {
             if f.params.iter().any(|p| &p.name == name) {
                 continue;
             }
-            drops.push((name.clone(), l.ty.clone()));
+            // Псевдонимы: локальные ссылки, указывающие внутрь этого Vec.
+            // Освобождать раньше их последнего использования нельзя.
+            let mut aliases = Vec::new();
+            for (an, al) in &ctx.scope {
+                if an == name {
+                    continue;
+                }
+                let targets: Vec<Path> = if let Some(uid) = al.ref_uid {
+                    self.refs
+                        .iter()
+                        .find(|r| r.uid == uid)
+                        .map(|r| r.targets.clone())
+                        .unwrap_or_default()
+                } else {
+                    al.ref_target.clone().into_iter().collect()
+                };
+                if targets.iter().any(|t| l.path.may_cover(t)) {
+                    aliases.push(an.clone());
+                }
+            }
+            drops.push((name.clone(), l.ty.clone(), aliases));
         }
         if !drops.is_empty() {
             self.vec_drops.insert(Self::func_key(f), drops);
