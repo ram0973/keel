@@ -1431,7 +1431,7 @@ fn main() int {
     return 0;
 }
 "#,
-        "`len` работает со строкой или массивом",
+        "`len` работает со строкой, массивом или Vec",
     );
 }
 
@@ -3419,6 +3419,133 @@ fn main() int {
         }
         i = i + 1;
     }
+    return 0;
+}
+"#,
+    );
+}
+
+// ============================================================
+// Vec<T>
+// ============================================================
+
+#[test]
+fn vec_push_len_get_pop() {
+    ok(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    println(v.len());
+    println(v[0]);
+    v[1] = 9;
+    match v.get(1) {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    match v.pop() {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    v.free();
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn vec_без_типа_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let v = Vec::new();
+    return 0;
+}
+"#,
+        "не удалось вывести тип `Vec::new`",
+    );
+}
+
+#[test]
+fn vec_push_в_неизменяемый_запрещён() {
+    fails(
+        r#"
+fn main() int {
+    let v Vec<int> = Vec::new();
+    v.push(1);
+    return 0;
+}
+"#,
+        "получатель должен быть `mut`",
+    );
+}
+
+#[test]
+fn vec_push_гасит_ссылку_на_элемент() {
+    fails(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let r = &v[0];
+    v.push(2);
+    println(r);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+#[test]
+fn vec_печать_запрещена() {
+    fails(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    println(v);
+    return 0;
+}
+"#,
+        "печать Vec не поддерживается",
+    );
+}
+
+#[test]
+fn vec_сравнение_запрещено() {
+    fails(
+        r#"
+fn main() int {
+    let mut a Vec<int> = Vec::new();
+    let mut b Vec<int> = Vec::new();
+    if a == b { return 1; }
+    return 0;
+}
+"#,
+        "сравнение Vec не поддерживается",
+    );
+}
+
+#[test]
+fn vec_вложенный_и_структура() {
+    ok(
+        r#"
+struct P { x int; }
+
+fn main() int {
+    let mut ps Vec<P> = Vec::new();
+    ps.push(P(1));
+    ps.push(P(2));
+    println(ps[1].x);
+
+    let mut grid Vec<Vec<int>> = Vec::new();
+    let mut row Vec<int> = Vec::new();
+    row.push(7);
+    grid.push(row);
+    println(grid[0][0]);
     return 0;
 }
 "#,

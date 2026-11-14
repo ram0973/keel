@@ -304,12 +304,47 @@ match o {
 В C каждый конкретный `Option<T>`/`Result<T,E>` мономорфизируется в
 отдельный tagged union (`Keel_Option_int`, `Keel_Result_int_string`).
 
+### 2.2.5. `Vec`
+
+```
+let mut v Vec<int> = Vec::new();
+v.push(10);
+v.push(20);
+println(v.len());      // 2
+println(v[0]);         // 10
+v[1] = 99;
+match v.get(1) {
+    Some(x) => { println(x); }
+    None => { println("нет"); }
+}
+match v.pop() {
+    Some(x) => { println(x); }
+    None => { println("пусто"); }
+}
+v.free();
+```
+
+`Vec<T>` — встроенный растущий массив в куче, без пользовательских
+дженериков. Методы: `push(x)`, `len()`, `get(i)` → `Option<T>`,
+`pop()` → `Option<T>`, `free()`. Индексация `v[i]` — чтение и запись.
+`push`/`pop`/`free` требуют `mut`-получателя.
+
+`push` перевыделяет буфер, поэтому гасит ссылки на элементы
+(`&v[0]` после `push` невалидна). Элемент — копируемый тип (`int`,
+`bool`, `string`, enum, `Option`/`Result`, структура). Память
+освобождается явно: `v.free()`; автоматическое освобождение по
+liveness — следующий шаг.
+
+В C каждый `Vec<T>` мономорфизируется в структуру
+`Keel_Vec_T { T* data; int64_t len; int64_t cap; }` и набор функций
+`k_vec_T_push` и т.д.
+
 ### 2.3. Типы
 
 ```
 type        = base_type ("<" type ("," type)* ">")?
 base_type   = "int" | "float" | "string" | "bool" | "void"
-            | "Option" | "Result"             ; встроенные обобщённые
+            | "Option" | "Result" | "Vec"   ; встроенные обобщённые
             | ident                          ; имя структуры или enum
             | "&" type                       ; ссылка
             | "[" type ";" int "]"            ; массив фиксированного размера

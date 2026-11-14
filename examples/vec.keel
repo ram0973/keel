@@ -1,0 +1,53 @@
+// Vec<T>: растущий массив в куче.
+//
+// Vec — встроенный тип, как Option/Result: без пользовательских
+// дженериков, с мономорфизацией в C (Keel_Vec_int, Keel_Vec_Task).
+// Элемент — копируемый тип: int, bool, string, enum, Option/Result,
+// структура.
+//
+// Методы: push, len, get, pop, free. Индексация — v[i].
+// push перевыделяет буфер и гасит ссылки на элементы.
+// Память освобождается явно: v.free().
+
+struct Task { id int; done bool; }
+
+fn main() int {
+    let mut xs Vec<int> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    xs.push(30);
+    println("len=", xs.len());
+    println("xs[0]=", xs[0], " xs[2]=", xs[2]);
+    xs[1] = 99;
+    println("xs[1]=", xs[1]);
+
+    match xs.get(1) {
+        Some(x) => { println("get(1)=", x); }
+        None => { println("get(1): нет"); }
+    }
+    match xs.get(10) {
+        Some(x) => { println("get(10)=", x); }
+        None => { println("get(10): нет"); }
+    }
+
+    match xs.pop() {
+        Some(x) => { println("pop=", x); }
+        None => { println("pop: пусто"); }
+    }
+    println("len=", xs.len());
+
+    let mut tasks Vec<Task> = Vec::new();
+    tasks.push(Task(1, false));
+    tasks.push(Task(2, true));
+    println("task0.id=", tasks[0].id, " task1.done=", tasks[1].done);
+
+    let mut names Vec<string> = Vec::new();
+    names.push("ann");
+    names.push("bob");
+    println(names[0], " ", names[1]);
+
+    xs.free();
+    tasks.free();
+    names.free();
+    return 0;
+}
