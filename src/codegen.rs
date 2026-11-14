@@ -1959,28 +1959,61 @@ impl<'a> Codegen<'a> {
                     return format!("({}){{{}}}", cname, items.join(", "));
                 }
                 let params = self.func_params(name);
-                let a: Vec<String> = args
-                    .iter()
-                    .enumerate()
-                    .map(|(i, x)| {
-                        let v = self.expr(x);
-                        if let Some(p) = params.and_then(|ps| ps.get(i)) {
-                            if let Type::Slice(inner) = &p.ty {
-                                let at = self.types.get(&x.id).cloned().unwrap_or(Type::Void);
-                                if let Type::Array(_, n) = at {
-                                    return format!(
-                                        "(Keel_Slice_{}){{ .data = {}, .len = {} }}",
-                                        inner.mangle(),
-                                        v,
-                                        n
-                                    );
+                // Порядок вычисления аргументов в C не определён. Чтобы
+                // он был слева направо, как в Keel, аргументы сначала
+                // раскладываются по временным, а вызов идёт последним.
+                // Statement expression — расширение gcc/clang; C-backend
+                // и так не переносим без пересмотра (см. §7.3).
+                let multi = args.len() > 1;
+                let mut prelude = Vec::new();
+                let mut a: Vec<String> = Vec::new();
+                for (i, x) in args.iter().enumerate() {
+                    let v = self.expr(x);
+                    let at = self.types.get(&x.id).cloned().unwrap_or(Type::Void);
+                    if let Some(p) = params.and_then(|ps| ps.get(i)) {
+                        if let Type::Slice(inner) = &p.ty {
+                            if let Type::Array(_, n) = at {
+                                let wrapped = format!(
+                                    "(Keel_Slice_{}){{ .data = {}, .len = {} }}",
+                                    inner.mangle(),
+                                    v,
+                                    n
+                                );
+                                if multi {
+                                    let tmp = format!("__k_a{}", i);
+                                    let sty = Type::Slice(inner.clone());
+                                    prelude.push(format!(
+                                        "{} = {};",
+                                        self.decl(&sty, &tmp),
+                                        wrapped
+                                    ));
+                                    a.push(tmp);
+                                } else {
+                                    a.push(wrapped);
                                 }
+                                continue;
                             }
                         }
-                        v
-                    })
-                    .collect();
-                format!("{}({})", self.fname(name), a.join(", "))
+                    }
+                    // Массив в C не присваивается — передаём как есть.
+                    if multi && !matches!(at, Type::Array(_, _)) {
+                        let tmp = format!("__k_a{}", i);
+                        prelude.push(format!("{} = {};", self.decl(&at, &tmp), v));
+                        a.push(tmp);
+                    } else {
+                        a.push(v);
+                    }
+                }
+                if multi {
+                    format!(
+                        "({{ {} {}({}); }})",
+                        prelude.join(" "),
+                        self.fname(name),
+                        a.join(", ")
+                    )
+                } else {
+                    format!("{}({})", self.fname(name), a.join(", "))
+                }
             }
             ExprKind::MethodCall { obj, name, args } => {
                 // Метод вызывается как `k_Тип_метод(получатель, args...)`.

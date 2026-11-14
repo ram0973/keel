@@ -608,3 +608,35 @@ fn main() int {
     .unwrap();
     assert!(r.c_code.contains("#line 3"), "нет #line:\n{}", r.c_code);
 }
+
+// 28. Порядок вычисления аргументов — слева направо.
+#[test]
+fn arguments_evaluated_left_to_right() {
+    let r = compile(
+        r#"
+struct Counter { n int; }
+fn next(c &Counter) int mut(c.n) {
+    c.n += 1;
+    return c.n;
+}
+fn pair(a int, b int) int { return a * 10 + b; }
+fn main() int {
+    let mut c = Counter(0);
+    let r = pair(next(&c), next(&c));
+    println(r);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("({ int64_t __k_a0"),
+        "нет временных для порядка:\n{}",
+        r.c_code
+    );
+}
