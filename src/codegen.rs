@@ -49,6 +49,10 @@ pub struct Codegen<'a> {
     /// `return` получается неопределённое поведение — gcc предупреждает
     /// «control reaches end of non-void function», но собирает.
     cur_ret: Type,
+    /// Постусловия текущей функции: проверяются перед каждым `return`.
+    cur_post: Vec<Expr>,
+    /// Имя текущей функции для сообщения о нарушении контракта.
+    cur_fn_name: String,
 }
 
 impl<'a> Codegen<'a> {
@@ -76,6 +80,8 @@ impl<'a> Codegen<'a> {
             var_names: std::cell::RefCell::new(HashMap::new()),
             in_main: false,
             cur_ret: Type::Void,
+            cur_post: Vec::new(),
+            cur_fn_name: String::new(),
         }
     }
 
@@ -132,6 +138,16 @@ impl<'a> Codegen<'a> {
 
     pub fn generate(mut self) -> String {
         self.out.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+        // Нарушение контракта pre/post: сообщение в stderr и выход.
+        // Это проверка, а не доказательство: контракт говорит «здесь
+        // значение гарантированно есть», а не «поверьте».
+        self.out.push_str(
+            "// Нарушение контракта pre/post: сообщение и выход с кодом 1.\n\
+             static void k_contract_fail(const char* fn, const char* kind, int line) {\n\
+             \x20 fprintf(stderr, \"нарушен контракт %s функции `%s` (строка %d)\\n\", kind, fn, line);\n\
+             \x20 exit(1);\n\
+             }\n\n",
+        );
         // Ввод: строка и целое из stdin.
         //
         // `read_line` читает строку целиком (до '\n'), а не по слову, как
@@ -332,6 +348,11 @@ impl<'a> Codegen<'a> {
         self.shadow_count.borrow_mut().clear();
         self.in_main = f.name == "main";
         self.cur_ret = f.ret.clone();
+        self.cur_post = f.post.clone();
+        self.cur_fn_name = match &f.owner {
+            Some(ty) => format!("{}::{}", ty, f.name),
+            None => f.name.clone(),
+        };
         let mut params = Vec::new();
         for p in &f.params {
             let pt = match &p.kind {
@@ -377,11 +398,21 @@ impl<'a> Codegen<'a> {
             ));
         }
 
+        // Предусловия — на входе в функцию, после связывания параметров.
+        for e in &f.pre {
+            let cond = self.expr(e);
+            self.out.push_str(&format!(
+                "  if (!({})) {{ k_contract_fail(\"{}\", \"pre\", {}); }}\n",
+                cond, self.cur_fn_name, e.line
+            ));
+        }
+
         for stmt in &f.body.stmts {
             self.emit_stmt(stmt);
         }
+        // Неявный возврат в конце функции.
         if f.name == "main" {
-            self.out.push_str("  return 0;\n");
+            self.emit_implicit_return("0", &Type::Int);
         } else if f.ret != Type::Void {
             // Функция возвращает значение, но тело может закончиться без
             // `return` (например, `fn f(x int) int { if x > 0 { return 1; } }`).
@@ -389,10 +420,59 @@ impl<'a> Codegen<'a> {
             // «control reaches end of non-void function», но собирает, и
             // функция вернёт мусор. Добавляем возврат нуля, чтобы
             // поведение было определено.
-            self.out
-                .push_str(&format!("  return {};\n", self.zero_value(&f.ret)));
+            let zero = self.zero_value(&f.ret);
+            let ret = f.ret.clone();
+            self.emit_implicit_return(&zero, &ret);
+        } else if !self.cur_post.is_empty() {
+            self.emit_post_checks();
         }
         self.out.push_str("}\n\n");
+    }
+
+    /// Возврат в конце функции, если тело не закончилось `return`.
+    fn emit_implicit_return(&mut self, value: &str, ty: &Type) {
+        if self.cur_post.is_empty() {
+            self.out.push_str(&format!("  return {};\n", value));
+            return;
+        }
+        self.out.push_str("  {\n");
+        self.out.push_str(&format!(
+            "    {} = {};\n",
+            self.decl(ty, "__k_result"),
+            value
+        ));
+        self.emit_post_checks();
+        self.out.push_str("    return __k_result;\n");
+        self.out.push_str("  }\n");
+    }
+
+    /// Проверки постусловий. Вызывается после того, как возвращаемое
+    /// значение положено в `__k_result`: имя `result` в выражениях
+    /// указывает на него.
+    fn emit_post_checks(&mut self) {
+        if self.cur_post.is_empty() {
+            return;
+        }
+        let post = self.cur_post.clone();
+        let saved = self
+            .var_names
+            .borrow_mut()
+            .insert("result".to_string(), "__k_result".to_string());
+        for e in &post {
+            let cond = self.expr(e);
+            self.out.push_str(&format!(
+                "    if (!({})) {{ k_contract_fail(\"{}\", \"post\", {}); }}\n",
+                cond, self.cur_fn_name, e.line
+            ));
+        }
+        match saved {
+            Some(v) => {
+                self.var_names.borrow_mut().insert("result".to_string(), v);
+            }
+            None => {
+                self.var_names.borrow_mut().remove("result");
+            }
+        }
     }
 
     /// Нулевое значение типа — для возврата в конце функции, которая
@@ -474,14 +554,37 @@ impl<'a> Codegen<'a> {
                     self.out.push_str(&format!("  {};\n", s));
                 }
             }
-            Stmt::Return { value, .. } => match value {
-                Some(e) => self.out.push_str(&format!("  return {};\n", self.expr(e))),
-                // `main` в Keel — это `int main` в C, поэтому голый
-                // `return;` внутри main должен стать `return 0;`: иначе
-                // gcc справедливо ругается на возврат без значения.
-                None if self.in_main => self.out.push_str("  return 0;\n"),
-                None => self.out.push_str("  return;\n"),
-            },
+            Stmt::Return { value, .. } => {
+                // Значение возврата и его тип: `return;` в main — это 0.
+                let (v, t) = match value {
+                    Some(e) => (self.expr(e), self.cur_ret.clone()),
+                    None if self.in_main => ("0".to_string(), Type::Int),
+                    None => (String::new(), Type::Void),
+                };
+                if self.cur_post.is_empty() {
+                    match value {
+                        Some(_) => self.out.push_str(&format!("  return {};\n", v)),
+                        None if self.in_main => self.out.push_str("  return 0;\n"),
+                        None => self.out.push_str("  return;\n"),
+                    }
+                } else if t == Type::Void {
+                    self.emit_post_checks();
+                    self.out.push_str("  return;\n");
+                } else {
+                    // Значение кладётся в переменную один раз: `post`
+                    // может ссылаться на `result`, а выражение возврата
+                    // не должно вычисляться дважды.
+                    self.out.push_str("  {\n");
+                    self.out.push_str(&format!(
+                        "    {} = {};\n",
+                        self.decl(&t, "__k_result"),
+                        v
+                    ));
+                    self.emit_post_checks();
+                    self.out.push_str("    return __k_result;\n");
+                    self.out.push_str("  }\n");
+                }
+            }
             Stmt::If { cond, then_block, else_block } => {
                 self.out
                     .push_str(&format!("  if ({}) {{\n", self.expr(cond)));
