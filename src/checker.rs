@@ -256,6 +256,39 @@ impl Checker {
             }
         }
 
+        // Данные вариантов: пока только копируемые типы. Иначе
+        // деструктуризация в `match` двигала бы значение из enum, а
+        // enum перестал бы быть копируемым.
+        let enums: Vec<EnumDecl> = self.enums.values().cloned().collect();
+        for e in &enums {
+            for v in &e.variants {
+                for t in &v.payload {
+                    if !self.payload_type_ok(t) {
+                        self.diags.push(Diagnostic::new(
+                            v.line,
+                            format!(
+                                "вариант `{}::{}`: тип `{}` в данных пока не поддерживается — \
+                                 допустимы int, bool, string и enum",
+                                e.name,
+                                v.name,
+                                t.name()
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        // Рекурсивный enum бесконечен по размеру: `enum E { A(E) }`.
+        for e in &enums {
+            let mut visiting = Vec::new();
+            if self.enum_has_cycle(&e.name, &mut visiting) {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("enum `{}` рекурсивен: вариант содержит сам себя", e.name),
+                ));
+            }
+        }
+
         // Затем проверяем тела.
         for item in &program.items {
             match item {
@@ -727,6 +760,11 @@ impl Checker {
                 let decl = self.enums.get(&en).cloned().unwrap();
                 let mut seen: Vec<String> = Vec::new();
                 for arm in arms {
+                    let variant = decl
+                        .variants
+                        .iter()
+                        .find(|v| v.name == arm.variant)
+                        .cloned();
                     if arm.ty != en {
                         self.diags.push(Diagnostic::new(
                             arm.line,
@@ -735,7 +773,7 @@ impl Checker {
                                 arm.ty, arm.variant, en
                             ),
                         ));
-                    } else if !decl.variants.contains(&arm.variant) {
+                    } else if variant.is_none() {
                         self.diags.push(Diagnostic::new(
                             arm.line,
                             format!("у enum `{}` нет варианта `{}`", en, arm.variant),
@@ -748,13 +786,59 @@ impl Checker {
                     } else {
                         seen.push(arm.variant.clone());
                     }
+
+                    // Привязки данных варианта: `Some(x)`.
+                    let mut saved: Vec<(String, Option<Local>)> = Vec::new();
+                    if let Some(v) = &variant {
+                        if v.payload.len() != arm.bindings.len() {
+                            self.diags.push(Diagnostic::new(
+                                arm.line,
+                                format!(
+                                    "вариант `{}::{}` несёт {}, в ветви привязано {}",
+                                    en,
+                                    arm.variant,
+                                    аргументов(v.payload.len()),
+                                    arm.bindings.len()
+                                ),
+                            ));
+                        }
+                        for (b, pt) in arm.bindings.iter().zip(v.payload.iter()) {
+                            saved.push((b.clone(), ctx.scope.get(b).cloned()));
+                            let uid = self.next_uid;
+                            self.next_uid += 1;
+                            self.names.insert(uid, b.clone());
+                            ctx.scope.insert(
+                                b.clone(),
+                                Local {
+                                    uid,
+                                    ty: pt.clone(),
+                                    path: Path::root(&uid.to_string()),
+                                    ref_target: None,
+                                    ref_uid: None,
+                                    moved: false,
+                                    is_mut: false,
+                                    escapes: Vec::new(),
+                                },
+                            );
+                        }
+                    }
                     self.check_block(&arm.body, ctx);
+                    for (b, prev) in saved {
+                        match prev {
+                            Some(l) => {
+                                ctx.scope.insert(b, l);
+                            }
+                            None => {
+                                ctx.scope.remove(&b);
+                            }
+                        }
+                    }
                 }
                 let missing: Vec<String> = decl
                     .variants
                     .iter()
-                    .filter(|v| !seen.contains(v))
-                    .cloned()
+                    .filter(|v| !seen.contains(&v.name))
+                    .map(|v| v.name.clone())
                     .collect();
                 if !missing.is_empty() {
                     self.diags.push(Diagnostic::new(
@@ -1123,14 +1207,26 @@ impl Checker {
                 local.ty
             }
             ExprKind::Variant { ty, name } => match self.enums.get(ty) {
-                Some(e) if e.variants.contains(name) => Type::Named(ty.clone()),
-                Some(_) => {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("у enum `{}` нет варианта `{}`", ty, name),
-                    ));
-                    Type::Void
-                }
+                Some(e) => match e.variants.iter().find(|v| v.name == *name) {
+                    Some(v) if v.payload.is_empty() => Type::Named(ty.clone()),
+                    Some(_) => {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!(
+                                "вариант `{}::{}` несёт данные: нужен вызов `{}::{}(...)`",
+                                ty, name, ty, name
+                            ),
+                        ));
+                        Type::Named(ty.clone())
+                    }
+                    None => {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("у enum `{}` нет варианта `{}`", ty, name),
+                        ));
+                        Type::Void
+                    }
+                },
                 None => {
                     self.diags.push(Diagnostic::new(
                         e.line,
@@ -1263,6 +1359,24 @@ impl Checker {
                 let rt = rt.deref().clone();
                 match op {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                        // Enum с данными — структура в C; сравнивать её
+                        // оператором нельзя. Разбирайте через `match`.
+                        let payload_cmp = [&lt, &rt].into_iter().any(|t| match t {
+                            Type::Named(n) => self
+                                .enums
+                                .get(n)
+                                .map(|en| en.variants.iter().any(|v| !v.payload.is_empty()))
+                                .unwrap_or(false),
+                            _ => false,
+                        });
+                        if payload_cmp {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                "сравнение enum с данными не поддерживается — \
+                                 разберите значение через `match`"
+                                    .to_string(),
+                            ));
+                        }
                         Type::Bool
                     }
                     BinOp::And | BinOp::Or => Type::Bool,
@@ -1320,6 +1434,51 @@ impl Checker {
             return Type::Void;
         };
 
+        // Конструктор варианта enum: `Option::Some(5)`.
+        if let Some((ty, variant)) = name.split_once("::") {
+            if let Some(e) = self.enums.get(ty).cloned() {
+                match e.variants.iter().find(|v| v.name == variant).cloned() {
+                    Some(v) => {
+                        if args.len() != v.payload.len() {
+                            self.diags.push(Diagnostic::new(
+                                line,
+                                format!(
+                                    "вариант `{}::{}` ждёт {}, передан {}",
+                                    ty,
+                                    variant,
+                                    аргументов(v.payload.len()),
+                                    args.len()
+                                ),
+                            ));
+                        }
+                        for (a, pt) in args.iter().zip(v.payload.iter()) {
+                            let at = self.type_of(a, ctx);
+                            if !self.types_compatible(pt.clone(), &at) {
+                                self.diags.push(Diagnostic::new(
+                                    a.line,
+                                    format!(
+                                        "аргумент варианта `{}::{}`: ожидался `{}`, получен `{}`",
+                                        ty,
+                                        variant,
+                                        pt.name(),
+                                        at.name()
+                                    ),
+                                ));
+                            }
+                        }
+                        return Type::Named(ty.to_string());
+                    }
+                    None => {
+                        self.diags.push(Diagnostic::new(
+                            line,
+                            format!("у enum `{}` нет варианта `{}`", ty, variant),
+                        ));
+                        return Type::Named(ty.to_string());
+                    }
+                }
+            }
+        }
+
         // Конструктор структуры?
         if let Some(s) = self.structs.get(name).cloned() {
             if args.len() != s.fields.len() {
@@ -1356,6 +1515,23 @@ impl Checker {
         if name == "print" || name == "println" {
             for a in args {
                 let at = self.type_of(a, ctx);
+                let base = at.deref().clone();
+                let is_payload = match &base {
+                    Type::Named(n) => self
+                        .enums
+                        .get(n)
+                        .map(|en| en.variants.iter().any(|v| !v.payload.is_empty()))
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                if is_payload {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        "печать enum с данными не поддерживается — \
+                         разберите значение через `match`"
+                            .to_string(),
+                    ));
+                }
                 self.record_move(a, &at, ctx);
             }
             return Type::Void;
@@ -1888,6 +2064,42 @@ impl Checker {
             }
             _ => {}
         }
+    }
+
+    /// Допустим ли тип в данных варианта enum.
+    ///
+    /// Пока только копируемые типы: int, bool, string и другой enum.
+    /// Структуры и массивы отложены — они не Copy, и деструктуризация
+    /// в `match` означала бы перемещение из enum.
+    fn payload_type_ok(&self, t: &Type) -> bool {
+        match t {
+            Type::Int | Type::Bool | Type::Str => true,
+            Type::Named(n) => self.enums.contains_key(n),
+            _ => false,
+        }
+    }
+
+    /// Есть ли цикл в данных enum'ов: `enum E { A(E) }`.
+    fn enum_has_cycle(&self, name: &str, visiting: &mut Vec<String>) -> bool {
+        if visiting.iter().any(|v| v == name) {
+            return true;
+        }
+        visiting.push(name.to_string());
+        let mut found = false;
+        if let Some(e) = self.enums.get(name) {
+            'outer: for v in &e.variants {
+                for t in &v.payload {
+                    if let Type::Named(n) = t {
+                        if self.enums.contains_key(n) && self.enum_has_cycle(n, visiting) {
+                            found = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        visiting.pop();
+        found
     }
 
     fn is_copy(&self, t: &Type) -> bool {

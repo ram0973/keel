@@ -327,23 +327,33 @@ impl Parser {
         Ok(StructDecl { name, fields, line })
     }
 
-    /// `enum Name { A, B, C }` — варианты без данных.
+    /// `enum Name { A, B(int), C }` — варианты с позиционными данными.
     fn parse_enum(&mut self) -> PResult<EnumDecl> {
         let line = self.line();
         self.expect_kw("enum")?;
         let name = self.ident()?;
         self.expect_punct("{")?;
-        let mut variants = Vec::new();
+        let mut variants: Vec<VariantDecl> = Vec::new();
         while !self.at_punct("}") {
             let vline = self.line();
             let v = self.ident()?;
-            if variants.contains(&v) {
+            if variants.iter().any(|x| x.name == v) {
                 return Err(format!(
                     "строка {}: вариант `{}` объявлен дважды в enum `{}`",
                     vline, v, name
                 ));
             }
-            variants.push(v);
+            let mut payload = Vec::new();
+            if self.eat_punct("(") {
+                while !self.at_punct(")") {
+                    payload.push(self.parse_type()?);
+                    if !self.eat_punct(",") {
+                        break;
+                    }
+                }
+                self.expect_punct(")")?;
+            }
+            variants.push(VariantDecl { name: v, payload, line: vline });
             if !self.eat_punct(",") {
                 break;
             }
@@ -738,9 +748,19 @@ impl Parser {
                 let ty = self.ident()?;
                 self.expect_punct("::")?;
                 let variant = self.ident()?;
+                let mut bindings = Vec::new();
+                if self.eat_punct("(") {
+                    while !self.at_punct(")") {
+                        bindings.push(self.ident()?);
+                        if !self.eat_punct(",") {
+                            break;
+                        }
+                    }
+                    self.expect_punct(")")?;
+                }
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
-                arms.push(MatchArm { ty, variant, body, line: aline });
+                arms.push(MatchArm { ty, variant, bindings, body, line: aline });
             }
             self.expect_punct("}")?;
             if arms.is_empty() {

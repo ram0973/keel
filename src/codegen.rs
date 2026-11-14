@@ -317,17 +317,48 @@ impl<'a> Codegen<'a> {
         self.out.push_str(&format!("}} {};\n\n", cname));
     }
 
-    /// `enum` → C enum. Константы получают префикс `Keel_Тип_`, чтобы
-    /// варианты разных enum не сталкивались в общем пространстве C.
+    /// `enum` → C. Без данных — обычный C enum; с данными — тег +
+    /// union, чтобы вариант нёс значение. Константы получают префикс
+    /// `Keel_Тип_`, чтобы варианты разных enum не сталкивались.
     fn emit_enum(&mut self, e: &EnumDecl) {
         let cname = self.ctype.get(&e.name).cloned().unwrap_or_default();
-        let mut parts = Vec::new();
+        let has_payload = e.variants.iter().any(|v| !v.payload.is_empty());
+        let mut tags = Vec::new();
         for (i, v) in e.variants.iter().enumerate() {
-            parts.push(format!("  Keel_{}_{} = {}", e.name, v, i));
+            tags.push(format!("  Keel_{}_{} = {}", e.name, v.name, i));
+        }
+        if !has_payload {
+            self.out.push_str(&format!(
+                "typedef enum {{\n{}\n}} {};\n\n",
+                tags.join(",\n"),
+                cname
+            ));
+            return;
         }
         self.out.push_str(&format!(
-            "typedef enum {{\n{}\n}} {};\n\n",
-            parts.join(",\n"),
+            "typedef enum {{\n{}\n}} {}_tag;\n\n",
+            tags.join(",\n"),
+            cname
+        ));
+        let mut members = Vec::new();
+        for v in &e.variants {
+            if v.payload.is_empty() {
+                continue;
+            }
+            let mut fields = Vec::new();
+            for (i, t) in v.payload.iter().enumerate() {
+                fields.push(format!("    {};", self.decl(t, &format!("_{}", i))));
+            }
+            members.push(format!(
+                "    struct {{\n{}\n    }} {};",
+                fields.join("\n"),
+                v.name
+            ));
+        }
+        self.out.push_str(&format!(
+            "typedef struct {{\n  {}_tag tag;\n  union {{\n{}\n  }} data;\n}} {};\n\n",
+            cname,
+            members.join("\n"),
             cname
         ));
     }
@@ -518,9 +549,14 @@ impl<'a> Codegen<'a> {
             Type::Ref(_) => "NULL".to_string(),
             Type::Named(n) => {
                 if let Some(e) = self.enums.get(n) {
-                    // Нулевое значение enum — первый вариант: у C enum
-                    // нет «нуля» как отдельного значения.
-                    return format!("Keel_{}_{}", n, e.variants[0]);
+                    let first = &e.variants[0];
+                    if e.variants.iter().any(|v| !v.payload.is_empty()) {
+                        let c = self.ctype.get(n).cloned().unwrap_or_else(|| n.clone());
+                        return format!("({}){{ .tag = Keel_{}_{} }}", c, n, first.name);
+                    }
+                    // Нулевое значение enum без данных — первый вариант:
+                    // у C enum нет «нуля» как отдельного значения.
+                    return format!("Keel_{}_{}", n, first.name);
                 }
                 let c = self.ctype.get(n).cloned().unwrap_or_else(|| n.clone());
                 format!("({}){{0}}", c)
@@ -626,17 +662,69 @@ impl<'a> Codegen<'a> {
             Stmt::Match { subject, arms, .. } => {
                 // Субъект читается по значению: ссылка разыменовывается.
                 let subj = self.value_expr(subject);
-                self.out.push_str(&format!("  switch ({}) {{\n", subj));
+                // Enum с данными — тег + union; без данных — обычный C enum.
+                let is_payload = self
+                    .types
+                    .get(&subject.id)
+                    .map(|t| match t {
+                        Type::Ref(inner) => inner.as_ref(),
+                        other => other,
+                    })
+                    .and_then(|t| match t {
+                        Type::Named(n) => self.enums.get(n),
+                        _ => None,
+                    })
+                    .map(|e| e.variants.iter().any(|v| !v.payload.is_empty()))
+                    .unwrap_or(false);
+                let tag = if is_payload {
+                    format!("{}.tag", subj)
+                } else {
+                    subj.clone()
+                };
+                self.out.push_str(&format!("  switch ({}) {{\n", tag));
                 for arm in arms {
                     self.out.push_str(&format!(
                         "    case Keel_{}_{}: {{\n",
                         arm.ty, arm.variant
                     ));
+                    // Привязки данных: `Some(x)` → `int64_t x = ...`.
+                    let payload: Vec<Type> = self
+                        .enums
+                        .get(&arm.ty)
+                        .and_then(|e| e.variants.iter().find(|v| v.name == arm.variant))
+                        .map(|v| v.payload.clone())
+                        .unwrap_or_default();
+                    let saved: Vec<(String, Option<String>)> = arm
+                        .bindings
+                        .iter()
+                        .map(|b| (b.clone(), self.var_names.borrow().get(b).cloned()))
+                        .collect();
+                    if is_payload {
+                        for (i, b) in arm.bindings.iter().enumerate() {
+                            let cname = self.fresh_var_name(b);
+                            let ty = payload.get(i).cloned().unwrap_or(Type::Int);
+                            let decl = self.decl(&ty, &cname);
+                            self.out.push_str(&format!(
+                                "      {} = {}.data.{}._{};\n",
+                                decl, subj, arm.variant, i
+                            ));
+                        }
+                    }
                     for s in &arm.body.stmts {
                         self.emit_stmt(s);
                     }
                     self.out.push_str("      break;\n");
                     self.out.push_str("    }\n");
+                    for (b, prev) in saved {
+                        match prev {
+                            Some(v) => {
+                                self.var_names.borrow_mut().insert(b, v);
+                            }
+                            None => {
+                                self.var_names.borrow_mut().remove(&b);
+                            }
+                        }
+                    }
                 }
                 self.out.push_str("  }\n");
             }
@@ -889,7 +977,15 @@ impl<'a> Codegen<'a> {
                 Some(cname) => cname.clone(),
                 None => self.var_name(name),
             },
-            ExprKind::Variant { ty, name } => format!("Keel_{}_{}", ty, name),
+            ExprKind::Variant { ty, name } => {
+                if let Some(e) = self.enums.get(ty) {
+                    if e.variants.iter().any(|v| !v.payload.is_empty()) {
+                        let c = self.ctype.get(ty).cloned().unwrap_or_else(|| ty.clone());
+                        return format!("({}){{ .tag = Keel_{}_{} }}", c, ty, name);
+                    }
+                }
+                format!("Keel_{}_{}", ty, name)
+            }
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
@@ -915,6 +1011,29 @@ impl<'a> Codegen<'a> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return "0".to_string();
                 };
+                // Конструктор варианта enum: `Option::Some(5)`.
+                if let Some((ty, variant)) = name.split_once("::") {
+                    if let Some(e) = self.enums.get(ty) {
+                        if let Some(v) = e.variants.iter().find(|v| v.name == variant) {
+                            let c = self.ctype.get(ty).cloned().unwrap_or_else(|| ty.to_string());
+                            if v.payload.is_empty() {
+                                return format!("({}){{ .tag = Keel_{}_{} }}", c, ty, variant);
+                            }
+                            let mut fields = Vec::new();
+                            for (i, a) in args.iter().enumerate() {
+                                fields.push(format!("._{} = {}", i, self.expr(a)));
+                            }
+                            return format!(
+                                "({}){{ .tag = Keel_{}_{}, .data.{} = {{ {} }} }}",
+                                c,
+                                ty,
+                                variant,
+                                variant,
+                                fields.join(", ")
+                            );
+                        }
+                    }
+                }
                 if name == "print" || name == "println" {
                     if args.is_empty() {
                         // `println()` без аргументов — просто перевод строки.

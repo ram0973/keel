@@ -173,13 +173,22 @@ pub struct StructDecl {
 
 /// `enum Name { A, B, C }` — именованный набор состояний.
 ///
-/// Варианты без данных: значение — это тег. Варианты с данными
-/// (`Some(T)`) и деструктуризация в `match` — следующий шаг.
+/// Варианты могут нести позиционные данные: `Some(int)`. Данные пока
+/// ограничены копируемыми типами (int, bool, string, enum), чтобы
+/// деструктуризация в `match` не двигала значение из enum.
 #[derive(Clone, Debug)]
 pub struct EnumDecl {
     pub name: String,
-    pub variants: Vec<String>,
+    pub variants: Vec<VariantDecl>,
     /// Строка объявления — для диагностик о повторных именах.
+    pub line: usize,
+}
+
+/// Вариант enum: имя и позиционные данные.
+#[derive(Clone, Debug)]
+pub struct VariantDecl {
+    pub name: String,
+    pub payload: Vec<Type>,
     pub line: usize,
 }
 
@@ -401,11 +410,13 @@ pub enum Stmt {
     },
 }
 
-/// Ветвь `match`: `Enum::Вариант => { ... }`.
+/// Ветвь `match`: `Enum::Вариант => { ... }` или `Enum::Вариант(x) => { ... }`.
 #[derive(Clone, Debug)]
 pub struct MatchArm {
     pub ty: String,
     pub variant: String,
+    /// Имена, привязанные к данным варианта: `Some(x)` → `["x"]`.
+    pub bindings: Vec<String>,
     pub body: Block,
     pub line: usize,
 }
