@@ -3009,3 +3009,190 @@ fn main() int {
         err
     );
 }
+
+// ============================================================
+// Варианты с данными
+// ============================================================
+
+#[test]
+fn enum_с_данными_и_деструктуризация_работают() {
+    ok(r#"
+enum Opt { None, Some(int) }
+fn get(o Opt) int {
+    match o {
+        Opt::None => { return -1; }
+        Opt::Some(x) => { return x; }
+    }
+    return -1;
+}
+fn main() int {
+    let a = Opt::Some(42);
+    let b = Opt::None;
+    return get(a) + get(b);
+}
+"#);
+}
+
+#[test]
+fn вариант_с_данными_требует_вызова() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some;
+    return 0;
+}
+"#,
+        "несёт данные: нужен вызов",
+    );
+}
+
+#[test]
+fn match_ловит_неверное_число_привязок() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some(1);
+    match o { Opt::None => { } Opt::Some(x, y) => { } }
+    return 0;
+}
+"#,
+        "в ветви привязано 2",
+    );
+}
+
+#[test]
+fn match_ловит_привязки_у_варианта_без_данных() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some(1);
+    match o { Opt::None(x) => { } Opt::Some(y) => { } }
+    return 0;
+}
+"#,
+        "в ветви привязано 1",
+    );
+}
+
+#[test]
+fn данные_варианта_проверяются_по_типу() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some("x");
+    return 0;
+}
+"#,
+        "ожидался `int`, получен `string`",
+    );
+}
+
+#[test]
+fn некопируемый_тип_в_данных_отклоняется() {
+    fails(
+        r#"
+struct S { v int; }
+enum E { A(S) }
+fn main() int { return 0; }
+"#,
+        "в данных пока не поддерживается",
+    );
+}
+
+#[test]
+fn рекурсивный_enum_отклоняется() {
+    fails(
+        r#"
+enum E { A(E) }
+fn main() int { return 0; }
+"#,
+        "рекурсивен",
+    );
+}
+
+#[test]
+fn match_по_ссылке_на_enum_с_данными() {
+    ok(r#"
+enum Opt { None, Some(int) }
+fn get(o &Opt) int {
+    match o {
+        Opt::None => { return 0; }
+        Opt::Some(x) => { return x; }
+    }
+    return 0;
+}
+fn main() int {
+    let o = Opt::Some(7);
+    return get(&o);
+}
+"#);
+}
+
+#[test]
+fn enum_с_данными_в_поле_структуры() {
+    ok(r#"
+enum Opt { None, Some(int) }
+struct H { o Opt; }
+fn main() int {
+    let h = H(Opt::Some(5));
+    match h.o {
+        Opt::None => { return 0; }
+        Opt::Some(x) => { return x; }
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn enum_с_данными_попадает_в_c_как_tagged_union() {
+    let r = compile(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some(1);
+    match o { Opt::None => { } Opt::Some(x) => { } }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(r.c_code.contains("Keel_Opt_tag"));
+    assert!(r.c_code.contains("union"));
+    assert!(r.c_code.contains(".data.Some"));
+}
+
+#[test]
+fn сравнение_enum_с_данными_отклоняется() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some(1);
+    if o == Opt::Some(1) { return 1; }
+    return 0;
+}
+"#,
+        "сравнение enum с данными не поддерживается",
+    );
+}
+
+#[test]
+fn печать_enum_с_данными_отклоняется() {
+    fails(
+        r#"
+enum Opt { None, Some(int) }
+fn main() int {
+    let o = Opt::Some(1);
+    println(o);
+    return 0;
+}
+"#,
+        "печать enum с данными не поддерживается",
+    );
+}

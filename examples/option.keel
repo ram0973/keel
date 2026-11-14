@@ -1,0 +1,34 @@
+// Варианты с данными: enum несёт значение, match его разбирает.
+//
+// Option и Result — не особые типы языка, а обычные enum. Данные
+// варианта пока ограничены копируемыми типами (int, bool, string,
+// enum), поэтому разбор не перемещает значение из enum.
+//
+// match по-прежнему исчерпывающий: забыть вариант нельзя.
+
+enum Opt { None, Some(int) }
+
+fn find(xs &[int; 5], n int, target int) Opt {
+    let mut i = 0;
+    while i < n {
+        if xs[i] == target {
+            return Opt::Some(i);
+        }
+        i = i + 1;
+    }
+    return Opt::None;
+}
+
+fn describe(o Opt) {
+    match o {
+        Opt::None => { println("не найдено"); }
+        Opt::Some(i) => { println("индекс: ", i); }
+    }
+}
+
+fn main() int {
+    let xs [int; 5] = [10, 20, 30, 40, 50];
+    describe(find(&xs, 5, 30));
+    describe(find(&xs, 5, 99));
+    return 0;
+}
