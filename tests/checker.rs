@@ -3926,3 +3926,59 @@ fn main() int {
 }
 "#);
 }
+
+// ============================================================
+// Файловый ввод/вывод
+// ============================================================
+
+#[test]
+fn open_ждёт_строки() {
+    fails(
+        r#"
+fn main() int {
+    let fd = open(1, "r");
+    return 0;
+}
+"#,
+        "`open` ждёт строку",
+    );
+}
+
+#[test]
+fn read_ждёт_int() {
+    fails(
+        r#"
+fn main() int {
+    let s = read("x");
+    return 0;
+}
+"#,
+        "`read` ждёт fd типа `int`",
+    );
+}
+
+#[test]
+fn write_ждёт_int_и_строку() {
+    fails(
+        r#"
+fn main() int {
+    write("x", "y");
+    return 0;
+}
+"#,
+        "`write` ждёт fd типа `int`",
+    );
+}
+
+#[test]
+fn close_ждёт_int() {
+    fails(
+        r#"
+fn main() int {
+    close("x");
+    return 0;
+}
+"#,
+        "`close` ждёт fd типа `int`",
+    );
+}

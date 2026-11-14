@@ -2484,6 +2484,107 @@ impl Checker {
             return Type::Str;
         }
 
+        // `open(path, mode)` — открывает файл. Возвращает fd или -1.
+        // Режим — строка как в C: "r", "w", "a".
+        if name == "open" {
+            if args.len() != 2 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!(
+                        "`open` принимает два аргумента (путь и режим), получено {}",
+                        args.len()
+                    ),
+                ));
+            }
+            for a in args {
+                let t = self.type_of(a, ctx);
+                if t != Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`open` ждёт строку, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Int;
+        }
+
+        // `read(fd)` — читает файл целиком в строку.
+        if name == "read" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`read` принимает один аргумент (fd), получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`read` ждёт fd типа `int`, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Str;
+        }
+
+        // `write(fd, s)` — пишет строку в файл.
+        if name == "write" {
+            if args.len() != 2 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!(
+                        "`write` принимает два аргумента (fd и строку), получено {}",
+                        args.len()
+                    ),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`write` ждёт fd типа `int`, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            if let Some(a) = args.get(1) {
+                let t = self.type_of(a, ctx);
+                if t != Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`write` ждёт строку, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Void;
+        }
+
+        // `close(fd)` — закрывает файл.
+        if name == "close" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`close` принимает один аргумент (fd), получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`close` ждёт fd типа `int`, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Void;
+        }
+
         let bad = self
             .funcs
             .get(name)

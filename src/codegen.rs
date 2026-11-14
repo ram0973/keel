@@ -275,6 +275,37 @@ impl<'a> Codegen<'a> {
              static int64_t k_argc = 0;\n\
              static char** k_argv = 0;\n\n",
         );
+        // Файловый ввод/вывод. fd — это FILE*, упакованный в int64_t.
+        // -1 — ошибка открытия.
+        self.out.borrow_mut().push_str(
+            "static int64_t k_open(const char* path, const char* mode) {\n\
+             \x20 FILE* f = fopen(path, mode);\n\
+             \x20 return f ? (int64_t)(intptr_t)f : -1;\n\
+             }\n\
+             static char* k_read(int64_t fd) {\n\
+             \x20 FILE* f = (FILE*)(intptr_t)fd;\n\
+             \x20 if (!f) return \"\";\n\
+             \x20 size_t cap = 256, len = 0;\n\
+             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 if (!buf) return \"\";\n\
+             \x20 for (;;) {\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   size_t n = fread(buf + len, 1, cap - len - 1, f);\n\
+             \x20   len += n;\n\
+             \x20   if (n == 0) break;\n\
+             \x20 }\n\
+             \x20 buf[len] = '\\0';\n\
+             \x20 return buf;\n\
+             }\n\
+             static void k_write(int64_t fd, const char* s) {\n\
+             \x20 FILE* f = (FILE*)(intptr_t)fd;\n\
+             \x20 if (f) fputs(s, f);\n\
+             }\n\
+             static void k_close(int64_t fd) {\n\
+             \x20 FILE* f = (FILE*)(intptr_t)fd;\n\
+             \x20 if (f) fclose(f);\n\
+             }\n\n",
+        );
         // Конкатенация строк: результат требует памяти, которой у операндов
         // нет. Копируем в свежий буфер из кучи.
         //
@@ -1788,6 +1819,46 @@ impl<'a> Codegen<'a> {
                 if name == "argv" {
                     let i = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
                     return format!("(k_argv[{0}] ? k_argv[{0}] : \"\")", i);
+                }
+                // `open(path, mode)` — открывает файл, возвращает fd или -1.
+                if name == "open" {
+                    let path = args
+                        .first()
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "\"\"".to_string());
+                    let mode = args
+                        .get(1)
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "\"r\"".to_string());
+                    return format!("k_open({}, {})", path, mode);
+                }
+                // `read(fd)` — читает файл целиком в строку.
+                if name == "read" {
+                    let fd = args
+                        .first()
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "0".to_string());
+                    return format!("k_read({})", fd);
+                }
+                // `write(fd, s)` — пишет строку в файл.
+                if name == "write" {
+                    let fd = args
+                        .first()
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "0".to_string());
+                    let s = args
+                        .get(1)
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "\"\"".to_string());
+                    return format!("k_write({}, {})", fd, s);
+                }
+                // `close(fd)` — закрывает файл.
+                if name == "close" {
+                    let fd = args
+                        .first()
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "0".to_string());
+                    return format!("k_close({})", fd);
                 }
                 // `len` — длина строки или массива. Для массива размер
                 // известен из типа и подставляется числом; для строки
