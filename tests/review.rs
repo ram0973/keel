@@ -670,3 +670,24 @@ fn main() int {
     );
     assert!(r.c_code.contains("__k_a0"), "нет временных:\n{}", r.c_code);
 }
+
+// 30. Локальная переменная не перекрывает функцию libc.
+#[test]
+fn local_named_like_libc_compiles() {
+    let r = compile(
+        r#"
+fn main() int {
+    let printf = 1;
+    println(printf);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(r.c_code.contains("k_printf"), "нет префикса:\n{}", r.c_code);
+}

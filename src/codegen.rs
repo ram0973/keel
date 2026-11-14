@@ -419,7 +419,17 @@ impl<'a> Codegen<'a> {
                     _ => "void".to_string(),
                 };
                 let args: Vec<String> =
-                    params.iter().map(|p| self.decl(&p.ty, &p.name)).collect();
+                    params.iter().map(|p| self.decl(&p.ty, &format!("k_{}", p.name))).collect();
+                // Параметры замыкания — в карту имён, иначе тело
+                // обратится к ним без префикса.
+                self.var_names.borrow_mut().clear();
+                self.shadow_count.borrow_mut().clear();
+                for p in &params {
+                    self.var_names
+                        .borrow_mut()
+                        .insert(p.name.clone(), format!("k_{}", p.name));
+                    self.shadow_count.borrow_mut().insert(p.name.clone(), 1);
+                }
                 let mut s = format!("static {} {}({}) {{\n", ret_ty, name, args.join(", "));
                 let saved = std::mem::take(&mut *self.out.borrow_mut());
                 for (i, stmt) in body.stmts.iter().enumerate() {
@@ -981,7 +991,7 @@ impl<'a> Codegen<'a> {
                     Type::Ref(Box::new(inner))
                 }
             };
-            params.push(self.param_decl(&pt, &p.name));
+            params.push(self.param_decl(&pt, &format!("k_{}", p.name)));
             // Параметр занимает имя в C — регистрируем, чтобы `let` с тем же
             // именем не переопределял его.
             self.shadow_count
@@ -989,7 +999,7 @@ impl<'a> Codegen<'a> {
                 .insert(p.name.clone(), 1);
             self.var_names
                 .borrow_mut()
-                .insert(p.name.clone(), p.name.clone());
+                .insert(p.name.clone(), format!("k_{}", p.name));
         }
         if f.name == "main" {
             // `argc`/`argv` доступны из программы: main принимает их
@@ -1473,10 +1483,12 @@ impl<'a> Codegen<'a> {
         let mut counts = self.shadow_count.borrow_mut();
         let n = counts.get(name).copied().unwrap_or(0);
         counts.insert(name.to_string(), n + 1);
+        // Префикс `k_` — чтобы локальная не перекрыла функцию libc
+        // (`printf`, `strcmp`) и не сломала сгенерированный C.
         let cname = if n == 0 {
-            name.to_string()
+            format!("k_{}", name)
         } else {
-            format!("{}__{}", name, n)
+            format!("k_{}__{}", name, n)
         };
         self.var_names
             .borrow_mut()
@@ -1500,9 +1512,9 @@ impl<'a> Codegen<'a> {
         let depth = self.loop_depth;
         self.loop_depth += 1;
         let name = if depth == 0 {
-            var.to_string()
+            format!("k_{}", var)
         } else {
-            format!("{}__{}", var, depth)
+            format!("k_{}__{}", var, depth)
         };
         (name, var.to_string())
     }
