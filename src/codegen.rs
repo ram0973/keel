@@ -19,6 +19,8 @@ pub struct Codegen<'a> {
     option_insts: &'a [Type],
     /// Конкретные инстанциации встроенных `Result<T, E>`.
     result_insts: &'a [(Type, Type)],
+    /// Конкретные инстанциации встроенных `Vec<T>`.
+    vec_insts: &'a [Type],
     out: String,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -61,6 +63,15 @@ pub struct Codegen<'a> {
     cur_fn_name: String,
 }
 
+/// Вид определения типа для топологической сортировки.
+enum DefKind {
+    Struct(String),
+    Enum(String),
+    Option(Type),
+    Result(Type, Type),
+    Vec(Type),
+}
+
 impl<'a> Codegen<'a> {
     pub fn new(prog: &'a Program, checker: &'a Checker) -> Codegen<'a> {
         let mut ctype = HashMap::new();
@@ -86,6 +97,7 @@ impl<'a> Codegen<'a> {
             method_recv_ref: &checker.method_recv_ref,
             option_insts: &checker.option_insts,
             result_insts: &checker.result_insts,
+            vec_insts: &checker.vec_insts,
             out: String::new(),
             ctype,
             structs,
@@ -119,6 +131,7 @@ impl<'a> Codegen<'a> {
             Type::Result(ok, err) => {
                 format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())
             }
+            Type::Vec(inner) => format!("Keel_Vec_{}", inner.mangle()),
         }
     }
 
@@ -234,17 +247,19 @@ impl<'a> Codegen<'a> {
              }\n\n",
         );
 
+        // Простые enum'ы (без данных) — forward-декларация enum в C
+        // невозможна, поэтому объявляем их сразу.
         for item in &self.prog.items {
             if let Item::Enum(e) = item {
-                self.emit_enum(e);
+                if e.variants.iter().all(|v| v.payload.is_empty()) {
+                    self.emit_enum(e);
+                }
             }
         }
-        self.emit_builtin_enums();
-        for item in &self.prog.items {
-            if let Item::Struct(s) = item {
-                self.emit_struct(s);
-            }
-        }
+        // Forward-декларации всех struct-подобных типов: позволяет
+        // определять их в порядке зависимостей.
+        self.emit_forward_decls();
+        self.emit_type_defs();
         self.out.push('\n');
         // Конструкторы структур с массивами в полях.
         for item in &self.prog.items {
@@ -320,42 +335,225 @@ impl<'a> Codegen<'a> {
     }
 
     /// Встроенные `Option<T>`/`Result<T,E>`: мономорфизация в C.
-    fn emit_builtin_enums(&mut self) {
-        for ty in self.option_insts {
-            let Type::Option(inner) = ty else { continue };
-            let cname = format!("Keel_Option_{}", inner.mangle());
-            let field = self.decl(inner, "_0");
-            self.out.push_str(&format!(
-                "typedef enum {{\n  {}_None = 0,\n  {}_Some = 1\n}} {}_tag;\n\n",
-                cname, cname, cname
-            ));
-            self.out.push_str(&format!(
-                "typedef struct {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Some;\n  }} data;\n}} {};\n\n",
-                cname, field, cname
+    /// Все определения типов в порядке зависимостей.
+    ///
+    /// `Option<Vec<int>>` требует `Keel_Vec_int`, `Vec<Option<int>>` —
+    /// `Keel_Option_int`, а структура с полем `Vec<int>` — `Keel_Vec_int`.
+    /// Поэтому — топологическая сортировка всех определений сразу.
+    fn emit_type_defs(&mut self) {
+        let mut defs: Vec<(String, DefKind, Vec<Type>)> = Vec::new();
+        for (name, s) in &self.structs {
+            let deps: Vec<Type> = s.fields.iter().map(|f| f.ty.clone()).collect();
+            defs.push((format!("Keel_{}", name), DefKind::Struct(name.clone()), deps));
+        }
+        for (name, e) in &self.enums {
+            if e.variants.iter().any(|v| !v.payload.is_empty()) {
+                let deps: Vec<Type> = e.variants.iter().flat_map(|v| v.payload.clone()).collect();
+                defs.push((format!("Keel_{}", name), DefKind::Enum(name.clone()), deps));
+            }
+        }
+        for t in self.option_insts {
+            let Type::Option(inner) = t else { continue };
+            defs.push((
+                format!("Keel_Option_{}", inner.mangle()),
+                DefKind::Option((**inner).clone()),
+                vec![(**inner).clone()],
             ));
         }
         for (ok, err) in self.result_insts {
-            let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
-            let ok_field = self.decl(ok, "_0");
-            let err_field = self.decl(err, "_0");
-            self.out.push_str(&format!(
-                "typedef enum {{\n  {}_Ok = 0,\n  {}_Err = 1\n}} {}_tag;\n\n",
-                cname, cname, cname
-            ));
-            self.out.push_str(&format!(
-                "typedef struct {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Ok;\n    struct {{\n      {};\n    }} Err;\n  }} data;\n}} {};\n\n",
-                cname, ok_field, err_field, cname
+            defs.push((
+                format!("Keel_Result_{}_{}", ok.mangle(), err.mangle()),
+                DefKind::Result(ok.clone(), err.clone()),
+                vec![ok.clone(), err.clone()],
             ));
         }
+        for t in self.vec_insts {
+            let Type::Vec(inner) = t else { continue };
+            defs.push((
+                format!("Keel_Vec_{}", inner.mangle()),
+                DefKind::Vec((**inner).clone()),
+                vec![(**inner).clone()],
+            ));
+        }
+        let mut ordered: Vec<String> = Vec::new();
+        let mut visiting: Vec<String> = Vec::new();
+        for (name, _, _) in &defs {
+            self.visit_def(name, &defs, &mut ordered, &mut visiting);
+        }
+        for name in &ordered {
+            if let Some((_, kind, _)) = defs.iter().find(|(n, _, _)| n == name) {
+                match kind {
+                    DefKind::Struct(sn) => {
+                        if let Some(s) = self.structs.get(sn).cloned() {
+                            self.emit_struct(&s);
+                        }
+                    }
+                    DefKind::Enum(en) => {
+                        if let Some(e) = self.enums.get(en).cloned() {
+                            self.emit_enum(&e);
+                        }
+                    }
+                    DefKind::Option(inner) => self.emit_option_def(inner),
+                    DefKind::Result(ok, err) => self.emit_result_def(ok, err),
+                    DefKind::Vec(inner) => self.emit_vec_def(inner),
+                }
+            }
+        }
+        // Функции Vec — после всех определений: они возвращают Option<T>
+        // и принимают элементы по значению (нужен полный тип).
+        for t in self.vec_insts {
+            let Type::Vec(inner) = t else { continue };
+            self.emit_vec_funcs(inner);
+        }
+    }
+
+    fn visit_def(
+        &self,
+        name: &str,
+        defs: &[(String, DefKind, Vec<Type>)],
+        ordered: &mut Vec<String>,
+        visiting: &mut Vec<String>,
+    ) {
+        if ordered.iter().any(|n| n == name) || visiting.iter().any(|n| n == name) {
+            return;
+        }
+        visiting.push(name.to_string());
+        if let Some((_, _, deps)) = defs.iter().find(|(n, _, _)| n == name) {
+            for dep in deps {
+                if let Some(dn) = self.type_def_name(dep) {
+                    self.visit_def(&dn, defs, ordered, visiting);
+                }
+            }
+        }
+        visiting.pop();
+        ordered.push(name.to_string());
+    }
+
+    fn type_def_name(&self, t: &Type) -> Option<String> {
+        match t {
+            Type::Named(n) => {
+                if self.structs.contains_key(n) || self.enums.contains_key(n) {
+                    Some(format!("Keel_{}", n))
+                } else {
+                    None
+                }
+            }
+            Type::Option(inner) => Some(format!("Keel_Option_{}", inner.mangle())),
+            Type::Result(ok, err) => Some(format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())),
+            Type::Vec(inner) => Some(format!("Keel_Vec_{}", inner.mangle())),
+            Type::Ref(inner) => self.type_def_name(inner),
+            Type::Array(inner, _) => self.type_def_name(inner),
+            _ => None,
+        }
+    }
+
+    fn emit_option_def(&mut self, inner: &Type) {
+        let cname = format!("Keel_Option_{}", inner.mangle());
+        let field = self.decl(inner, "_0");
+        self.out.push_str(&format!(
+            "typedef enum {{\n  {}_None = 0,\n  {}_Some = 1\n}} {}_tag;\n\n",
+            cname, cname, cname
+        ));
+        self.out.push_str(&format!(
+            "struct {} {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Some;\n  }} data;\n}};\n\n",
+            cname, cname, field
+        ));
+    }
+
+    fn emit_result_def(&mut self, ok: &Type, err: &Type) {
+        let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+        let ok_field = self.decl(ok, "_0");
+        let err_field = self.decl(err, "_0");
+        self.out.push_str(&format!(
+            "typedef enum {{\n  {}_Ok = 0,\n  {}_Err = 1\n}} {}_tag;\n\n",
+            cname, cname, cname
+        ));
+        self.out.push_str(&format!(
+            "struct {} {{\n  {}_tag tag;\n  union {{\n    struct {{\n      {};\n    }} Ok;\n    struct {{\n      {};\n    }} Err;\n  }} data;\n}};\n\n",
+            cname, cname, ok_field, err_field
+        ));
+    }
+
+    fn emit_vec_def(&mut self, inner: &Type) {
+        let cname = format!("Keel_Vec_{}", inner.mangle());
+        let elem = self.ty(inner);
+        self.out.push_str(&format!(
+            "struct {} {{\n  {}* data;\n  int64_t len;\n  int64_t cap;\n}};\n\n",
+            cname, elem
+        ));
+    }
+
+    fn emit_vec_funcs(&mut self, inner: &Type) {
+        let m = inner.mangle();
+        let cname = format!("Keel_Vec_{}", m);
+        let elem = self.ty(inner);
+        let opt = format!("Keel_Option_{}", m);
+        self.out.push_str(&format!(
+            "static {cname} k_vec_{m}_new(void) {{\n  {cname} v = {{ NULL, 0, 0 }};\n  return v;\n}}\n\n",
+            cname = cname, m = m
+        ));
+        self.out.push_str(&format!(
+            "static void k_vec_{m}_push({cname}* v, {elem} x) {{\n  if (v->len == v->cap) {{\n    v->cap = v->cap ? v->cap * 2 : 4;\n    v->data = ({elem}*)realloc(v->data, (size_t)v->cap * sizeof({elem}));\n  }}\n  v->data[v->len++] = x;\n}}\n\n",
+            m = m, cname = cname, elem = elem
+        ));
+        self.out.push_str(&format!(
+            "static int64_t k_vec_{m}_len(const {cname}* v) {{ return v->len; }}\n\n",
+            m = m, cname = cname
+        ));
+        self.out.push_str(&format!(
+            "static {opt} k_vec_{m}_get(const {cname}* v, int64_t i) {{\n  if (i < 0 || i >= v->len) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[i] }} }};\n}}\n\n",
+            opt = opt, m = m, cname = cname
+        ));
+        self.out.push_str(&format!(
+            "static {opt} k_vec_{m}_pop({cname}* v) {{\n  if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[--v->len] }} }};\n}}\n\n",
+            opt = opt, m = m, cname = cname
+        ));
+        self.out.push_str(&format!(
+            "static void k_vec_{m}_free({cname}* v) {{\n  free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
+            m = m, cname = cname
+        ));
+    }
+
+    fn emit_forward_decls(&mut self) {
+        for item in &self.prog.items {
+            match item {
+                Item::Struct(s) => {
+                    let cname = self.ctype.get(&s.name).cloned().unwrap_or_default();
+                    self.out.push_str(&format!("typedef struct {} {};\n", cname, cname));
+                }
+                Item::Enum(e) => {
+                    if e.variants.iter().any(|v| !v.payload.is_empty()) {
+                        let cname = self.ctype.get(&e.name).cloned().unwrap_or_default();
+                        self.out.push_str(&format!("typedef struct {} {};\n", cname, cname));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for t in self.option_insts {
+            let Type::Option(inner) = t else { continue };
+            let cname = format!("Keel_Option_{}", inner.mangle());
+            self.out.push_str(&format!("typedef struct {} {};\n", cname, cname));
+        }
+        for (ok, err) in self.result_insts {
+            let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+            self.out.push_str(&format!("typedef struct {} {};\n", cname, cname));
+        }
+        for t in self.vec_insts {
+            let Type::Vec(inner) = t else { continue };
+            let cname = format!("Keel_Vec_{}", inner.mangle());
+            self.out.push_str(&format!("typedef struct {} {};\n", cname, cname));
+        }
+        self.out.push('\n');
     }
 
     fn emit_struct(&mut self, s: &StructDecl) {
         let cname = self.ctype.get(&s.name).cloned().unwrap_or_default();
-        self.out.push_str(&format!("typedef struct {} {{\n", cname));
+        self.out.push_str(&format!("struct {} {{\n", cname));
         for f in &s.fields {
             self.out.push_str(&format!("  {};\n", self.decl(&f.ty, &f.name)));
         }
-        self.out.push_str(&format!("}} {};\n\n", cname));
+        self.out.push_str("};\n\n");
     }
 
     /// `enum` → C. Без данных — обычный C enum; с данными — тег +
@@ -397,10 +595,10 @@ impl<'a> Codegen<'a> {
             ));
         }
         self.out.push_str(&format!(
-            "typedef struct {{\n  {}_tag tag;\n  union {{\n{}\n  }} data;\n}} {};\n\n",
+            "struct {} {{\n  {}_tag tag;\n  union {{\n{}\n  }} data;\n}};\n\n",
             cname,
-            members.join("\n"),
-            cname
+            cname,
+            members.join("\n")
         ));
     }
 
@@ -611,6 +809,7 @@ impl<'a> Codegen<'a> {
                 let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
                 format!("({}){{ .tag = {}_Ok }}", c, c)
             }
+            Type::Vec(inner) => format!("(Keel_Vec_{}){{0}}", inner.mangle()),
             Type::Array(..) | Type::Void => "0".to_string(),
         }
     }
@@ -1096,6 +1295,10 @@ impl<'a> Codegen<'a> {
                     Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Array(..)) => {
                         format!("(*{})[{}]", base, self.expr(idx))
                     }
+                    Some(Type::Vec(_)) => format!("{}.data[{}]", base, self.expr(idx)),
+                    Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Vec(_)) => {
+                        format!("{}->data[{}]", base, self.expr(idx))
+                    }
                     _ => format!("{}[{}]", base, self.expr(idx)),
                 }
             }
@@ -1103,6 +1306,18 @@ impl<'a> Codegen<'a> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return "0".to_string();
                 };
+                // Встроенный `Vec::new()`.
+                if name == "Vec::new" {
+                    let t = self
+                        .types
+                        .get(&e.id)
+                        .cloned()
+                        .unwrap_or(Type::Vec(Box::new(Type::Int)));
+                    if let Type::Vec(elem) = t {
+                        let c = format!("Keel_Vec_{}", elem.mangle());
+                        return format!("({}){{0}}", c);
+                    }
+                }
                 // Встроенные конструкторы Option/Result.
                 if name == "Some" {
                     let t = self
@@ -1231,6 +1446,13 @@ impl<'a> Codegen<'a> {
                     };
                     return match inner {
                         Type::Array(_, n) => n.to_string(),
+                        Type::Vec(_) => {
+                            let v = match t {
+                                Type::Ref(_) => format!("{}->len", self.expr(a)),
+                                _ => format!("{}.len", self.expr(a)),
+                            };
+                            format!("(long long){}", v)
+                        }
                         _ => {
                             let v = match t {
                                 Type::Ref(_) => format!("(*{})", self.expr(a)),
@@ -1270,6 +1492,21 @@ impl<'a> Codegen<'a> {
             ExprKind::MethodCall { obj, name, args } => {
                 // Метод вызывается как `k_Тип_метод(получатель, args...)`.
                 let obj_ty = self.types.get(&obj.id).map(|t| t.deref().clone());
+                if let Some(Type::Vec(elem)) = &obj_ty {
+                    let m = elem.mangle();
+                    let recv = match self.types.get(&obj.id) {
+                        Some(Type::Ref(_)) => self.expr(obj),
+                        _ => format!("(&{})", self.expr(obj)),
+                    };
+                    return match name.as_str() {
+                        "push" => format!("k_vec_{}_push({}, {})", m, recv, self.expr(&args[0])),
+                        "len" => format!("k_vec_{}_len({})", m, recv),
+                        "get" => format!("k_vec_{}_get({}, {})", m, recv, self.expr(&args[0])),
+                        "pop" => format!("k_vec_{}_pop({})", m, recv),
+                        "free" => format!("k_vec_{}_free({})", m, recv),
+                        _ => "0".to_string(),
+                    };
+                }
                 let ty_name = match obj_ty {
                     Some(Type::Named(n)) => n,
                     _ => String::new(),

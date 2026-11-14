@@ -117,6 +117,8 @@ pub struct Checker {
     pub option_insts: Vec<Type>,
     /// Конкретные инстанциации встроенных `Result<T, E>`.
     pub result_insts: Vec<(Type, Type)>,
+    /// Конкретные инстанциации встроенных `Vec<T>`.
+    pub vec_insts: Vec<Type>,
     diags: Vec<Diagnostic>,
 }
 
@@ -144,6 +146,7 @@ impl Checker {
             method_recv_ref: HashMap::new(),
             option_insts: Vec::new(),
             result_insts: Vec::new(),
+            vec_insts: Vec::new(),
             diags: Vec::new(),
         }
     }
@@ -231,6 +234,34 @@ impl Checker {
                 // Импорты обрабатывает загрузчик модулей: до проверщика
                 // они не доходят.
                 Item::Import(_) => {}
+            }
+        }
+
+        // Собираем инстанциации встроенных обобщённых типов из объявлений:
+        // `Vec<int>` в параметре или поле должен быть сгенерирован, даже
+        // если конструктор `Vec::new()` в этом файле не встречается.
+        for item in &program.items {
+            match item {
+                Item::Struct(s) => {
+                    for f in &s.fields {
+                        self.record_type_insts(&f.ty);
+                    }
+                }
+                Item::Func(f) => {
+                    for p in &f.params {
+                        self.record_type_insts(&p.ty);
+                    }
+                    self.record_type_insts(&f.ret);
+                }
+                Item::Impl(im) => {
+                    for f in &im.funcs {
+                        for p in &f.params {
+                            self.record_type_insts(&p.ty);
+                        }
+                        self.record_type_insts(&f.ret);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -697,6 +728,153 @@ impl Checker {
                         .map(|v| format!("`{}::{}`", en, v))
                         .collect::<Vec<_>>()
                         .join(", ")
+                ),
+            ));
+        }
+    }
+
+    /// Методы встроенного `Vec<T>`: `push`, `len`, `get`, `pop`, `free`.
+    fn type_of_vec_method(
+        &mut self,
+        e: &Expr,
+        obj: &Expr,
+        name: &str,
+        args: &[Expr],
+        elem: &Type,
+        ctx: &mut Ctx,
+    ) -> Type {
+        match name {
+            "push" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`push` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "push");
+                if let Some(a) = args.first() {
+                    let at = self.type_of_expected(a, Some(elem), ctx);
+                    if !self.types_compatible(elem.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`push` ждёт `{}`, получен `{}`", elem.name(), at.name()),
+                        ));
+                    }
+                    self.record_move(a, &at, ctx);
+                }
+                // Перевыделение буфера гасит ссылки на элементы.
+                self.invalidate_inside(&path, e.line, "push");
+                Type::Void
+            }
+            "len" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`len` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                Type::Int
+            }
+            "get" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`get` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of(a, ctx);
+                    if at.deref() != &Type::Int {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`get` ждёт индекс типа `int`, получен `{}`", at.name()),
+                        ));
+                    }
+                }
+                let ty = Type::Option(Box::new(elem.clone()));
+                self.record_option_inst(&ty);
+                ty
+            }
+            "pop" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`pop` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "pop");
+                self.invalidate_inside(&path, e.line, "pop");
+                let ty = Type::Option(Box::new(elem.clone()));
+                self.record_option_inst(&ty);
+                ty
+            }
+            "free" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`free` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "free");
+                self.invalidate_inside(&path, e.line, "free");
+                Type::Void
+            }
+            _ => {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("у `Vec` нет метода `{}`", name),
+                ));
+                Type::Void
+            }
+        }
+    }
+
+    /// Получатель `push`/`pop`/`free` должен быть изменяемым.
+    fn check_mut_path(
+        &mut self,
+        path: &Path,
+        root_kind: &RootKind,
+        ctx: &Ctx,
+        line: usize,
+        method: &str,
+    ) {
+        let allowed = match root_kind {
+            RootKind::Owned(uid) => ctx
+                .scope
+                .values()
+                .find(|l| l.uid == *uid)
+                .map(|l| l.is_mut)
+                .unwrap_or(false),
+            RootKind::ThroughRef => {
+                let target = path.clone();
+                let root_uid = target.root.parse::<u32>().ok();
+                match root_uid {
+                    Some(_) => {
+                        let owner = ctx
+                            .scope
+                            .values()
+                            .filter(|l| !l.ref_target.is_some())
+                            .filter(|l| l.path.is_prefix_of(&target))
+                            .max_by_key(|l| (l.path.segs.len(), l.uid));
+                        owner.map(|l| l.is_mut).unwrap_or(false)
+                    }
+                    None => ctx
+                        .declared
+                        .iter()
+                        .any(|d| d.is_prefix_of(&target) || target.is_prefix_of(d)),
+                }
+            }
+        };
+        if !allowed {
+            self.diags.push(Diagnostic::new(
+                line,
+                format!(
+                    "`{}` меняет `{}`: получатель должен быть `mut`",
+                    method,
+                    self.render(path)
                 ),
             ));
         }
@@ -1232,6 +1410,29 @@ impl Checker {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return self.type_of(e, ctx);
                 };
+                if name == "Vec::new" {
+                    if !args.is_empty() {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("`Vec::new` не принимает аргументов, получено {}", args.len()),
+                        ));
+                    }
+                    let elem = match expected {
+                        Some(Type::Vec(t)) => (**t).clone(),
+                        _ => {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                "не удалось вывести тип `Vec::new`: укажите тип, \
+                                 например `let v Vec<int> = Vec::new();`"
+                                    .to_string(),
+                            ));
+                            Type::Int
+                        }
+                    };
+                    let ty = Type::Vec(Box::new(elem));
+                    self.record_vec_inst(&ty);
+                    return ty;
+                }
                 match name.as_str() {
                     "Some" => {
                         if args.len() != 1 {
@@ -1340,6 +1541,46 @@ impl Checker {
             if !self.result_insts.contains(&pair) {
                 self.result_insts.push(pair);
             }
+        }
+    }
+
+    fn record_vec_inst(&mut self, ty: &Type) {
+        if let Type::Vec(inner) = ty {
+            if !self.vec_insts.contains(ty) {
+                self.vec_insts.push(ty.clone());
+            }
+            // `get`/`pop` возвращают `Option<T>` — тип нужен всегда.
+            let opt = Type::Option(inner.clone());
+            if !self.option_insts.contains(&opt) {
+                self.option_insts.push(opt);
+            }
+        }
+    }
+
+    /// Рекурсивно записывает инстанциации `Option`/`Result`/`Vec` из типа.
+    fn record_type_insts(&mut self, t: &Type) {
+        match t {
+            Type::Option(inner) => {
+                self.record_type_insts(inner);
+                if !self.option_insts.contains(t) {
+                    self.option_insts.push(t.clone());
+                }
+            }
+            Type::Result(ok, err) => {
+                self.record_type_insts(ok);
+                self.record_type_insts(err);
+                let pair = ((**ok).clone(), (**err).clone());
+                if !self.result_insts.contains(&pair) {
+                    self.result_insts.push(pair);
+                }
+            }
+            Type::Vec(inner) => {
+                self.record_type_insts(inner);
+                self.record_vec_inst(t);
+            }
+            Type::Ref(inner) => self.record_type_insts(inner),
+            Type::Array(inner, _) => self.record_type_insts(inner),
+            _ => {}
         }
     }
 
@@ -1474,6 +1715,9 @@ impl Checker {
             // проверяем как обычный вызов с `x` первым аргументом.
             ExprKind::MethodCall { obj, name, args } => {
                 let obj_ty = self.type_of(obj, ctx).deref().clone();
+                if let Type::Vec(elem) = &obj_ty {
+                    return self.type_of_vec_method(e, obj, name, args, elem, ctx);
+                }
                 let Type::Named(tn) = obj_ty.clone() else {
                     self.diags.push(Diagnostic::new(
                         e.line,
@@ -1518,6 +1762,7 @@ impl Checker {
                 let base = base.deref().clone();
                 match base {
                     Type::Array(elem, _) => *elem,
+                    Type::Vec(elem) => *elem,
                     _ => {
                         self.diags.push(Diagnostic::new(
                             e.line,
@@ -1588,6 +1833,13 @@ impl Checker {
                                     .to_string(),
                             ));
                         }
+                        if [&lt, &rt].into_iter().any(|t| matches!(t, Type::Vec(_))) {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                "сравнение Vec не поддерживается — сравните длину и элементы"
+                                    .to_string(),
+                            ));
+                        }
                         Type::Bool
                     }
                     BinOp::And | BinOp::Or => Type::Bool,
@@ -1644,6 +1896,19 @@ impl Checker {
             self.diags.push(Diagnostic::new(line, "вызов: поддерживается только имя функции".into()));
             return Type::Void;
         };
+
+        // `Vec::new()` без ожидаемого типа: элемент не выводится.
+        if name == "Vec::new" {
+            self.diags.push(Diagnostic::new(
+                line,
+                "не удалось вывести тип `Vec::new`: укажите тип, \
+                 например `let v Vec<int> = Vec::new();`"
+                    .to_string(),
+            ));
+            let ty = Type::Vec(Box::new(Type::Int));
+            self.record_vec_inst(&ty);
+            return ty;
+        }
 
         // Встроенные конструкторы Option/Result. Здесь — без ожидаемого
         // типа: `Some` выводит T из аргумента, `Ok`/`Err` без контекста
@@ -1788,6 +2053,13 @@ impl Checker {
                             .to_string(),
                     ));
                 }
+                if matches!(base, Type::Vec(_)) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        "печать Vec не поддерживается — обойдите элементы через `len` и `v[i]`"
+                            .to_string(),
+                    ));
+                }
                 self.record_move(a, &at, ctx);
             }
             return Type::Void;
@@ -1809,11 +2081,11 @@ impl Checker {
                     Type::Ref(inner) => inner.as_ref(),
                     other => other,
                 };
-                if !matches!(inner, Type::Str | Type::Array(..)) {
+                if !matches!(inner, Type::Str | Type::Array(..) | Type::Vec(_)) {
                     self.diags.push(Diagnostic::new(
                         a.line,
                         format!(
-                            "`len` работает со строкой или массивом, получен `{}`",
+                            "`len` работает со строкой, массивом или Vec, получен `{}`",
                             t.name()
                         ),
                     ));
@@ -2411,6 +2683,7 @@ impl Checker {
                 self.types_compatible((**x1).clone(), y1)
                     && self.types_compatible((**x2).clone(), y2)
             }
+            (Type::Vec(x), Type::Vec(y)) => self.types_compatible((**x).clone(), y),
             _ => a == *b,
         }
     }

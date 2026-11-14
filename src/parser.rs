@@ -641,10 +641,12 @@ impl Parser {
                 self.expect_punct(">")?;
                 Ok(Type::Result(Box::new(ok), Box::new(err)))
             }
-            "Vec" => Err(format!(
-                "строка {}: обобщённые типы не поддерживаются в MVP, используйте массивы [T; N]",
-                self.line()
-            )),
+            "Vec" => {
+                self.expect_punct("<")?;
+                let inner = self.parse_type()?;
+                self.expect_punct(">")?;
+                Ok(Type::Vec(Box::new(inner)))
+            }
             _ => Ok(Type::Named(name)),
         }
     }

@@ -19,6 +19,8 @@ pub enum Type {
     Option(Box<Type>),
     /// Встроенный `Result<T, E>`: `Ok(T)` или `Err(E)`.
     Result(Box<Type>, Box<Type>),
+    /// Встроенный `Vec<T>`: растущий массив в куче.
+    Vec(Box<Type>),
 }
 
 impl Type {
@@ -45,6 +47,7 @@ impl Type {
             Type::Array(t, n) => format!("[{}; {}]", t.name(), n),
             Type::Option(t) => format!("Option<{}>", t.name()),
             Type::Result(t, e) => format!("Result<{}, {}>", t.name(), e.name()),
+            Type::Vec(t) => format!("Vec<{}>", t.name()),
         }
     }
 
@@ -60,6 +63,7 @@ impl Type {
             Type::Array(t, n) => format!("arr{}_{}", n, t.mangle()),
             Type::Option(t) => format!("Option_{}", t.mangle()),
             Type::Result(t, e) => format!("Result_{}_{}", t.mangle(), e.mangle()),
+            Type::Vec(t) => format!("Vec_{}", t.mangle()),
         }
     }
 }
