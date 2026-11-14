@@ -204,6 +204,18 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Декларация параметра: `&T` получает `restrict` — модель владения
+    /// гарантирует, что изменяемые пути не пересекаются.
+    fn param_decl(&self, t: &Type, name: &str) -> String {
+        match t {
+            Type::Ref(inner) => match inner.as_ref() {
+                Type::Array(elem, n) => self.decl(elem, &format!("(*{})[{}]", name, n)),
+                t => format!("{}* restrict {}", self.ty(t), name),
+            },
+            t => self.decl(t, name),
+        }
+    }
+
     pub fn generate(mut self) -> String {
         self.out.borrow_mut().push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
         // Нарушение контракта pre/post: сообщение в stderr и выход.
@@ -334,7 +346,7 @@ impl<'a> Codegen<'a> {
                             Type::Ref(Box::new(inner))
                         }
                     };
-                    params.push(self.decl(&pt, &p.name));
+                    params.push(self.param_decl(&pt, &p.name));
                 }
                 let decl = self.func_decl(f, &params);
                 self.out.borrow_mut().push_str(&format!("static {};\n", decl));
@@ -922,7 +934,7 @@ impl<'a> Codegen<'a> {
                     Type::Ref(Box::new(inner))
                 }
             };
-            params.push(self.decl(&pt, &p.name));
+            params.push(self.param_decl(&pt, &p.name));
             // Параметр занимает имя в C — регистрируем, чтобы `let` с тем же
             // именем не переопределял его.
             self.shadow_count
