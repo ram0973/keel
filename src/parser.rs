@@ -325,7 +325,7 @@ impl Parser {
             fields.push(Field { name: fname, ty, line: fline });
         }
         self.expect_punct("}")?;
-        Ok(StructDecl { name, fields, line })
+        Ok(StructDecl { name, fields, line, file: String::new() })
     }
 
     /// `enum Name { A, B(int), C }` — варианты с позиционными данными.
@@ -366,7 +366,7 @@ impl Parser {
                 line, name
             ));
         }
-        Ok(EnumDecl { name, variants, line })
+        Ok(EnumDecl { name, variants, line, file: String::new() })
     }
 
     fn parse_func(&mut self) -> PResult<FuncDecl> {
@@ -449,7 +449,7 @@ impl Parser {
                 body.stmts.push(Stmt::Return { line: e.line, value: Some(e) });
             }
         }
-        Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line })
+        Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line, file: String::new() })
     }
 
     /// Список условий контракта: `(expr, expr, ...)`. Пустой список —

@@ -1285,6 +1285,28 @@ fn import_цикл_ловится() {
 }
 
 #[test]
+fn диагностика_называет_файл() {
+    // Ошибка в подключённом файле должна указывать его имя, а не только
+    // строку: строки в разных файлах совпадают.
+    let dir = std::env::temp_dir().join(format!("keel_file_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(
+        dir.join("lib.keel"),
+        "fn bad() int {\n    let x = 5;\n    return x + true;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.keel"),
+        "import \"lib.keel\";\nfn main() int { return bad(); }\n",
+    )
+    .unwrap();
+    let r = keelc::compile_file(&dir.join("main.keel")).expect("должно разобраться");
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("lib.keel:3:"), "получено:\n{}", text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn import_подключает_имена_из_другого_файла() {
     // Главная проверка: файл видит объявления из подключённого файла,
     // и сгенерированный C компилируется и работает.

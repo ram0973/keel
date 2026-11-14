@@ -223,6 +223,8 @@ pub struct StructDecl {
     pub fields: Vec<Field>,
     /// Строка объявления — для диагностик о повторных именах.
     pub line: usize,
+    /// Файл объявления — для диагностик. Пусто при `compile(src)`.
+    pub file: String,
 }
 
 /// `enum Name { A, B, C }` — именованный набор состояний.
@@ -236,6 +238,8 @@ pub struct EnumDecl {
     pub variants: Vec<VariantDecl>,
     /// Строка объявления — для диагностик о повторных именах.
     pub line: usize,
+    /// Файл объявления — для диагностик. Пусто при `compile(src)`.
+    pub file: String,
 }
 
 /// Вариант enum: имя и позиционные данные.
@@ -291,6 +295,8 @@ pub struct FuncDecl {
     pub owner: Option<String>,
     /// Строка объявления — для диагностик о повторных именах.
     pub line: usize,
+    /// Файл объявления — для диагностик. Пусто при `compile(src)`.
+    pub file: String,
 }
 
 #[derive(Clone, Debug)]

@@ -32,11 +32,31 @@ fn аргументов(n: usize) -> String {
 pub struct Diagnostic {
     pub line: usize,
     pub msg: String,
+    /// Имя файла, из которого пришла ошибка. Пусто при `compile(src)`.
+    pub file: String,
 }
 
 impl Diagnostic {
     fn new(line: usize, msg: String) -> Self {
-        Diagnostic { line, msg }
+        Diagnostic { line, msg, file: String::new() }
+    }
+}
+
+/// Список диагностик с текущим файлом: `push` проставляет имя файла,
+/// чтобы не передавать его в каждый из сотни вызовов `Diagnostic::new`.
+struct Diags {
+    items: Vec<Diagnostic>,
+    file: String,
+}
+
+impl Diags {
+    fn new() -> Diags {
+        Diags { items: Vec::new(), file: String::new() }
+    }
+
+    fn push(&mut self, mut d: Diagnostic) {
+        d.file = self.file.clone();
+        self.items.push(d);
     }
 }
 
@@ -96,7 +116,10 @@ pub struct Checker {
     /// ищется по типу получателя `x`.
     methods: HashMap<(String, String), FuncInfo>,
     /// Строка объявления каждой функции — для диагностик.
+    /// Строка объявления функции — для диагностик о повторных именах.
     func_lines: HashMap<String, usize>,
+    /// Файл объявления функции — для диагностик о повторных именах.
+    func_files: HashMap<String, String>,
     /// uid -> имя, для читаемых сообщений об ошибках.
     names: HashMap<u32, String>,
     next_uid: u32,
@@ -127,7 +150,7 @@ pub struct Checker {
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
     pub vec_drops: HashMap<String, Vec<(String, Type)>>,
-    diags: Vec<Diagnostic>,
+    diags: Diags,
 }
 
 #[derive(Clone)]
@@ -145,6 +168,7 @@ impl Checker {
             funcs: HashMap::new(),
             methods: HashMap::new(),
             func_lines: HashMap::new(),
+            func_files: HashMap::new(),
             names: HashMap::new(),
             next_uid: 1,
             refs: Vec::new(),
@@ -158,7 +182,7 @@ impl Checker {
             tuple_insts: Vec::new(),
             slice_insts: Vec::new(),
             vec_drops: HashMap::new(),
-            diags: Vec::new(),
+            diags: Diags::new(),
         }
     }
 
@@ -168,6 +192,12 @@ impl Checker {
         // сгенерированном коде, где причина не видна, либо молча
         // перекрывают друг друга.
         for item in &program.items {
+            self.diags.file = match item {
+                Item::Struct(s) => s.file.clone(),
+                Item::Enum(e) => e.file.clone(),
+                Item::Func(f) => f.file.clone(),
+                Item::Impl(_) | Item::Import(_) => String::new(),
+            };
             match item {
                 Item::Struct(s) => {
                     if let Some(prev) = self.structs.get(&s.name) {
@@ -216,6 +246,7 @@ impl Checker {
                 }
                 Item::Impl(im) => {
                     for f in &im.funcs {
+                        self.diags.file = f.file.clone();
                         if Self::is_method(f) {
                             // Метод: ключ — (тип, имя). Вызов идёт как
                             // `x.name(...)`, поэтому ищем по типу получателя.
@@ -292,6 +323,7 @@ impl Checker {
                     .get(f)
                     .copied()
                     .unwrap_or(0);
+                self.diags.file = self.func_files.get(f).cloned().unwrap_or_default();
                 self.diags.push(Diagnostic::new(
                     line,
                     format!(
@@ -309,6 +341,7 @@ impl Checker {
         // enum перестал бы быть копируемым.
         let enums: Vec<EnumDecl> = self.enums.values().cloned().collect();
         for e in &enums {
+            self.diags.file = e.file.clone();
             for v in &e.variants {
                 for t in &v.payload {
                     if !self.payload_type_ok(t) {
@@ -328,6 +361,7 @@ impl Checker {
         }
         // Рекурсивный enum бесконечен по размеру: `enum E { A(E) }`.
         for e in &enums {
+            self.diags.file = e.file.clone();
             let mut visiting = Vec::new();
             if self.enum_has_cycle(&e.name, &mut visiting) {
                 self.diags.push(Diagnostic::new(
@@ -340,9 +374,13 @@ impl Checker {
         // Затем проверяем тела.
         for item in &program.items {
             match item {
-                Item::Func(f) => self.check_func(f),
+                Item::Func(f) => {
+                    self.diags.file = f.file.clone();
+                    self.check_func(f);
+                }
                 Item::Impl(im) => {
                     for f in &im.funcs {
+                        self.diags.file = f.file.clone();
                         self.check_func(f);
                     }
                 }
@@ -354,7 +392,7 @@ impl Checker {
             }
         }
 
-        self.diags.clone()
+        self.diags.items.clone()
     }
 
     /// Метод — функция с первым параметром `self`.
@@ -385,6 +423,7 @@ impl Checker {
             self.diags.push(Diagnostic::new(f.line, what));
         }
         self.func_lines.insert(key.clone(), f.line);
+        self.func_files.insert(key.clone(), f.file.clone());
         self.funcs.insert(
             key,
             FuncInfo {

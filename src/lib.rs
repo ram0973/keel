@@ -114,9 +114,29 @@ impl Loader {
             .map_err(|e| format!("не удалось прочитать `{}`: {}", canon.display(), e))?;
 
         let mut p = parser::Parser::with_id_start(&src, self.next_id)?;
-        let program = p.parse_program()?;
+        let mut program = p.parse_program()?;
         // Продолжаем нумерацию со следующего файла.
         self.next_id = p.next_id();
+
+        // Имя файла — в каждое объявление: диагностика должна сказать,
+        // в каком файле ошибка, а не только строку.
+        let fname = canon
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| canon.display().to_string());
+        for item in &mut program.items {
+            match item {
+                Item::Struct(s) => s.file = fname.clone(),
+                Item::Enum(e) => e.file = fname.clone(),
+                Item::Func(f) => f.file = fname.clone(),
+                Item::Impl(im) => {
+                    for f in &mut im.funcs {
+                        f.file = fname.clone();
+                    }
+                }
+                Item::Import(_) => {}
+            }
+        }
 
         self.stack.push(canon.clone());
         self.loaded.insert(canon.clone());
@@ -146,7 +166,9 @@ impl Loader {
 pub fn format_diagnostics(diags: &[Diagnostic]) -> String {
     let mut out = String::new();
     for d in diags {
-        if d.line > 0 {
+        if !d.file.is_empty() {
+            out.push_str(&format!("{}:{}: ", d.file, d.line));
+        } else if d.line > 0 {
             out.push_str(&format!("строка {}: ", d.line));
         }
         out.push_str(&d.msg);
