@@ -171,8 +171,14 @@ pub fn format_diagnostics(diags: &[Diagnostic]) -> String {
         } else if d.line > 0 {
             out.push_str(&format!("строка {}: ", d.line));
         }
+        if !d.code.is_empty() {
+            out.push_str(&format!("[{}] ", d.code));
+        }
         out.push_str(&d.msg);
         out.push('\n');
+        if let Some(h) = &d.hint {
+            out.push_str(&format!("  подсказка: {}\n", h));
+        }
     }
     out
 }

@@ -572,3 +572,24 @@ fn main() int {
     assert!(p < f, "Vec освобождён до последнего использования ссылки");
 }
 
+
+// 26. Диагностика: код ошибки и подсказка.
+#[test]
+fn diagnostic_has_code_and_hint() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let r = &v[0];
+    v.push(2);
+    println(r);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("[E003]"), "нет кода ошибки:\n{}", text);
+    assert!(text.contains("подсказка:"), "нет подсказки:\n{}", text);
+}

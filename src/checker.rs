@@ -34,11 +34,27 @@ pub struct Diagnostic {
     pub msg: String,
     /// Имя файла, из которого пришла ошибка. Пусто при `compile(src)`.
     pub file: String,
+    /// Код ошибки (`E003`). Пусто — код не присвоен.
+    pub code: &'static str,
+    /// Что делать: путь исправления, а не пересказ причины.
+    pub hint: Option<String>,
 }
 
 impl Diagnostic {
     fn new(line: usize, msg: String) -> Self {
-        Diagnostic { line, msg, file: String::new() }
+        Diagnostic { line, msg, file: String::new(), code: "", hint: None }
+    }
+
+    /// Присвоить код ошибки.
+    fn code(mut self, code: &'static str) -> Self {
+        self.code = code;
+        self
+    }
+
+    /// Добавить подсказку «что делать».
+    fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 }
 
@@ -593,10 +609,14 @@ impl Checker {
         for e in &f.pre {
             let t = self.type_of(e, &mut ctx);
             if t != Type::Bool && t != Type::Void {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("условие `pre` должно быть bool, получено `{}`", t.name()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("условие `pre` должно быть bool, получено `{}`", t.name()),
+                    )
+                    .code("E011")
+                    .hint("условие контракта должно быть `bool`"),
+                );
             }
         }
 
@@ -642,10 +662,14 @@ impl Checker {
             }
             let t = self.type_of(e, &mut post_ctx);
             if t != Type::Bool && t != Type::Void {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("условие `post` должно быть bool, получено `{}`", t.name()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("условие `post` должно быть bool, получено `{}`", t.name()),
+                    )
+                    .code("E011")
+                    .hint("условие контракта должно быть `bool`"),
+                );
             }
         }
 
@@ -659,24 +683,28 @@ impl Checker {
                 continue;
             }
             if !declared.iter().any(|d| d.is_prefix_of(&path)) {
-                self.diags.push(Diagnostic::new(
-                    f.line,
-                    format!(
-                        "функция `{}` изменяет `{}`, но не объявляет это в mut-контракте \
-                         (объявлено: {})",
-                        f.name,
-                        self.render(&path),
-                        if declared.is_empty() {
-                            "ничего".to_string()
-                        } else {
-                            declared
-                                .iter()
-                                .map(|d| self.render(d))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        }
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        f.line,
+                        format!(
+                            "функция `{}` изменяет `{}`, но не объявляет это в mut-контракте \
+                             (объявлено: {})",
+                            f.name,
+                            self.render(&path),
+                            if declared.is_empty() {
+                                "ничего".to_string()
+                            } else {
+                                declared
+                                    .iter()
+                                    .map(|d| self.render(d))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            }
+                        ),
+                    )
+                    .code("E004")
+                    .hint("добавьте путь в `mut(...)` в сигнатуре функции"),
+                );
             }
         }
 
@@ -887,17 +915,21 @@ impl Checker {
             .map(|(n, _)| n.clone())
             .collect();
         if !missing.is_empty() {
-            self.diags.push(Diagnostic::new(
-                line,
-                format!(
-                    "`match` не исчерпывающий: не разобраны варианты {}",
-                    missing
-                        .iter()
-                        .map(|v| format!("`{}::{}`", en, v))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!(
+                        "`match` не исчерпывающий: не разобраны варианты {}",
+                        missing
+                            .iter()
+                            .map(|v| format!("`{}::{}`", en, v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )
+                .code("E012")
+                .hint("разберите все варианты enum"),
+            );
         }
     }
 
@@ -1151,12 +1183,16 @@ impl Checker {
                 // компиляции C, в виде «array of voids».
                 if let ExprKind::Array(items) = &init.kind {
                     if items.is_empty() && ty.is_none() {
-                        self.diags.push(Diagnostic::new(
-                            init.line,
-                            "невозможно вывести тип элемента пустого массива: \
-                             укажите тип явно, например `let xs [int; 0] = [];`"
-                                .to_string(),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                init.line,
+                                "невозможно вывести тип элемента пустого массива: \
+                                 укажите тип явно, например `let xs [int; 0] = [];`"
+                                    .to_string(),
+                            )
+                            .code("E009")
+                            .hint("укажите тип элемента: `let xs [int; 0] = [];`"),
+                        );
                     }
                 }
                 if let Some(declared) = ty {
@@ -1164,14 +1200,18 @@ impl Checker {
                         self.record_slice_inst(inner);
                     }
                     if !self.types_compatible(declared.clone(), &init_ty) {
-                        self.diags.push(Diagnostic::new(
-                            init.line,
-                            format!(
-                                "несовпадение типов: объявлено `{}`, получено `{}`",
-                                declared.name(),
-                                init_ty.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                init.line,
+                                format!(
+                                    "несовпадение типов: объявлено `{}`, получено `{}`",
+                                    declared.name(),
+                                    init_ty.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите значение к объявленному типу"),
+                        );
                     }
                 }
                 // Перемещение: только для владения, не для ссылок.
@@ -1282,13 +1322,17 @@ impl Checker {
                         // `return;` без значения требует, чтобы функция
                         // ничего не возвращала.
                         if ctx.ret != Type::Void && !ctx.is_main {
-                            self.diags.push(Diagnostic::new(
-                                *line,
-                                format!(
-                                    "функция возвращает `{}`, поэтому `return` требует значение",
-                                    ctx.ret.name()
-                                ),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    *line,
+                                    format!(
+                                        "функция возвращает `{}`, поэтому `return` требует значение",
+                                        ctx.ret.name()
+                                    ),
+                                )
+                                .code("E014")
+                                .hint("верните значение или объявите функцию `void`"),
+                            );
                         }
                     }
                 }
@@ -1426,10 +1470,11 @@ impl Checker {
             }
             Stmt::Break { line } => {
                 if ctx.loop_depth == 0 {
-                    self.diags.push(Diagnostic::new(
-                        *line,
-                        "`break` используется вне цикла".to_string(),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(*line, "`break` используется вне цикла".to_string())
+                            .code("E013")
+                            .hint("используйте `break` внутри `while`/`for`"),
+                    );
                 } else {
                     let state = (ctx.scope.clone(), self.refs.clone());
                     if let Some(l) = ctx.loops.last_mut() {
@@ -1440,10 +1485,11 @@ impl Checker {
             }
             Stmt::Continue { line } => {
                 if ctx.loop_depth == 0 {
-                    self.diags.push(Diagnostic::new(
-                        *line,
-                        "`continue` используется вне цикла".to_string(),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(*line, "`continue` используется вне цикла".to_string())
+                            .code("E013")
+                            .hint("используйте `continue` внутри `while`/`for`"),
+                    );
                 } else {
                     let state = (ctx.scope.clone(), self.refs.clone());
                     if let Some(l) = ctx.loops.last_mut() {
@@ -1559,14 +1605,18 @@ impl Checker {
         let rhs_ty = self.type_of(rhs, ctx);
 
         if !self.types_compatible(lhs_ty.clone(), &rhs_ty) {
-            self.diags.push(Diagnostic::new(
-                rhs.line,
-                format!(
-                    "несовпадение типов при присваивании: `{}` и `{}`",
-                    lhs_ty.name(),
-                    rhs_ty.name()
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    rhs.line,
+                    format!(
+                        "несовпадение типов при присваивании: `{}` и `{}`",
+                        lhs_ty.name(),
+                        rhs_ty.name()
+                    ),
+                )
+                .code("E007")
+                .hint("приведите значение к типу переменной"),
+            );
         }
 
         // Изменяемость: владелец должен быть `mut`, либо писать идёт через
@@ -1581,10 +1631,14 @@ impl Checker {
                     .map(|l| l.is_mut)
                     .unwrap_or(false);
                 if !is_mut {
-                    self.diags.push(Diagnostic::new(
-                        lhs.line,
-                        format!("`{}` не объявлен как `mut` — присваивание запрещено", name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            lhs.line,
+                            format!("`{}` не объявлен как `mut` — присваивание запрещено", name),
+                        )
+                        .code("E005")
+                        .hint("объявите переменную `let mut`"),
+                    );
                 }
             }
             RootKind::ThroughRef => {
@@ -1617,23 +1671,27 @@ impl Checker {
                     }),
                 };
                 if !allowed {
-                    self.diags.push(Diagnostic::new(
-                        lhs.line,
-                        format!(
-                            "нельзя писать в `{}`: путь не объявлен изменяемым \
-                             (объявлено: {})",
-                            self.render(&target),
-                            if ctx.declared.is_empty() {
-                                "ничего".to_string()
-                            } else {
-                                ctx.declared
-                                    .iter()
-                                    .map(|d| self.render(d))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            }
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            lhs.line,
+                            format!(
+                                "нельзя писать в `{}`: путь не объявлен изменяемым \
+                                 (объявлено: {})",
+                                self.render(&target),
+                                if ctx.declared.is_empty() {
+                                    "ничего".to_string()
+                                } else {
+                                    ctx.declared
+                                        .iter()
+                                        .map(|d| self.render(d))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                }
+                            ),
+                        )
+                        .code("E005")
+                        .hint("добавьте путь в `mut(...)` в сигнатуре функции"),
+                    );
                 }
             }
         }
@@ -1669,7 +1727,9 @@ impl Checker {
                         what,
                         self.render(&target)
                     ),
-                ));
+                )
+                .code("E010")
+                .hint("ссылайтесь на параметр или верните владение"));
             }
         }
 
@@ -1719,10 +1779,14 @@ impl Checker {
                     return (Path::root("?"), RootKind::Owned(0));
                 };
                 if local.moved {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`{}` уже перемещён, использовать нельзя", name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`{}` уже перемещён, использовать нельзя", name),
+                        )
+                        .code("E001")
+                        .hint("значение перемещено; возьмите ссылку `&x` или копию"),
+                    );
                 }
                 match local.ref_target {
                     Some(t) => (t, RootKind::ThroughRef),
@@ -2044,27 +2108,36 @@ impl Checker {
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Str(_) => Type::Str,
             ExprKind::Ident(name) if name == "None" => {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    "не удалось вывести тип `None`: укажите тип, \
-                     например `let o Option<int> = None;`"
-                        .to_string(),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        "не удалось вывести тип `None`: укажите тип, \
+                         например `let o Option<int> = None;`"
+                            .to_string(),
+                    )
+                    .code("E009")
+                    .hint("укажите тип: `let o Option<int> = None;`"),
+                );
                 Type::Option(Box::new(Type::Int))
             }
             ExprKind::Ident(name) => {
                 let Some(local) = ctx.scope.get(name).cloned() else {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("неизвестная переменная `{}`", name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(e.line, format!("неизвестная переменная `{}`", name))
+                            .code("E006")
+                            .hint("проверьте имя или объявите переменную"),
+                    );
                     return Type::Void;
                 };
                 if local.moved {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`{}` уже перемещён, использовать нельзя", name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`{}` уже перемещён, использовать нельзя", name),
+                        )
+                        .code("E001")
+                        .hint("значение перемещено; возьмите ссылку `&x` или копию"),
+                    );
                 }
                 // Использование ссылки: проверяем, что она ещё жива.
                 if let Some(uid) = local.ref_uid {
@@ -2082,15 +2155,19 @@ impl Checker {
                                 kline, reason
                             ));
                         }
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "ссылка `{}` инвалидирована: объект `{}` был изменён или уничтожен{}",
-                                name,
-                                self.render(local.ref_target.as_ref().unwrap_or(&Path::root("?"))),
-                                chain
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "ссылка `{}` инвалидирована: объект `{}` был изменён или уничтожен{}",
+                                    name,
+                                    self.render(local.ref_target.as_ref().unwrap_or(&Path::root("?"))),
+                                    chain
+                                ),
+                            )
+                            .code("E003")
+                            .hint("ссылка перестала быть действительной; не используйте её после изменения объекта"),
+                        );
                     }
                 }
                 local.ty
@@ -2735,12 +2812,16 @@ impl Checker {
                 let base = at.deref().clone();
                 let is_payload = self.is_payload_enum_type(&base);
                 if is_payload {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        "печать enum с данными не поддерживается — \
-                         разберите значение через `match`"
-                            .to_string(),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            "печать enum с данными не поддерживается — \
+                             разберите значение через `match`"
+                                .to_string(),
+                        )
+                        .code("E015")
+                        .hint("разберите значение через `match`"),
+                    );
                 }
                 if matches!(base, Type::Vec(_)) {
                     self.diags.push(Diagnostic::new(
@@ -3191,14 +3272,18 @@ impl Checker {
         let _ = uid;
         if !owner.is_mut {
             let name = self.names.get(&owner.uid).cloned().unwrap_or_default();
-            self.diags.push(Diagnostic::new(
-                line,
-                format!(
-                    "`{}` не объявлен как `mut` — вызов изменяет его, \
-                     а изменять неизменяемую переменную нельзя",
-                    name
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!(
+                        "`{}` не объявлен как `mut` — вызов изменяет его, \
+                         а изменять неизменяемую переменную нельзя",
+                        name
+                    ),
+                )
+                .code("E005")
+                .hint("объявите переменную `let mut`"),
+            );
         }
     }
 
@@ -3629,14 +3714,18 @@ impl Checker {
                 } else {
                     "в коллекции"
                 };
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!(
-                        "перемещение из `{}` запрещено: {} осталась бы дыра — значение, \
-                         которого больше нет. Возьмите ссылку `&{}`",
-                        place, where_, place
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!(
+                            "перемещение из `{}` запрещено: {} осталась бы дыра — значение, \
+                             которого больше нет. Возьмите ссылку `&{}`",
+                            place, where_, place
+                        ),
+                    )
+                    .code("E002")
+                    .hint("возьмите ссылку `&a[0]` или скопируйте поля по одному"),
+                );
             }
             ExprKind::StructInit { fields, .. } => {
                 let vals: Vec<(Expr, Type)> = fields
