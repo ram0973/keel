@@ -621,6 +621,17 @@ impl Parser {
             self.expect_punct("]")?;
             return Ok(Type::Array(Box::new(elem), n));
         }
+        if self.eat_punct("(") {
+            let mut ts = Vec::new();
+            while !self.at_punct(")") {
+                ts.push(self.parse_type()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct(")")?;
+            return Ok(Type::Tuple(ts));
+        }
         let name = self.ident()?;
         match name.as_str() {
             "int" => Ok(Type::Int),
@@ -1063,7 +1074,15 @@ impl Parser {
             let line = self.line();
             if self.at_punct(".") {
                 self.bump();
-                let name = self.ident()?;
+                // `t.0` — доступ к элементу кортежа.
+                let name = match &self.toks[self.pos].tok {
+                    Tok::Int(n) => {
+                        let n = *n;
+                        self.bump();
+                        n.to_string()
+                    }
+                    _ => self.ident()?,
+                };
                 // `x.method(args)` — вызов метода; `x.field` — доступ к полю.
                 if self.at_punct("(") {
                     self.bump();
@@ -1162,9 +1181,22 @@ impl Parser {
             }
             Tok::Punct(p) if p == "(" => {
                 self.bump();
-                let e = self.parse_expr()?;
+                let first = self.parse_expr()?;
+                // `(a, b)` — кортеж; `(a)` — группировка.
+                if self.eat_punct(",") {
+                    let mut items = vec![first];
+                    while !self.at_punct(")") {
+                        items.push(self.parse_expr()?);
+                        if !self.eat_punct(",") {
+                            break;
+                        }
+                    }
+                    self.expect_punct(")")?;
+                    let id = self.id();
+                    return Ok(Expr { id, line, kind: ExprKind::Tuple(items) });
+                }
                 self.expect_punct(")")?;
-                Ok(e)
+                Ok(first)
             }
             Tok::Punct(p) if p == "[" => {
                 // Массив-литерал: [a, b, c]

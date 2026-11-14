@@ -3644,3 +3644,61 @@ fn main() int {
         "поле `x` задано дважды",
     );
 }
+
+// ============================================================
+// Кортежи
+// ============================================================
+
+#[test]
+fn кортеж_работает() {
+    ok(r#"
+fn main() int {
+    let t = (1, true);
+    println(t.0);
+    println(t.1);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn кортеж_в_функции() {
+    ok(r#"
+fn pair() (int, bool) {
+    return (7, true);
+}
+
+fn main() int {
+    let t = pair();
+    println(t.0);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn кортеж_копируется() {
+    ok(r#"
+fn main() int {
+    let a = (1, 2);
+    let b = a;
+    println(a.0);
+    println(b.0);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn кортеж_индекс_за_границей() {
+    fails(
+        r#"
+fn main() int {
+    let t = (1, 2);
+    println(t.5);
+    return 0;
+}
+"#,
+        "нет элемента `5`",
+    );
+}

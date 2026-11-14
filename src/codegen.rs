@@ -21,6 +21,8 @@ pub struct Codegen<'a> {
     result_insts: &'a [(Type, Type)],
     /// Конкретные инстанциации встроенных `Vec<T>`.
     vec_insts: &'a [Type],
+    /// Конкретные типы кортежей.
+    tuple_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
     vec_drops: &'a HashMap<String, Vec<(String, Type)>>,
     out: String,
@@ -72,6 +74,7 @@ enum DefKind {
     Option(Type),
     Result(Type, Type),
     Vec(Type),
+    Tuple(Vec<Type>),
 }
 
 impl<'a> Codegen<'a> {
@@ -100,6 +103,7 @@ impl<'a> Codegen<'a> {
             option_insts: &checker.option_insts,
             result_insts: &checker.result_insts,
             vec_insts: &checker.vec_insts,
+            tuple_insts: &checker.tuple_insts,
             vec_drops: &checker.vec_drops,
             out: String::new(),
             ctype,
@@ -135,6 +139,10 @@ impl<'a> Codegen<'a> {
                 format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())
             }
             Type::Vec(inner) => format!("Keel_Vec_{}", inner.mangle()),
+            Type::Tuple(ts) => format!(
+                "Keel_Tuple_{}",
+                ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
+            ),
         }
     }
 
@@ -378,6 +386,17 @@ impl<'a> Codegen<'a> {
                 vec![(**inner).clone()],
             ));
         }
+        for t in self.tuple_insts {
+            let Type::Tuple(ts) = t else { continue };
+            defs.push((
+                format!(
+                    "Keel_Tuple_{}",
+                    ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
+                ),
+                DefKind::Tuple(ts.clone()),
+                ts.clone(),
+            ));
+        }
         let mut ordered: Vec<String> = Vec::new();
         let mut visiting: Vec<String> = Vec::new();
         for (name, _, _) in &defs {
@@ -399,6 +418,7 @@ impl<'a> Codegen<'a> {
                     DefKind::Option(inner) => self.emit_option_def(inner),
                     DefKind::Result(ok, err) => self.emit_result_def(ok, err),
                     DefKind::Vec(inner) => self.emit_vec_def(inner),
+                    DefKind::Tuple(ts) => self.emit_tuple_def(ts),
                 }
             }
         }
@@ -444,6 +464,10 @@ impl<'a> Codegen<'a> {
             Type::Option(inner) => Some(format!("Keel_Option_{}", inner.mangle())),
             Type::Result(ok, err) => Some(format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())),
             Type::Vec(inner) => Some(format!("Keel_Vec_{}", inner.mangle())),
+            Type::Tuple(ts) => Some(format!(
+                "Keel_Tuple_{}",
+                ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
+            )),
             Type::Ref(inner) => self.type_def_name(inner),
             Type::Array(inner, _) => self.type_def_name(inner),
             _ => None,
@@ -484,6 +508,19 @@ impl<'a> Codegen<'a> {
             "struct {} {{\n  {}* data;\n  int64_t len;\n  int64_t cap;\n}};\n\n",
             cname, elem
         ));
+    }
+
+    fn emit_tuple_def(&mut self, ts: &[Type]) {
+        let cname = format!(
+            "Keel_Tuple_{}",
+            ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
+        );
+        self.out.push_str("typedef struct {\n");
+        for (i, t) in ts.iter().enumerate() {
+            let d = self.decl(t, &format!("_{}", i));
+            self.out.push_str(&format!("  {};\n", d));
+        }
+        self.out.push_str(&format!("}} {};\n\n", cname));
     }
 
     fn emit_vec_funcs(&mut self, inner: &Type) {
@@ -851,6 +888,7 @@ impl<'a> Codegen<'a> {
                 format!("({}){{ .tag = {}_Ok }}", c, c)
             }
             Type::Vec(inner) => format!("(Keel_Vec_{}){{0}}", inner.mangle()),
+            Type::Tuple(_) => format!("({}){{0}}", self.ty(t)),
             Type::Array(..) | Type::Void => "0".to_string(),
         }
     }
@@ -1326,11 +1364,25 @@ impl<'a> Codegen<'a> {
                     .collect();
                 format!("({}){{ {} }}", c, inits.join(", "))
             }
+            ExprKind::Tuple(items) => {
+                let t = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
+                let c = self.ty(&t);
+                let inits: Vec<String> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| format!("._{} = {}", i, self.expr(v)))
+                    .collect();
+                format!("({}){{ {} }}", c, inits.join(", "))
+            }
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
                 // Если base — ссылка (указатель), используем ->.
                 match base_ty {
+                    Some(Type::Tuple(_)) => format!("{}._{}", base, name),
+                    Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Tuple(_)) => {
+                        format!("{}->_{}", base, name)
+                    }
                     Some(Type::Ref(_)) => format!("{}->{}", base, name),
                     _ => format!("{}.{}", base, name),
                 }

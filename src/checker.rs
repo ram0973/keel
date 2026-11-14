@@ -119,6 +119,8 @@ pub struct Checker {
     pub result_insts: Vec<(Type, Type)>,
     /// Конкретные инстанциации встроенных `Vec<T>`.
     pub vec_insts: Vec<Type>,
+    /// Конкретные типы кортежей — для кодогенератора.
+    pub tuple_insts: Vec<Type>,
     /// `Vec`-локальные, которые надо освободить в конце функции:
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
@@ -151,6 +153,7 @@ impl Checker {
             option_insts: Vec::new(),
             result_insts: Vec::new(),
             vec_insts: Vec::new(),
+            tuple_insts: Vec::new(),
             vec_drops: HashMap::new(),
             diags: Vec::new(),
         }
@@ -1593,6 +1596,17 @@ impl Checker {
         }
     }
 
+    fn record_tuple_inst(&mut self, ty: &Type) {
+        if let Type::Tuple(ts) = ty {
+            if !self.tuple_insts.contains(ty) {
+                self.tuple_insts.push(ty.clone());
+            }
+            for t in ts {
+                self.record_tuple_inst(t);
+            }
+        }
+    }
+
     /// Рекурсивно записывает инстанциации `Option`/`Result`/`Vec` из типа.
     fn record_type_insts(&mut self, t: &Type) {
         match t {
@@ -1772,6 +1786,7 @@ impl Checker {
             ExprKind::Field { obj, name } => {
                 let base = self.type_of(obj, ctx);
                 let base = base.deref().clone();
+                let base_name = base.name();
                 match base {
                     Type::Named(sn) => match self.structs.get(&sn) {
                         Some(s) => match s.fields.iter().find(|f| &f.name == name) {
@@ -1786,10 +1801,20 @@ impl Checker {
                         },
                         None => Type::Void,
                     },
+                    Type::Tuple(ts) => match name.parse::<usize>() {
+                        Ok(i) if i < ts.len() => ts[i].clone(),
+                        _ => {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!("у кортежа `{}` нет элемента `{}`", base_name, name),
+                            ));
+                            Type::Void
+                        }
+                    },
                     _ => {
                         self.diags.push(Diagnostic::new(
                             e.line,
-                            format!("`{}` — не структура, поле недоступно", base.name()),
+                            format!("`{}` — не структура, поле недоступно", base_name),
                         ));
                         Type::Void
                     }
@@ -1873,6 +1898,17 @@ impl Checker {
                     self.record_move(it, &t, ctx);
                 }
                 Type::Array(Box::new(elem), items.len())
+            }
+            ExprKind::Tuple(items) => {
+                let mut ts = Vec::new();
+                for it in items {
+                    let t = self.type_of(it, ctx);
+                    self.record_move(it, &t, ctx);
+                    ts.push(t);
+                }
+                let ty = Type::Tuple(ts);
+                self.record_tuple_inst(&ty);
+                ty
             }
             ExprKind::Ref(inner) => {
                 let t = self.type_of(inner, ctx);
@@ -2592,6 +2628,17 @@ impl Checker {
                 }
                 out
             }
+            // Кортеж: утечки каждого элемента.
+            ExprKind::Tuple(items) => {
+                let mut out = Vec::new();
+                for (i, a) in items.iter().enumerate() {
+                    for (mut segs, t) in self.escapes_in(a, ctx) {
+                        segs.insert(0, Seg::Field(i.to_string()));
+                        out.push((segs, t));
+                    }
+                }
+                out
+            }
             // Ветвление: объединяем утечки обеих ветвей.
             ExprKind::If { then_expr, else_expr, .. } => {
                 let mut out = self.escapes_in(then_expr, ctx);
@@ -2700,6 +2747,15 @@ impl Checker {
                     self.record_move(&v, &vt, ctx);
                 }
             }
+            ExprKind::Tuple(items) => {
+                let vals: Vec<(Expr, Type)> = items
+                    .iter()
+                    .map(|v| (v.clone(), self.type_of(v, ctx)))
+                    .collect();
+                for (v, vt) in vals {
+                    self.record_move(&v, &vt, ctx);
+                }
+            }
             _ => {}
         }
     }
@@ -2751,6 +2807,7 @@ impl Checker {
         matches!(t, Type::Int | Type::Bool | Type::Str | Type::Ref(_))
             || matches!(t, Type::Named(n) if self.enums.contains_key(n))
             || matches!(t, Type::Option(_) | Type::Result(_, _))
+            || matches!(t, Type::Tuple(ts) if ts.iter().all(|t| self.is_copy(t)))
     }
 
     /// Enum с данными (включая `Option`/`Result`): в C это структура,
@@ -2844,6 +2901,7 @@ pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
         ExprKind::Field { obj, .. } => mentions_ident(obj, name),
         ExprKind::Index { obj, idx } => mentions_ident(obj, name) || mentions_ident(idx, name),
         ExprKind::Array(items) => items.iter().any(|i| mentions_ident(i, name)),
+        ExprKind::Tuple(items) => items.iter().any(|i| mentions_ident(i, name)),
         ExprKind::Call { callee, args } => {
             mentions_ident(callee, name) || args.iter().any(|a| mentions_ident(a, name))
         }

@@ -21,6 +21,8 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     /// Встроенный `Vec<T>`: растущий массив в куче.
     Vec(Box<Type>),
+    /// Кортеж `(T, U)`.
+    Tuple(Vec<Type>),
 }
 
 impl Type {
@@ -48,6 +50,10 @@ impl Type {
             Type::Option(t) => format!("Option<{}>", t.name()),
             Type::Result(t, e) => format!("Result<{}, {}>", t.name(), e.name()),
             Type::Vec(t) => format!("Vec<{}>", t.name()),
+            Type::Tuple(ts) => format!(
+                "({})",
+                ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
+            ),
         }
     }
 
@@ -64,6 +70,10 @@ impl Type {
             Type::Option(t) => format!("Option_{}", t.mangle()),
             Type::Result(t, e) => format!("Result_{}_{}", t.mangle(), e.mangle()),
             Type::Vec(t) => format!("Vec_{}", t.mangle()),
+            Type::Tuple(ts) => format!(
+                "Tuple_{}",
+                ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
+            ),
         }
     }
 }
@@ -316,6 +326,8 @@ pub enum ExprKind {
     Index { obj: Box<Expr>, idx: Box<Expr> },
     /// Массив-литерал: `[a, b, c]`.
     Array(Vec<Expr>),
+    /// Кортеж-литерал: `(a, b)`.
+    Tuple(Vec<Expr>),
     Call { callee: Box<Expr>, args: Vec<Expr> },
     /// `Type::Variant` — значение варианта enum.
     Variant { ty: String, name: String },
