@@ -158,6 +158,10 @@ struct FuncInfo {
     params: Vec<Param>,
     ret: Type,
     mut_paths: Vec<MutPath>,
+    /// Файл объявления — для проверки видимости.
+    file: String,
+    /// Видна ли функция из других файлов (`pub` или метод типа).
+    public: bool,
 }
 
 impl Checker {
@@ -266,6 +270,9 @@ impl Checker {
                                     params: f.params.clone(),
                                     ret: f.ret.clone(),
                                     mut_paths: f.mut_paths.clone(),
+                                    file: f.file.clone(),
+                                    // Метод виден там же, где его тип.
+                                    public: true,
                                 },
                             );
                         } else {
@@ -430,8 +437,23 @@ impl Checker {
                 params: f.params.clone(),
                 ret: f.ret.clone(),
                 mut_paths: f.mut_paths.clone(),
+                file: f.file.clone(),
+                // Ассоциированная функция видна там же, где её тип.
+                public: owner.is_some() || f.public,
             },
         );
+    }
+
+    /// Сообщает, что элемент объявлен без `pub` и потому не виден из
+    /// другого файла.
+    fn private(&mut self, line: usize, what: &str, name: &str, file: &str) {
+        self.diags.push(Diagnostic::new(
+            line,
+            format!(
+                "{} `{}` объявлен без `pub` в `{}` — из другого файла не виден",
+                what, name, file
+            ),
+        ));
     }
 
     /// Ключ функции для таблиц, где важен владелец: `Тип::имя` для метода
@@ -1772,7 +1794,17 @@ impl Checker {
                 }
                 local.ty
             }
-            ExprKind::Variant { ty, name } => match self.enums.get(ty) {
+            ExprKind::Variant { ty, name } => {
+                let bad = self
+                    .enums
+                    .get(ty)
+                    .filter(|e| !e.public && e.file != self.diags.file)
+                    .map(|e| (e.line, e.file.clone()));
+                if let Some((line, file)) = bad {
+                    self.private(line, "enum", ty, &file);
+                    return Type::Void;
+                }
+                match self.enums.get(ty) {
                 Some(e) => match e.variants.iter().find(|v| v.name == *name) {
                     Some(v) if v.payload.is_empty() => Type::Named(ty.clone()),
                     Some(_) => {
@@ -1800,8 +1832,18 @@ impl Checker {
                     ));
                     Type::Void
                 }
-            },
+                }
+            }
             ExprKind::StructInit { name, fields } => {
+                let bad = self
+                    .structs
+                    .get(name)
+                    .filter(|s| !s.public && s.file != self.diags.file)
+                    .map(|s| (s.line, s.file.clone()));
+                if let Some((line, file)) = bad {
+                    self.private(line, "структура", name, &file);
+                    return Type::Void;
+                }
                 let Some(s) = self.structs.get(name).cloned() else {
                     self.diags.push(Diagnostic::new(
                         e.line,
@@ -2227,6 +2269,15 @@ impl Checker {
 
         // Конструктор варианта enum: `Option::Some(5)`.
         if let Some((ty, variant)) = name.split_once("::") {
+            let bad = self
+                .enums
+                .get(ty)
+                .filter(|e| !e.public && e.file != self.diags.file)
+                .map(|e| (e.line, e.file.clone()));
+            if let Some((line, file)) = bad {
+                self.private(line, "enum", ty, &file);
+                return Type::Void;
+            }
             if let Some(e) = self.enums.get(ty).cloned() {
                 match e.variants.iter().find(|v| v.name == variant).cloned() {
                     Some(v) => {
@@ -2271,6 +2322,15 @@ impl Checker {
         }
 
         // Конструктор структуры?
+        let bad = self
+            .structs
+            .get(name)
+            .filter(|s| !s.public && s.file != self.diags.file)
+            .map(|s| (s.line, s.file.clone()));
+        if let Some((line, file)) = bad {
+            self.private(line, "структура", name, &file);
+            return Type::Void;
+        }
         if let Some(s) = self.structs.get(name).cloned() {
             if args.len() != s.fields.len() {
                 self.diags.push(Diagnostic::new(
@@ -2417,6 +2477,15 @@ impl Checker {
             return Type::Str;
         }
 
+        let bad = self
+            .funcs
+            .get(name)
+            .filter(|fi| !fi.public && fi.file != self.diags.file)
+            .map(|fi| fi.file.clone());
+        if let Some(file) = bad {
+            self.private(line, "функция", name, &file);
+            return Type::Void;
+        }
         let Some(fi) = self.funcs.get(name).cloned() else {
             self.diags.push(Diagnostic::new(line, format!("неизвестная функция `{}`", name)));
             return Type::Void;

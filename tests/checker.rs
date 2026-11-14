@@ -1292,7 +1292,7 @@ fn диагностика_называет_файл() {
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(
         dir.join("lib.keel"),
-        "fn bad() int {\n    let x = 5;\n    return x + true;\n}\n",
+        "pub fn bad() int {\n    let x = 5;\n    return x + true;\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -1307,6 +1307,22 @@ fn диагностика_называет_файл() {
 }
 
 #[test]
+fn приватная_функция_не_видна_из_другого_файла() {
+    let dir = std::env::temp_dir().join(format!("keel_priv_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::write(dir.join("lib.keel"), "fn hidden() int { return 1; }\n").unwrap();
+    std::fs::write(
+        dir.join("main.keel"),
+        "import \"lib.keel\";\nfn main() int { return hidden(); }\n",
+    )
+    .unwrap();
+    let r = keelc::compile_file(&dir.join("main.keel")).expect("должно разобраться");
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("без `pub`"), "получено:\n{}", text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn import_подключает_имена_из_другого_файла() {
     // Главная проверка: файл видит объявления из подключённого файла,
     // и сгенерированный C компилируется и работает.
@@ -1314,7 +1330,7 @@ fn import_подключает_имена_из_другого_файла() {
     let _ = std::fs::create_dir_all(&dir);
     std::fs::write(
         dir.join("user.keel"),
-        "struct User { name string; age int; }\n\
+        "pub struct User { name string; age int; }\n\
          impl User {\n\
          \x20   fn get_name(self &User) string { return self.name; }\n\
          }\n",
@@ -1349,7 +1365,7 @@ fn один_файл_подключается_один_раз() {
     // окажется объявлена дважды.
     let dir = std::env::temp_dir().join(format!("keel_dia_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    std::fs::write(dir.join("common.keel"), "struct Common { v int; }\n").unwrap();
+    std::fs::write(dir.join("common.keel"), "pub struct Common { v int; }\n").unwrap();
     std::fs::write(
         dir.join("a.keel"),
         "import \"common.keel\";\nfn fa() int { return 1; }\n",

@@ -1,6 +1,6 @@
 // Тип User и его методы. Подключается из modules.keel и registry.keel.
 
-struct User {
+pub struct User {
     name string;
     age int;
 }

@@ -39,7 +39,8 @@ double, отличается от `int` только литералом с то�
 ```
 program      = item*
 
-item         = struct_decl | enum_decl | func_decl | impl_decl | import_decl | const_decl
+item         = pub? (struct_decl | enum_decl | func_decl | impl_decl) | import_decl | const_decl
+pub          = "pub"                               ; видимость из других файлов
 
 enum_decl    = "enum" ident "{" variant ("," variant)* ","? "}"
 variant      = ident ("(" type ("," type)* ")")?   ; вариант, возможно с данными
@@ -683,9 +684,9 @@ fn main() int {
 | Цикл — ошибка | `цикл импорта: a.keel → b.keel → a.keel` |
 | Нет файла — ошибка | `не удалось открыть '.../nope.keel'` |
 
-**Чего нет:** приватности (`pub`), префиксов, `import as`, `from ... import`.
-Всё, что объявлено в любом подключённом файле, видно всем. Для программ
-на 5–10 файлов этого достаточно; `pub` — отдельный шаг.
+**Приватность:** имя из подключённого файла видно, только если
+объявлено `pub`. Без `pub` оно остаётся в своём файле. Чего нет:
+префиксов, `import as`, `from ... import`.
 
 **Диагностика называет файл:** при сборке из нескольких файлов ошибка
 указывает имя файла и строку:

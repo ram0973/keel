@@ -176,12 +176,13 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> PResult<Item> {
+        let is_pub = self.eat_kw("pub");
         if self.at_kw("struct") {
-            Ok(Item::Struct(self.parse_struct()?))
+            Ok(Item::Struct(self.parse_struct(is_pub)?))
         } else if self.at_kw("enum") {
-            Ok(Item::Enum(self.parse_enum()?))
+            Ok(Item::Enum(self.parse_enum(is_pub)?))
         } else if self.at_kw("fn") {
-            Ok(Item::Func(self.parse_func()?))
+            Ok(Item::Func(self.parse_func(is_pub)?))
         } else if self.at_kw("impl") {
             Ok(Item::Impl(self.parse_impl()?))
         } else if self.at_kw("import") {
@@ -305,13 +306,13 @@ impl Parser {
         while !self.at_punct("}") {
             self.expect_kw("fn")?;
             let name = self.ident()?;
-            funcs.push(self.parse_func_rest(name, Some(ty.clone()))?);
+            funcs.push(self.parse_func_rest(name, Some(ty.clone()), false)?);
         }
         self.expect_punct("}")?;
         Ok(ImplDecl { ty, funcs })
     }
 
-    fn parse_struct(&mut self) -> PResult<StructDecl> {
+    fn parse_struct(&mut self, is_pub: bool) -> PResult<StructDecl> {
         let line = self.line();
         self.expect_kw("struct")?;
         let name = self.ident()?;
@@ -325,11 +326,11 @@ impl Parser {
             fields.push(Field { name: fname, ty, line: fline });
         }
         self.expect_punct("}")?;
-        Ok(StructDecl { name, fields, line, file: String::new() })
+        Ok(StructDecl { name, fields, line, file: String::new(), public: is_pub })
     }
 
     /// `enum Name { A, B(int), C }` — варианты с позиционными данными.
-    fn parse_enum(&mut self) -> PResult<EnumDecl> {
+    fn parse_enum(&mut self, is_pub: bool) -> PResult<EnumDecl> {
         let line = self.line();
         self.expect_kw("enum")?;
         let name = self.ident()?;
@@ -366,18 +367,18 @@ impl Parser {
                 line, name
             ));
         }
-        Ok(EnumDecl { name, variants, line, file: String::new() })
+        Ok(EnumDecl { name, variants, line, file: String::new(), public: is_pub })
     }
 
-    fn parse_func(&mut self) -> PResult<FuncDecl> {
+    fn parse_func(&mut self, is_pub: bool) -> PResult<FuncDecl> {
         self.expect_kw("fn")?;
         let name = self.ident()?;
-        self.parse_func_rest(name, None)
+        self.parse_func_rest(name, None, is_pub)
     }
 
     /// Общая часть после имени: параметры, тип возврата, контракт, тело.
     /// `owner` — имя типа, если функция объявлена в `impl`-блоке.
-    fn parse_func_rest(&mut self, name: String, owner: Option<String>) -> PResult<FuncDecl> {
+    fn parse_func_rest(&mut self, name: String, owner: Option<String>, is_pub: bool) -> PResult<FuncDecl> {
         let line = self.line();
         self.expect_punct("(")?;
         let mut params = Vec::new();
@@ -449,7 +450,7 @@ impl Parser {
                 body.stmts.push(Stmt::Return { line: e.line, value: Some(e) });
             }
         }
-        Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line, file: String::new() })
+        Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line, file: String::new(), public: is_pub })
     }
 
     /// Список условий контракта: `(expr, expr, ...)`. Пустой список —

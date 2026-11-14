@@ -225,6 +225,8 @@ pub struct StructDecl {
     pub line: usize,
     /// Файл объявления — для диагностик. Пусто при `compile(src)`.
     pub file: String,
+    /// `pub` — видно из других файлов. Без него — только свой файл.
+    pub public: bool,
 }
 
 /// `enum Name { A, B, C }` — именованный набор состояний.
@@ -240,6 +242,8 @@ pub struct EnumDecl {
     pub line: usize,
     /// Файл объявления — для диагностик. Пусто при `compile(src)`.
     pub file: String,
+    /// `pub` — видно из других файлов. Без него — только свой файл.
+    pub public: bool,
 }
 
 /// Вариант enum: имя и позиционные данные.
@@ -297,6 +301,8 @@ pub struct FuncDecl {
     pub line: usize,
     /// Файл объявления — для диагностик. Пусто при `compile(src)`.
     pub file: String,
+    /// `pub` — видно из других файлов. Без него — только свой файл.
+    pub public: bool,
 }
 
 #[derive(Clone, Debug)]
