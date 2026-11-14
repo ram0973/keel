@@ -21,6 +21,8 @@ pub struct Codegen<'a> {
     result_insts: &'a [(Type, Type)],
     /// Конкретные инстанциации встроенных `Vec<T>`.
     vec_insts: &'a [Type],
+    /// `Vec`-локальные для автоматического освобождения в конце функции.
+    vec_drops: &'a HashMap<String, Vec<(String, Type)>>,
     out: String,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -98,6 +100,7 @@ impl<'a> Codegen<'a> {
             option_insts: &checker.option_insts,
             result_insts: &checker.result_insts,
             vec_insts: &checker.vec_insts,
+            vec_drops: &checker.vec_drops,
             out: String::new(),
             ctype,
             structs,
@@ -712,6 +715,16 @@ impl<'a> Codegen<'a> {
 
         for stmt in &f.body.stmts {
             self.emit_stmt(stmt);
+        }
+        // Автоматическое освобождение Vec-локальных в конце функции.
+        if let Some(drops) = self.vec_drops.get(&crate::checker::Checker::func_key(f)) {
+            for (name, ty) in drops {
+                if let Type::Vec(inner) = ty {
+                    let m = inner.mangle();
+                    let cname = self.var_name(name);
+                    self.out.push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                }
+            }
         }
         // Неявный возврат в конце функции.
         if f.name == "main" {

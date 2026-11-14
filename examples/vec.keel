@@ -7,7 +7,8 @@
 //
 // Методы: push, len, get, pop, free. Индексация — v[i].
 // push перевыделяет буфер и гасит ссылки на элементы.
-// Память освобождается явно: v.free().
+// Память освобождается автоматически в конце функции; явный v.free()
+// нужен, только если освободить раньше (например, в цикле).
 
 struct Task { id int; done bool; }
 
@@ -46,8 +47,5 @@ fn main() int {
     names.push("bob");
     println(names[0], " ", names[1]);
 
-    xs.free();
-    tasks.free();
-    names.free();
     return 0;
 }

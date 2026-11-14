@@ -3551,3 +3551,19 @@ fn main() int {
 "#,
     );
 }
+
+#[test]
+fn vec_после_free_нельзя_использовать() {
+    fails(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    v.free();
+    println(v.len());
+    return 0;
+}
+"#,
+        "перемещён",
+    );
+}

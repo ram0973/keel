@@ -119,6 +119,10 @@ pub struct Checker {
     pub result_insts: Vec<(Type, Type)>,
     /// Конкретные инстанциации встроенных `Vec<T>`.
     pub vec_insts: Vec<Type>,
+    /// `Vec`-локальные, которые надо освободить в конце функции:
+    /// функция → [(имя, тип)]. Не включает перемещённые и явно
+    /// освобождённые (`v.free()`).
+    pub vec_drops: HashMap<String, Vec<(String, Type)>>,
     diags: Vec<Diagnostic>,
 }
 
@@ -147,6 +151,7 @@ impl Checker {
             option_insts: Vec::new(),
             result_insts: Vec::new(),
             vec_insts: Vec::new(),
+            vec_drops: HashMap::new(),
             diags: Vec::new(),
         }
     }
@@ -592,6 +597,29 @@ impl Checker {
                 ));
             }
         }
+
+        // Автоматическое освобождение Vec: в конце функции освобождаем
+        // все Vec-локальные, которые не были перемещены и не освобождены
+        // явно. Это конец области видимости, а не liveness (п. 3.10):
+        // liveness требует отслеживания последнего использования и
+        // вставки free раньше — следующий шаг.
+        let mut drops: Vec<(String, Type)> = Vec::new();
+        for (name, l) in &ctx.scope {
+            if l.moved {
+                continue;
+            }
+            if !matches!(l.ty, Type::Vec(_)) {
+                continue;
+            }
+            // Параметры не освобождаем: владелец — вызывающий.
+            if f.params.iter().any(|p| &p.name == name) {
+                continue;
+            }
+            drops.push((name.clone(), l.ty.clone()));
+        }
+        if !drops.is_empty() {
+            self.vec_drops.insert(Self::func_key(f), drops);
+        }
     }
 
     /// Тип элемента, на который указывает путь внутри сигнатуры.
@@ -820,6 +848,14 @@ impl Checker {
                 let (path, root_kind) = self.resolve_place(obj, ctx);
                 self.check_mut_path(&path, &root_kind, ctx, e.line, "free");
                 self.invalidate_inside(&path, e.line, "free");
+                // После `free` значение больше не используется: помечаем
+                // локальную перемещённой, чтобы автоматическое освобождение
+                // в конце функции не сделало double-free.
+                if let RootKind::Owned(uid) = root_kind {
+                    if let Some(l) = ctx.scope.values_mut().find(|l| l.uid == uid) {
+                        l.moved = true;
+                    }
+                }
                 Type::Void
             }
             _ => {
