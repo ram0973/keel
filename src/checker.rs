@@ -101,6 +101,9 @@ struct RefLocal {
     created_line: usize,
     /// Строка и причина, погасившие ссылку.
     killed: Option<(usize, String)>,
+    /// Цель известна неточно (результат вызова или `if`): гасим при
+    /// любом изменении внутри цели.
+    imprecise: bool,
 }
 
 // ============================================================
@@ -398,7 +401,14 @@ impl Checker {
             }
         }
 
-        self.diags.items.clone()
+        // Дедуп и сортировка: двойной проход по телам циклов даёт
+        // повторы, а обход HashMap — недетерминированный порядок.
+        let mut items = self.diags.items.clone();
+        items.sort_by(|a, b| {
+            (a.file.clone(), a.line, a.msg.clone()).cmp(&(b.file.clone(), b.line, b.msg.clone()))
+        });
+        items.dedup_by(|a, b| a.line == b.line && a.msg == b.msg && a.file == b.file);
+        items
     }
 
     /// Метод — функция с первым параметром `self`.
@@ -537,6 +547,7 @@ impl Checker {
                     dead: false,
                     created_line: 0,
                     killed: None,
+                    imprecise: false,
                 });
             }
 
@@ -643,7 +654,7 @@ impl Checker {
             }
             if !declared.iter().any(|d| d.is_prefix_of(&path)) {
                 self.diags.push(Diagnostic::new(
-                    0,
+                    f.line,
                     format!(
                         "функция `{}` изменяет `{}`, но не объявляет это в mut-контракте \
                          (объявлено: {})",
@@ -1054,10 +1065,20 @@ impl Checker {
                 self.names.insert(uid, name.clone());
 
                 // Если инициализатор — ссылка, запоминаем её цель.
-                let ref_target = if init_ty.is_ref() {
-                    self.place_path_of(init, ctx)
+                // Результат вызова и `if` не дают точного пути: берём
+                // первый ref-аргумент (ветвь) и помечаем цель неточной.
+                let (ref_target, imprecise) = if init_ty.is_ref() {
+                    if let Some(p) = self.place_path_of(init, ctx) {
+                        (Some(p), false)
+                    } else if let Some(p) = self.call_ref_target(init, ctx) {
+                        (Some(p), true)
+                    } else if let Some(p) = self.if_ref_target(init, ctx) {
+                        (Some(p), true)
+                    } else {
+                        (None, false)
+                    }
                 } else {
-                    None
+                    (None, false)
                 };
                 let ref_uid = ref_target.as_ref().map(|t| {
                     self.refs.push(RefLocal {
@@ -1066,6 +1087,7 @@ impl Checker {
                         dead: false,
                         created_line: init.line,
                         killed: None,
+                        imprecise,
                     });
                     uid
                 });
@@ -1186,28 +1208,72 @@ impl Checker {
                 self.check_match_variants(*line, arms, &en, &variants, ctx);
             }
             Stmt::If { cond, then_block, else_block } => {
-                self.type_of(cond, ctx);
+                let ct = self.type_of(cond, ctx);
+                if ct != Type::Bool && ct != Type::Void {
+                    self.diags.push(Diagnostic::new(
+                        cond.line,
+                        format!("условие `if` должно быть bool, получено `{}`", ct.name()),
+                    ));
+                }
+                let saved_scope = ctx.scope.clone();
+                let saved_refs = self.refs.clone();
                 self.check_block(then_block, ctx);
+                let then_scope = ctx.scope.clone();
+                let then_refs = self.refs.clone();
+                // else стартует с состояния ДО then: иначе move в then
+                // даёт ложное «уже перемещён» в else.
+                ctx.scope = saved_scope;
+                self.refs = saved_refs;
                 if let Some(eb) = else_block {
                     self.check_block(eb, ctx);
                 }
+                // Объединяем: перемещено/мертво, если так в любой ветви.
+                for (name, l) in &then_scope {
+                    if let Some(t) = ctx.scope.get_mut(name) {
+                        t.moved = t.moved || l.moved;
+                    }
+                }
+                for r in &then_refs {
+                    if r.dead {
+                        if let Some(t) = self.refs.iter_mut().find(|x| x.uid == r.uid) {
+                            t.dead = true;
+                            t.killed = r.killed.clone();
+                        }
+                    }
+                }
             }
             Stmt::While { cond, body } => {
-                self.type_of(cond, ctx);
-                // Тело проверяем дважды: второй проход стартует с состоянием
+                let ct = self.type_of(cond, ctx);
+                if ct != Type::Bool && ct != Type::Void {
+                    self.diags.push(Diagnostic::new(
+                        cond.line,
+                        format!("условие `while` должно быть bool, получено `{}`", ct.name()),
+                    ));
+                }
+                // Тело проверяем дважды: второй проход стартует с состояния
                 // после первого, поэтому ловит использование ссылки,
-                // инвалидированной в предыдущей итерации.
+                // инвалидированной в предыдущей итерации. Условие
+                // перепроверяем после тела — оно выполняется каждую итерацию.
                 ctx.loop_depth += 1;
                 self.check_block(body, ctx);
+                self.type_of(cond, ctx);
                 self.check_block(body, ctx);
                 ctx.loop_depth -= 1;
             }
             Stmt::DoWhile { body, cond } => {
-                self.type_of(cond, ctx);
+                // Условие выполняется ПОСЛЕ тела: ссылка, убитая в теле,
+                // должна ловиться в условии.
                 ctx.loop_depth += 1;
-                // Как и у `while`, тело проверяем дважды.
                 self.check_block(body, ctx);
+                let ct = self.type_of(cond, ctx);
+                if ct != Type::Bool && ct != Type::Void {
+                    self.diags.push(Diagnostic::new(
+                        cond.line,
+                        format!("условие `do-while` должно быть bool, получено `{}`", ct.name()),
+                    ));
+                }
                 self.check_block(body, ctx);
+                self.type_of(cond, ctx);
                 ctx.loop_depth -= 1;
             }
             Stmt::Break { line } => {
@@ -1295,6 +1361,15 @@ impl Checker {
     }
 
     fn check_assign(&mut self, lhs: &Expr, rhs: &Expr, ctx: &mut Ctx) {
+        // Повторная инициализация перемещённой `let mut`: это не
+        // использование старого значения, а новое.
+        if let ExprKind::Ident(name) = &lhs.kind {
+            if let Some(l) = ctx.scope.get_mut(name) {
+                if l.moved && l.is_mut {
+                    l.moved = false;
+                }
+            }
+        }
         let (path, root_kind) = self.resolve_place(lhs, ctx);
         let lhs_ty = self.type_of(lhs, ctx);
         let rhs_ty = self.type_of(rhs, ctx);
@@ -1407,6 +1482,34 @@ impl Checker {
         // Присваивание ЗАМЕНЯЕТ значение по пути.
         self.modified.push((path.clone(), true));
         self.invalidate_replace(&path, lhs.line, "присваивание");
+
+        // Присваивание в поле локальной структуры обновляет её утечки:
+        // `h.r = &i` кладёт ссылку на локальную в поле `r`, и `return h`
+        // должен её увидеть.
+        if let Ok(uid) = path.root.parse::<u32>() {
+            let local_name = ctx
+                .scope
+                .iter()
+                .find(|(_, l)| l.uid == uid)
+                .map(|(n, _)| n.clone());
+            if let Some(name) = local_name {
+                let local_path = ctx.scope[&name].path.clone();
+                let rel_segs: Vec<Seg> = path.segs[local_path.segs.len()..].to_vec();
+                let new_escapes: Vec<Escape> = self
+                    .escapes_in(rhs, ctx)
+                    .into_iter()
+                    .map(|(mut segs, t)| {
+                        let mut full = rel_segs.clone();
+                        full.append(&mut segs);
+                        (full, t)
+                    })
+                    .collect();
+                if let Some(l) = ctx.scope.get_mut(&name) {
+                    l.escapes.retain(|(segs, _)| !segs.starts_with(&rel_segs));
+                    l.escapes.extend(new_escapes);
+                }
+            }
+        }
     }
 
     // --------------------------------------------------------
@@ -1458,7 +1561,10 @@ impl Checker {
             // хранит путь-группу (`a[]`): запись в конкретный элемент
             // могла затронуть именно тот элемент, на который она
             // указывает, — значит, ссылка гаснет.
-            if path.is_prefix_of(&r.target) || path.overlaps(&r.target) {
+            // Неточная цель (результат вызова/`if`): гасим при любом
+            // изменении внутри неё — ссылка могла указывать куда угодно.
+            let imprecise_hit = r.imprecise && r.target.is_prefix_of(path);
+            if path.is_prefix_of(&r.target) || path.overlaps(&r.target) || imprecise_hit {
                 if !r.dead {
                     r.dead = true;
                     r.killed = Some((line, reason.to_string()));
@@ -1470,8 +1576,10 @@ impl Checker {
     /// Инвалидирует ссылки строго внутри пути (содержимое изменено).
     fn invalidate_inside(&mut self, path: &Path, line: usize, reason: &str) {
         for r in self.refs.iter_mut() {
+            let imprecise_hit = r.imprecise && r.target.is_prefix_of(path);
             let hit = (path.is_prefix_of(&r.target) && r.target != *path)
-                || path.overlaps(&r.target);
+                || path.overlaps(&r.target)
+                || imprecise_hit;
             if hit && !r.dead {
                 r.dead = true;
                 r.killed = Some((line, reason.to_string()));
@@ -1978,7 +2086,8 @@ impl Checker {
                 self.method_recv_ref.insert(e.id, auto_ref);
                 let mut all = vec![(**obj).clone()];
                 all.extend(args.iter().cloned());
-                self.type_of_call_named_ext(name, &fi, &all, ctx, e.line, auto_ref)
+                let recv_ty = self.expr_types.get(&obj.id).cloned();
+                self.type_of_call_named_ext(name, &fi, &all, ctx, e.line, auto_ref, recv_ty)
             }
             ExprKind::Index { obj, idx } => {
                 let base = self.type_of(obj, ctx);
@@ -2010,6 +2119,15 @@ impl Checker {
                     };
                     if i == 0 {
                         elem = t.clone();
+                    } else if !self.types_compatible(elem.clone(), &t) {
+                        self.diags.push(Diagnostic::new(
+                            it.line,
+                            format!(
+                                "несовпадение типов элементов массива: ожидался `{}`, получен `{}`",
+                                elem.name(),
+                                t.name()
+                            ),
+                        ));
                     }
                     self.record_move(it, &t, ctx);
                 }
@@ -2045,7 +2163,15 @@ impl Checker {
                         }
                         Type::Int
                     }
-                    UnOp::Not => Type::Bool,
+                    UnOp::Not => {
+                        if t != Type::Bool && t != Type::Void {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                format!("`!` требует bool, получен `{}`", t.name()),
+                            ));
+                        }
+                        Type::Bool
+                    }
                 }
             }
             ExprKind::Binary { op, l, r } => {
@@ -2078,7 +2204,21 @@ impl Checker {
                         }
                         Type::Bool
                     }
-                    BinOp::And | BinOp::Or => Type::Bool,
+                    BinOp::And | BinOp::Or => {
+                        for (t, side) in [(&lt, "левый"), (&rt, "правый")] {
+                            if *t != Type::Bool && *t != Type::Void {
+                                self.diags.push(Diagnostic::new(
+                                    e.line,
+                                    format!(
+                                        "`&&`/`||`: {} операнд должен быть bool, получен `{}`",
+                                        side,
+                                        t.name()
+                                    ),
+                                ));
+                            }
+                        }
+                        Type::Bool
+                    }
                     // Конкатенация строк: `+` для двух строк даёт строку.
                     BinOp::Add if lt == Type::Str && rt == Type::Str => Type::Str,
                     _ => {
@@ -2140,8 +2280,30 @@ impl Checker {
             }
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.type_of(cond, ctx);
+                // Ветки проверяем с одного состояния: move в then не
+                // должен давать ложное «уже перемещён» в else.
+                let saved_scope = ctx.scope.clone();
+                let saved_refs = self.refs.clone();
                 let tt = self.type_of(then_expr, ctx);
+                let then_scope = ctx.scope.clone();
+                let then_refs = self.refs.clone();
+                ctx.scope = saved_scope;
+                self.refs = saved_refs;
                 let et = self.type_of(else_expr, ctx);
+                // Объединяем: перемещено/мертво, если так в любой ветви.
+                for (name, l) in &then_scope {
+                    if let Some(t) = ctx.scope.get_mut(name) {
+                        t.moved = t.moved || l.moved;
+                    }
+                }
+                for r in &then_refs {
+                    if r.dead {
+                        if let Some(t) = self.refs.iter_mut().find(|x| x.uid == r.uid) {
+                            t.dead = true;
+                            t.killed = r.killed.clone();
+                        }
+                    }
+                }
                 // Ветви должны давать одно значение: иначе результат
                 // `if` зависит от того, какая ветвь выполнилась, и тип
                 // выражения становится неопределённым.
@@ -2612,7 +2774,7 @@ impl Checker {
         ctx: &mut Ctx,
         line: usize,
     ) -> Type {
-        self.type_of_call_named_ext(name, fi, args, ctx, line, false)
+        self.type_of_call_named_ext(name, fi, args, ctx, line, false, None)
     }
 
     /// То же, но с флагом `auto_ref`: первый аргумент — получатель
@@ -2626,6 +2788,7 @@ impl Checker {
         ctx: &mut Ctx,
         line: usize,
         auto_ref: bool,
+        recv_ty: Option<Type>,
     ) -> Type {
         if args.len() != fi.params.len() {
             self.diags.push(Diagnostic::new(
@@ -2644,11 +2807,17 @@ impl Checker {
         let mut arg_paths: Vec<Option<Path>> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             let param = fi.params.get(i);
-            let t = match param {
-                Some(p) if matches!(p.kind, ParamKind::Owned) => {
-                    self.type_of_expected(a, Some(&p.ty), ctx)
+            // Получатель метода уже проверен в `MethodCall`: повторный
+            // `type_of` увидел бы его перемещённым и дал ложную ошибку.
+            let t = if i == 0 && recv_ty.is_some() {
+                recv_ty.clone().unwrap()
+            } else {
+                match param {
+                    Some(p) if matches!(p.kind, ParamKind::Owned) => {
+                        self.type_of_expected(a, Some(&p.ty), ctx)
+                    }
+                    _ => self.type_of(a, ctx),
                 }
-                _ => self.type_of(a, ctx),
             };
             // Путь есть только у «мест» (переменных и их полей).
             let p = self.place_path_of(a, ctx);
@@ -2739,6 +2908,41 @@ impl Checker {
             self.invalidate_inside(&effective, line, "вызов функции с `mut`-параметром");
         }
 
+        // Если вызов мутирует параметр и получает ссылку на локальную,
+        // эта ссылка может осесть в параметре и пережить кадр:
+        // `store(h, &i)` кладёт `&i` в `h.r`.
+        for mp in &fi.mut_paths {
+            let Some(idx) = fi.params.iter().position(|p| p.name == mp.param) else {
+                continue;
+            };
+            let Some(Some(base)) = arg_paths.get(idx).cloned() else {
+                continue;
+            };
+            // Локальная переменная умрёт вместе с кадром — ссылка в ней
+            // безопасна. Опасен только параметрический корень.
+            if base.root.parse::<u32>().is_ok() {
+                continue;
+            }
+            for (j, a) in args.iter().enumerate() {
+                if j == idx {
+                    continue;
+                }
+                for (_, target) in self.escapes_in(a, ctx) {
+                    if self.path_is_local(&target, ctx) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!(
+                                "вызов `{}` сохраняет ссылку на локальную переменную `{}`                                  в параметре `{}` — она перестанет существовать после возврата",
+                                name,
+                                self.render(&target),
+                                mp.param
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+
         fi.ret.clone()
     }
 
@@ -2811,6 +3015,29 @@ impl Checker {
         }
     }
 
+    /// Цель ссылки-результата вызова: первый ref-аргумент. Без
+    /// lifetime-аннотаций точнее сказать нельзя.
+    fn call_ref_target(&mut self, e: &Expr, ctx: &mut Ctx) -> Option<Path> {
+        let ExprKind::Call { args, .. } = &e.kind else {
+            return None;
+        };
+        for a in args {
+            if let Some(p) = self.place_path_of(a, ctx) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// Цель ссылки из `if`: первая ветвь, дающая путь.
+    fn if_ref_target(&mut self, e: &Expr, ctx: &mut Ctx) -> Option<Path> {
+        let ExprKind::If { then_expr, else_expr, .. } = &e.kind else {
+            return None;
+        };
+        self.place_path_of(then_expr, ctx)
+            .or_else(|| self.place_path_of(else_expr, ctx))
+    }
+
     // --------------------------------------------------------
     // Анализ выхода (escape analysis)
     // --------------------------------------------------------
@@ -2835,6 +3062,14 @@ impl Checker {
     /// вызывающего, а не в нашем, поэтому возвращать его наружу
     /// безопасно.
     fn escapes_in(&mut self, e: &Expr, ctx: &mut Ctx) -> Vec<Escape> {
+        // Значение, чей тип не содержит ссылок, ничего утащить не может.
+        // Без этого `return r.x` (r: &S, x: int) давал ложную ошибку:
+        // утечка `r` → `s` добавляла сегмент `x`, хотя `x` — копия int.
+        if let Some(t) = self.expr_types.get(&e.id) {
+            if !self.type_contains_ref(t) {
+                return Vec::new();
+            }
+        }
         match &e.kind {
             // Ссылка на локальную переменную — утечка.
             ExprKind::Ref(inner) => {
@@ -2913,16 +3148,24 @@ impl Checker {
                 let ExprKind::Ident(cname) = &callee.kind else {
                     return Vec::new();
                 };
-                let Some(s) = self.structs.get(cname).cloned() else {
-                    return Vec::new();
-                };
-                let mut out = Vec::new();
-                for (i, a) in args.iter().enumerate() {
-                    let Some(field) = s.fields.get(i) else { break };
-                    for (mut segs, t) in self.escapes_in(a, ctx) {
-                        segs.insert(0, Seg::Field(field.name.clone()));
-                        out.push((segs, t));
+                if let Some(s) = self.structs.get(cname).cloned() {
+                    let mut out = Vec::new();
+                    for (i, a) in args.iter().enumerate() {
+                        let Some(field) = s.fields.get(i) else { break };
+                        for (mut segs, t) in self.escapes_in(a, ctx) {
+                            segs.insert(0, Seg::Field(field.name.clone()));
+                            out.push((segs, t));
+                        }
                     }
+                    return out;
+                }
+                // Обычный вызов: без lifetime-аннотаций результат может
+                // указывать в любой ref-аргумент. Консервативно объединяем
+                // утечки всех аргументов — иначе `return id(&i)` уносит
+                // висячий указатель.
+                let mut out = Vec::new();
+                for a in args {
+                    out.extend(self.escapes_in(a, ctx));
                 }
                 out
             }
@@ -2966,6 +3209,27 @@ impl Checker {
                 out
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// Содержит ли тип ссылку — сам или внутри (поле, элемент, вариант).
+    fn type_contains_ref(&self, t: &Type) -> bool {
+        match t {
+            Type::Ref(_) => true,
+            Type::Array(inner, _)
+            | Type::Vec(inner)
+            | Type::Slice(inner)
+            | Type::Option(inner) => self.type_contains_ref(inner),
+            Type::Result(ok, err) => {
+                self.type_contains_ref(ok) || self.type_contains_ref(err)
+            }
+            Type::Tuple(ts) => ts.iter().any(|t| self.type_contains_ref(t)),
+            Type::Named(n) => self
+                .structs
+                .get(n)
+                .map(|s| s.fields.iter().any(|f| self.type_contains_ref(&f.ty)))
+                .unwrap_or(false),
+            _ => false,
         }
     }
 
@@ -3035,8 +3299,13 @@ impl Checker {
         }
         match &e.kind {
             ExprKind::Ident(name) => {
+                let path = ctx.scope.get(name).map(|l| l.path.clone());
                 if let Some(l) = ctx.scope.get_mut(name) {
                     l.moved = true;
+                }
+                // Перемещение уничтожает значение: ссылки на него гаснут.
+                if let Some(path) = path {
+                    self.invalidate_replace(&path, e.line, "перемещение");
                 }
             }
             ExprKind::Field { .. } | ExprKind::Index { .. } => {
