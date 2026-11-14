@@ -1590,6 +1590,34 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Вызов с гарантированным порядком вычисления аргументов слева
+    /// направо. В C порядок не определён; временные в statement
+    /// expression его задают. Для одного аргумента временные не нужны.
+    fn ordered_call(&self, callee: String, args: Vec<(String, Type)>) -> String {
+        if args.len() <= 1 {
+            let vals: Vec<String> = args.into_iter().map(|(v, _)| v).collect();
+            return format!("{}({})", callee, vals.join(", "));
+        }
+        let mut prelude = Vec::new();
+        let mut vals = Vec::new();
+        for (i, (v, t)) in args.into_iter().enumerate() {
+            // Массив в C не присваивается — передаём как есть.
+            if matches!(t, Type::Array(_, _)) {
+                vals.push(v);
+            } else {
+                let tmp = format!("__k_a{}", i);
+                prelude.push(format!("{} = {};", self.decl(&t, &tmp), v));
+                vals.push(tmp);
+            }
+        }
+        format!(
+            "({{ {} {}({}); }})",
+            prelude.join(" "),
+            callee,
+            vals.join(", ")
+        )
+    }
+
     fn func_params(&self, name: &str) -> Option<&[Param]> {
         for item in &self.prog.items {
             match item {
@@ -2033,22 +2061,32 @@ impl<'a> Codegen<'a> {
                         _ => "0".to_string(),
                     };
                 }
-                let ty_name = match obj_ty {
-                    Some(Type::Named(n)) => n,
+                let ty_name = match &obj_ty {
+                    Some(Type::Named(n)) => n.clone(),
                     _ => String::new(),
                 };
                 // Если метод ждёт ссылку, а получатель — значение,
                 // передаём адрес: `&p` → `(&p)`. Решение принято
                 // проверщиком и записано по id выражения.
                 let take_ref = self.method_recv_ref.get(&e.id).copied().unwrap_or(false);
+                let base_ty = obj_ty.clone().unwrap_or(Type::Int);
+                let recv_ty = if take_ref {
+                    Type::Ref(Box::new(base_ty))
+                } else {
+                    base_ty
+                };
                 let recv = if take_ref {
                     format!("(&{})", self.expr(obj))
                 } else {
                     self.expr(obj)
                 };
-                let mut a: Vec<String> = vec![recv];
-                a.extend(args.iter().map(|x| self.expr(x)));
-                format!("k_{}_{}({})", ty_name, name, a.join(", "))
+                let mut call_args: Vec<(String, Type)> = vec![(recv, recv_ty)];
+                for x in args {
+                    let v = self.expr(x);
+                    let t = self.types.get(&x.id).cloned().unwrap_or(Type::Void);
+                    call_args.push((v, t));
+                }
+                self.ordered_call(format!("k_{}_{}", ty_name, name), call_args)
             }
             ExprKind::Unary { op, e } => match op {
                 UnOp::Neg => format!("(-{})", self.value_expr(e)),

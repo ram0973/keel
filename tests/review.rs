@@ -640,3 +640,33 @@ fn main() int {
         r.c_code
     );
 }
+
+// 29. Порядок вычисления в вызове метода — слева направо.
+#[test]
+fn method_arguments_evaluated_left_to_right() {
+    let r = compile(
+        r#"
+struct Counter { n int; }
+impl Counter {
+    fn next(self &Counter) int mut(self.n) {
+        self.n += 1;
+        return self.n;
+    }
+    fn pair(self &Counter, a int, b int) int { return a * 10 + b; }
+}
+fn main() int {
+    let mut c = Counter(0);
+    let r = c.pair(c.next(), c.next());
+    println(r);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(r.c_code.contains("__k_a0"), "нет временных:\n{}", r.c_code);
+}
