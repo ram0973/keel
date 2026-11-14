@@ -49,6 +49,10 @@ for f in play/*.keel; do
 done
 
 echo
+echo "=== санитайзеры (ASan/UBSan/LSan) ==="
+sh scripts/check-sanitizers.sh
+
+echo
 echo "=== документация ==="
 python3 scripts/check-docs.py
 

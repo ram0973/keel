@@ -4023,3 +4023,22 @@ fn main() int {
 }
 "#);
 }
+
+// Строки из кучи освобождаются при выходе (atexit), иначе LSan видит
+// утечки. Проверяем, что рантайм регистрирует буферы и free'ит их.
+#[test]
+fn строки_освобождаются_при_выходе() {
+    let r = compile(
+        r#"
+fn main() int {
+    let s = "a" + "b";
+    println(s);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(r.c_code.contains("k_str_track(r)"), "нет регистрации строки");
+    assert!(r.c_code.contains("atexit(k_str_free_all)"), "нет free при выходе");
+}

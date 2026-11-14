@@ -126,6 +126,10 @@ cargo test
 sh scripts/check-examples.sh
 ```
 
+`check-examples.sh` в конце прогоняет все примеры ещё раз под
+ASan + UBSan + LSan (`scripts/check-sanitizers.sh`): утечка или UB —
+ошибка.
+
 ### 6. Туториал `play/`
 
 Папка `play/` — **туториал по языку**: от переменных до владения, каждая
@@ -245,6 +249,9 @@ cargo run -- run examples/tour.keel
 ```sh
 sh scripts/check-examples.sh
 ```
+
+Он же прогоняет примеры под ASan + UBSan + LSan
+(`scripts/check-sanitizers.sh`).
 
 **Сравнение с Rust по скорости и размеру:**
 

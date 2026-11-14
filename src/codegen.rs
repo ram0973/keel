@@ -228,11 +228,31 @@ impl<'a> Codegen<'a> {
              \x20 exit(1);\n\
              }\n\n",
         );
+        // Строки из кучи освобождаются при выходе: владения для кучи
+        // в языке пока нет (волна 8), но выход должен быть чистым —
+        // иначе LSan видит утечки. Регистрируем буферы и free'им в atexit.
+        self.out.borrow_mut().push_str(
+            "static void** k_str_allocs = NULL;\n\
+             static size_t k_str_n = 0, k_str_cap = 0;\n\
+             static void k_str_track(void* p) {\n\
+             \x20 if (!p) return;\n\
+             \x20 if (k_str_n == k_str_cap) {\n\
+             \x20   k_str_cap = k_str_cap ? k_str_cap * 2 : 16;\n\
+             \x20   k_str_allocs = (void**)realloc(k_str_allocs, k_str_cap * sizeof(void*));\n\
+             \x20 }\n\
+             \x20 k_str_allocs[k_str_n++] = p;\n\
+             }\n\
+             static void k_str_free_all(void) {\n\
+             \x20 for (size_t i = 0; i < k_str_n; i++) free(k_str_allocs[i]);\n\
+             \x20 free(k_str_allocs);\n\
+             }\n\n",
+        );
         // Ввод: строка и целое из stdin.
         //
         // `read_line` читает строку целиком (до '\n'), а не по слову, как
         // `scanf("%s")`: в имени может быть пробел. Буфер растёт по мере
-        // надобности; память не освобождается — см. волну 8.
+        // надобности; память освобождается при выходе (atexit), раннее —
+        // волна 8.
         //
         // `read_int` читает СТРОКУ и разбирает её через `strtoll`, а не
         // `scanf("%lld")`. Это принципиально: `scanf` оставляет '\n' в
@@ -242,7 +262,7 @@ impl<'a> Codegen<'a> {
         self.out.borrow_mut().push_str(
             "// Читает строку из stdin до '\\n' (сам '\\n' не входит).\n\
              // Возвращает NULL в конце ввода (EOF).\n\
-             // Память не освобождается — см. волну 8 в docs/lang-design.md.\n\
+             // Память освобождается при выходе (atexit); раннее — волна 8.\n\
              static char* k_read_line(void) {\n\
              \x20 size_t cap = 64, len = 0;\n\
              \x20 char* buf = (char*)malloc(cap);\n\
@@ -254,6 +274,7 @@ impl<'a> Codegen<'a> {
              \x20 }\n\
              \x20 if (c == EOF && len == 0) { free(buf); return NULL; }\n\
              \x20 buf[len] = '\\0';\n\
+             \x20 k_str_track(buf);\n\
              \x20 return buf;\n\
              }\n\n\
              // Читает целое из stdin. Читает СТРОКУ и разбирает её —\n\
@@ -295,6 +316,7 @@ impl<'a> Codegen<'a> {
              \x20   if (n == 0) break;\n\
              \x20 }\n\
              \x20 buf[len] = '\\0';\n\
+             \x20 k_str_track(buf);\n\
              \x20 return buf;\n\
              }\n\
              static void k_write(int64_t fd, const char* s) {\n\
@@ -309,17 +331,17 @@ impl<'a> Codegen<'a> {
         // Конкатенация строк: результат требует памяти, которой у операндов
         // нет. Копируем в свежий буфер из кучи.
         //
-        // Память не освобождается: в Keel пока нет ни `free`, ни владения
-        // для кучи. Для коротких программ это незаметно; настоящее
-        // освобождение — в волне 8 (куча и растущие коллекции).
+        // Память освобождается при выходе (atexit): владения для кучи
+        // пока нет, раннее освобождение — волна 8 (куча и коллекции).
         self.out.borrow_mut().push_str(
             "// Склеивает две строки в новый буфер из кучи.\n\
-             // Освобождения пока нет — см. волну 8 в docs/lang-design.md.\n\
+             // Освобождается при выходе — см. волну 8 в docs/lang-design.md.\n\
              static char* k_str_concat(const char* a, const char* b) {\n\
              \x20 size_t la = strlen(a), lb = strlen(b);\n\
              \x20 char* r = (char*)malloc(la + lb + 1);\n\
              \x20 memcpy(r, a, la);\n\
              \x20 memcpy(r + la, b, lb + 1);\n\
+             \x20 k_str_track(r);\n\
              \x20 return r;\n\
              }\n\n",
         );
@@ -982,6 +1004,7 @@ impl<'a> Codegen<'a> {
             self.out.borrow_mut().push_str("int main(int __k_argc, char** __k_argv) {\n");
             self.out.borrow_mut().push_str("  k_argc = __k_argc;\n");
             self.out.borrow_mut().push_str("  k_argv = __k_argv;\n");
+            self.out.borrow_mut().push_str("  atexit(k_str_free_all);\n");
         } else {
             let decl = self.func_decl(f, &params);
             self.out.borrow_mut().push_str(&format!("static {} {{\n", decl));
