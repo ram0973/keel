@@ -3,6 +3,7 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tok {
     Int(i64),
+    Float(f64),
     Ident(String),
     Str(String),
     Punct(String),
@@ -65,6 +66,20 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             let start = i;
             while i < chars.len() && chars[i].is_ascii_digit() {
                 i += 1;
+            }
+            // Дробная часть: `3.14`. Точка без цифры после неё — это
+            // доступ к полю (`t.0`), а не число.
+            if i + 1 < chars.len() && chars[i] == '.' && chars[i + 1].is_ascii_digit() {
+                i += 1;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().collect();
+                let v = s
+                    .parse::<f64>()
+                    .map_err(|_| format!("line {}: число слишком большое: {}", line, s))?;
+                out.push(Token { tok: Tok::Float(v), line });
+                continue;
             }
             let s: String = chars[start..i].iter().collect();
             let v = s

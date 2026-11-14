@@ -124,6 +124,7 @@ impl<'a> Codegen<'a> {
     fn ty(&self, t: &Type) -> String {
         match t {
             Type::Int => "int64_t".to_string(),
+            Type::Float => "double".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Str => "const char*".to_string(),
             Type::Void => "void".to_string(),
@@ -861,6 +862,7 @@ impl<'a> Codegen<'a> {
     fn zero_value(&self, t: &Type) -> String {
         match t {
             Type::Int => "INT64_C(0)".to_string(),
+            Type::Float => "0.0".to_string(),
             Type::Bool => "false".to_string(),
             Type::Str => "\"\"".to_string(),
             Type::Ref(_) => "NULL".to_string(),
@@ -1315,6 +1317,7 @@ impl<'a> Codegen<'a> {
     fn expr(&self, e: &Expr) -> String {
         match &e.kind {
             ExprKind::Int(n) => format!("INT64_C({})", n),
+            ExprKind::Float(v) => format!("{:?}", v),
             ExprKind::Bool(b) => format!("{}", b),
             ExprKind::Str(s) => {
                 let mut out = String::from("\"");
@@ -1502,6 +1505,7 @@ impl<'a> Codegen<'a> {
                         let tail = if i == last { nl } else { "" };
                         parts.push(match t {
                             Type::Str => format!("printf(\"%s{}\", {})", tail, v),
+                            Type::Float => format!("printf(\"%g{}\", {})", tail, v),
                             Type::Bool => {
                                 format!("printf(\"%s{}\", {} ? \"true\" : \"false\")", tail, v)
                             }

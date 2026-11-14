@@ -3702,3 +3702,37 @@ fn main() int {
         "нет элемента `5`",
     );
 }
+
+// ============================================================
+// float (f64)
+// ============================================================
+
+#[test]
+fn float_арифметика() {
+    ok(r#"
+fn main() int {
+    let a float = 3.5;
+    let b float = 2.0;
+    println(a + b);
+    println(a * b);
+    println(a / b);
+    println(a > b);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn float_смешанная_арифметика() {
+    fails(
+        r#"
+fn main() int {
+    let a float = 1.0;
+    let b int = 2;
+    println(a + b);
+    return 0;
+}
+"#,
+        "арифметика требует int",
+    );
+}

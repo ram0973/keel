@@ -126,6 +126,7 @@ impl Parser {
     fn describe(&self, t: &Tok) -> String {
         match t {
             Tok::Int(n) => format!("число {}", n),
+            Tok::Float(v) => format!("число {}", v),
             Tok::Ident(s) => format!("'{}'", s),
             Tok::Str(_) => "строка".to_string(),
             Tok::Punct(s) => format!("'{}'", s),
@@ -635,6 +636,7 @@ impl Parser {
         let name = self.ident()?;
         match name.as_str() {
             "int" => Ok(Type::Int),
+            "float" => Ok(Type::Float),
             "bool" => Ok(Type::Bool),
             "string" => Ok(Type::Str),
             "void" => Ok(Type::Void),
@@ -1135,6 +1137,10 @@ impl Parser {
             Tok::Int(n) => {
                 self.bump();
                 Ok(self.mk(line, ExprKind::Int(n)))
+            }
+            Tok::Float(v) => {
+                self.bump();
+                Ok(self.mk(line, ExprKind::Float(v)))
             }
             Tok::Str(s) => {
                 self.bump();

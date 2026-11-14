@@ -9,6 +9,7 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Int,
+    Float,
     Bool,
     Str,
     Void,
@@ -41,6 +42,7 @@ impl Type {
     pub fn name(&self) -> String {
         match self {
             Type::Int => "int".into(),
+            Type::Float => "float".into(),
             Type::Bool => "bool".into(),
             Type::Str => "string".into(),
             Type::Void => "void".into(),
@@ -61,6 +63,7 @@ impl Type {
     pub fn mangle(&self) -> String {
         match self {
             Type::Int => "int".into(),
+            Type::Float => "float".into(),
             Type::Bool => "bool".into(),
             Type::Str => "string".into(),
             Type::Void => "void".into(),
@@ -319,6 +322,7 @@ pub struct Program {
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(String),
     Ident(String),

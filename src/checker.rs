@@ -1652,6 +1652,7 @@ impl Checker {
     fn type_of_inner(&mut self, e: &Expr, ctx: &mut Ctx) -> Type {
         match &e.kind {
             ExprKind::Int(_) => Type::Int,
+            ExprKind::Float(_) => Type::Float,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Str(_) => Type::Str,
             ExprKind::Ident(name) if name == "None" => {
@@ -1966,6 +1967,9 @@ impl Checker {
                     // Конкатенация строк: `+` для двух строк даёт строку.
                     BinOp::Add if lt == Type::Str && rt == Type::Str => Type::Str,
                     _ => {
+                        if lt == Type::Float && rt == Type::Float {
+                            return Type::Float;
+                        }
                         if lt != Type::Int || rt != Type::Int {
                             self.diags.push(Diagnostic::new(
                                 e.line,
@@ -2804,7 +2808,7 @@ impl Checker {
         // как `&T` в Rust (там `&T: Copy`).
         //
         // Enum — это тег: он ничего не владеет, поэтому копируется.
-        matches!(t, Type::Int | Type::Bool | Type::Str | Type::Ref(_))
+        matches!(t, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Ref(_))
             || matches!(t, Type::Named(n) if self.enums.contains_key(n))
             || matches!(t, Type::Option(_) | Type::Result(_, _))
             || matches!(t, Type::Tuple(ts) if ts.iter().all(|t| self.is_copy(t)))
@@ -2916,7 +2920,7 @@ pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
                 || mentions_ident(then_expr, name)
                 || mentions_ident(else_expr, name)
         }
-        ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
+        ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
         ExprKind::StructInit { fields, .. } => {
             fields.iter().any(|(_, e)| mentions_ident(e, name))
         }
