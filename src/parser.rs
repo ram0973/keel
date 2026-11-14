@@ -588,6 +588,10 @@ impl Parser {
         }
         if self.eat_punct("[") {
             let elem = self.parse_type()?;
+            // `[T]` — срез; `[T; N]` — массив.
+            if self.eat_punct("]") {
+                return Ok(Type::Slice(Box::new(elem)));
+            }
             self.expect_punct(";")?;
             // Размер массива: число или именованная константа. Константа
             // подставляется значением — размер обязан быть известен

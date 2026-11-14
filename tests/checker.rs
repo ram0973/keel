@@ -3736,3 +3736,54 @@ fn main() int {
         "арифметика требует int",
     );
 }
+
+// ============================================================
+// Срезы [T]
+// ============================================================
+
+#[test]
+fn срез_из_массива() {
+    ok(r#"
+fn main() int {
+    let arr [int; 3] = [10, 20, 30];
+    let s [int] = arr;
+    println(len(s));
+    println(s[1]);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn срез_в_функции() {
+    ok(r#"
+fn sum(xs [int]) int {
+    let mut s int = 0;
+    let mut i int = 0;
+    while i < len(xs) {
+        s = s + xs[i];
+        i = i + 1;
+    }
+    return s;
+}
+
+fn main() int {
+    let arr [int; 3] = [10, 20, 30];
+    println(sum(arr));
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn срез_не_перемещает_массив() {
+    ok(r#"
+fn main() int {
+    let arr [int; 2] = [1, 2];
+    let s [int] = arr;
+    println(arr[0]);
+    println(s[0]);
+    return 0;
+}
+"#);
+}

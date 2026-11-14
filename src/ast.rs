@@ -24,6 +24,8 @@ pub enum Type {
     Vec(Box<Type>),
     /// Кортеж `(T, U)`.
     Tuple(Vec<Type>),
+    /// Срез `[T]`: указатель на элементы + длина.
+    Slice(Box<Type>),
 }
 
 impl Type {
@@ -56,6 +58,7 @@ impl Type {
                 "({})",
                 ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
             ),
+            Type::Slice(t) => format!("[{}]", t.name()),
         }
     }
 
@@ -77,6 +80,7 @@ impl Type {
                 "Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
             ),
+            Type::Slice(t) => format!("Slice_{}", t.mangle()),
         }
     }
 }

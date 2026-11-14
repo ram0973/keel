@@ -121,6 +121,8 @@ pub struct Checker {
     pub vec_insts: Vec<Type>,
     /// Конкретные типы кортежей — для кодогенератора.
     pub tuple_insts: Vec<Type>,
+    /// Конкретные типы срезов — для кодогенератора.
+    pub slice_insts: Vec<Type>,
     /// `Vec`-локальные, которые надо освободить в конце функции:
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
@@ -154,6 +156,7 @@ impl Checker {
             result_insts: Vec::new(),
             vec_insts: Vec::new(),
             tuple_insts: Vec::new(),
+            slice_insts: Vec::new(),
             vec_drops: HashMap::new(),
             diags: Vec::new(),
         }
@@ -956,6 +959,9 @@ impl Checker {
                     }
                 }
                 if let Some(declared) = ty {
+                    if let Type::Slice(inner) = declared {
+                        self.record_slice_inst(inner);
+                    }
                     if !self.types_compatible(declared.clone(), &init_ty) {
                         self.diags.push(Diagnostic::new(
                             init.line,
@@ -968,7 +974,9 @@ impl Checker {
                     }
                 }
                 // Перемещение: только для владения, не для ссылок.
-                if !init_ty.is_ref() {
+                // Срез — это заимствование массива, а не перемещение.
+                let is_slice = matches!(ty, Some(Type::Slice(_)));
+                if !init_ty.is_ref() && !is_slice {
                     self.record_move(init, &init_ty, ctx);
                 }
                 let uid = self.next_uid;
@@ -1607,6 +1615,13 @@ impl Checker {
         }
     }
 
+    fn record_slice_inst(&mut self, inner: &Type) {
+        let ty = Type::Slice(Box::new(inner.clone()));
+        if !self.slice_insts.contains(&ty) {
+            self.slice_insts.push(ty);
+        }
+    }
+
     /// Рекурсивно записывает инстанциации `Option`/`Result`/`Vec` из типа.
     fn record_type_insts(&mut self, t: &Type) {
         match t {
@@ -1873,6 +1888,7 @@ impl Checker {
                 match base {
                     Type::Array(elem, _) => *elem,
                     Type::Vec(elem) => *elem,
+                    Type::Slice(elem) => *elem,
                     _ => {
                         self.diags.push(Diagnostic::new(
                             e.line,
@@ -2205,7 +2221,7 @@ impl Checker {
                     Type::Ref(inner) => inner.as_ref(),
                     other => other,
                 };
-                if !matches!(inner, Type::Str | Type::Array(..) | Type::Vec(_)) {
+                if !matches!(inner, Type::Str | Type::Array(..) | Type::Vec(_) | Type::Slice(_)) {
                     self.diags.push(Diagnostic::new(
                         a.line,
                         format!(
@@ -2808,7 +2824,7 @@ impl Checker {
         // как `&T` в Rust (там `&T: Copy`).
         //
         // Enum — это тег: он ничего не владеет, поэтому копируется.
-        matches!(t, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Ref(_))
+        matches!(t, Type::Int | Type::Float | Type::Bool | Type::Str | Type::Ref(_) | Type::Slice(_))
             || matches!(t, Type::Named(n) if self.enums.contains_key(n))
             || matches!(t, Type::Option(_) | Type::Result(_, _))
             || matches!(t, Type::Tuple(ts) if ts.iter().all(|t| self.is_copy(t)))
@@ -2849,6 +2865,8 @@ impl Checker {
                     && self.types_compatible((**x2).clone(), y2)
             }
             (Type::Vec(x), Type::Vec(y)) => self.types_compatible((**x).clone(), y),
+            (Type::Slice(x), Type::Slice(y)) => self.types_compatible((**x).clone(), y),
+            (Type::Slice(x), Type::Array(y, _)) => self.types_compatible((**x).clone(), y),
             _ => a == *b,
         }
     }

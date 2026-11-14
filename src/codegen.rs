@@ -23,6 +23,8 @@ pub struct Codegen<'a> {
     vec_insts: &'a [Type],
     /// Конкретные типы кортежей.
     tuple_insts: &'a [Type],
+    /// Конкретные типы срезов.
+    slice_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
     vec_drops: &'a HashMap<String, Vec<(String, Type)>>,
     out: String,
@@ -75,6 +77,7 @@ enum DefKind {
     Result(Type, Type),
     Vec(Type),
     Tuple(Vec<Type>),
+    Slice(Type),
 }
 
 impl<'a> Codegen<'a> {
@@ -104,6 +107,7 @@ impl<'a> Codegen<'a> {
             result_insts: &checker.result_insts,
             vec_insts: &checker.vec_insts,
             tuple_insts: &checker.tuple_insts,
+            slice_insts: &checker.slice_insts,
             vec_drops: &checker.vec_drops,
             out: String::new(),
             ctype,
@@ -144,6 +148,7 @@ impl<'a> Codegen<'a> {
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
             ),
+            Type::Slice(inner) => format!("Keel_Slice_{}", inner.mangle()),
         }
     }
 
@@ -398,6 +403,14 @@ impl<'a> Codegen<'a> {
                 ts.clone(),
             ));
         }
+        for t in self.slice_insts {
+            let Type::Slice(inner) = t else { continue };
+            defs.push((
+                format!("Keel_Slice_{}", inner.mangle()),
+                DefKind::Slice((**inner).clone()),
+                vec![(**inner).clone()],
+            ));
+        }
         let mut ordered: Vec<String> = Vec::new();
         let mut visiting: Vec<String> = Vec::new();
         for (name, _, _) in &defs {
@@ -420,6 +433,7 @@ impl<'a> Codegen<'a> {
                     DefKind::Result(ok, err) => self.emit_result_def(ok, err),
                     DefKind::Vec(inner) => self.emit_vec_def(inner),
                     DefKind::Tuple(ts) => self.emit_tuple_def(ts),
+                    DefKind::Slice(inner) => self.emit_slice_def(inner),
                 }
             }
         }
@@ -469,6 +483,7 @@ impl<'a> Codegen<'a> {
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
             )),
+            Type::Slice(inner) => Some(format!("Keel_Slice_{}", inner.mangle())),
             Type::Ref(inner) => self.type_def_name(inner),
             Type::Array(inner, _) => self.type_def_name(inner),
             _ => None,
@@ -522,6 +537,15 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!("  {};\n", d));
         }
         self.out.push_str(&format!("}} {};\n\n", cname));
+    }
+
+    fn emit_slice_def(&mut self, inner: &Type) {
+        let cname = format!("Keel_Slice_{}", inner.mangle());
+        let elem = self.ty(inner);
+        self.out.push_str(&format!(
+            "typedef struct {{\n  {}* data;\n  int64_t len;\n}} {};\n\n",
+            elem, cname
+        ));
     }
 
     fn emit_vec_funcs(&mut self, inner: &Type) {
@@ -891,6 +915,7 @@ impl<'a> Codegen<'a> {
             }
             Type::Vec(inner) => format!("(Keel_Vec_{}){{0}}", inner.mangle()),
             Type::Tuple(_) => format!("({}){{0}}", self.ty(t)),
+            Type::Slice(_) => format!("({}){{0}}", self.ty(t)),
             Type::Array(..) | Type::Void => "0".to_string(),
         }
     }
@@ -912,6 +937,19 @@ impl<'a> Codegen<'a> {
                             self.decl(&t, name),
                             items.join(", ")
                         ));
+                    }
+                    Type::Slice(_) => {
+                        let init_ty = self.types.get(&init.id).cloned().unwrap_or(Type::Void);
+                        let v = match init_ty {
+                            Type::Array(_, n) => format!(
+                                "({}){{ .data = {}, .len = {} }}",
+                                self.ty(&t),
+                                self.expr(init),
+                                n
+                            ),
+                            _ => self.expr(init),
+                        };
+                        self.out.push_str(&format!("  {} = {};\n", self.decl(&t, name), v));
                     }
                     Type::Named(_) => {
                         // Если инициализатор — вызов конструктора именно этой
@@ -1304,6 +1342,23 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn func_params(&self, name: &str) -> Option<&[Param]> {
+        for item in &self.prog.items {
+            match item {
+                Item::Func(f) if f.name == name => return Some(&f.params),
+                Item::Impl(im) => {
+                    for f in &im.funcs {
+                        if f.name == name {
+                            return Some(&f.params);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Выражение в «значенческом» контексте: если тип — ссылка,
     /// автоматически разыменовываем (`*r`).
     fn value_expr(&self, e: &Expr) -> String {
@@ -1400,6 +1455,7 @@ impl<'a> Codegen<'a> {
                         format!("(*{})[{}]", base, self.expr(idx))
                     }
                     Some(Type::Vec(_)) => format!("{}.data[{}]", base, self.expr(idx)),
+                    Some(Type::Slice(_)) => format!("{}.data[{}]", base, self.expr(idx)),
                     Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Vec(_)) => {
                         format!("{}->data[{}]", base, self.expr(idx))
                     }
@@ -1558,6 +1614,13 @@ impl<'a> Codegen<'a> {
                             };
                             format!("(long long){}", v)
                         }
+                        Type::Slice(_) => {
+                            let v = match t {
+                                Type::Ref(_) => format!("{}->len", self.expr(a)),
+                                _ => format!("{}.len", self.expr(a)),
+                            };
+                            format!("(long long){}", v)
+                        }
                         _ => {
                             let v = match t {
                                 Type::Ref(_) => format!("(*{})", self.expr(a)),
@@ -1591,7 +1654,28 @@ impl<'a> Codegen<'a> {
                     self.in_struct_init.set(prev);
                     return format!("({}){{{}}}", cname, items.join(", "));
                 }
-                let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
+                let params = self.func_params(name);
+                let a: Vec<String> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| {
+                        let v = self.expr(x);
+                        if let Some(p) = params.and_then(|ps| ps.get(i)) {
+                            if let Type::Slice(inner) = &p.ty {
+                                let at = self.types.get(&x.id).cloned().unwrap_or(Type::Void);
+                                if let Type::Array(_, n) = at {
+                                    return format!(
+                                        "(Keel_Slice_{}){{ .data = {}, .len = {} }}",
+                                        inner.mangle(),
+                                        v,
+                                        n
+                                    );
+                                }
+                            }
+                        }
+                        v
+                    })
+                    .collect();
                 format!("{}({})", self.fname(name), a.join(", "))
             }
             ExprKind::MethodCall { obj, name, args } => {
