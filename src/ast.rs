@@ -171,6 +171,18 @@ pub struct StructDecl {
     pub line: usize,
 }
 
+/// `enum Name { A, B, C }` — именованный набор состояний.
+///
+/// Варианты без данных: значение — это тег. Варианты с данными
+/// (`Some(T)`) и деструктуризация в `match` — следующий шаг.
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<String>,
+    /// Строка объявления — для диагностик о повторных именах.
+    pub line: usize,
+}
+
 /// Как объявлен параметр.
 #[derive(Clone, Debug)]
 pub enum ParamKind {
@@ -221,6 +233,7 @@ pub struct FuncDecl {
 #[derive(Clone, Debug)]
 pub enum Item {
     Struct(StructDecl),
+    Enum(EnumDecl),
     Func(FuncDecl),
     Impl(ImplDecl),
     ///  — подключить другой файл.
@@ -270,6 +283,8 @@ pub enum ExprKind {
     /// Массив-литерал: `[a, b, c]`.
     Array(Vec<Expr>),
     Call { callee: Box<Expr>, args: Vec<Expr> },
+    /// `Type::Variant` — значение варианта enum.
+    Variant { ty: String, name: String },
     /// `x.method(args)` — вызов метода. Отличается от `Field` наличием
     /// скобок; разрешается в обычный вызов с получателем первым
     /// аргументом.
@@ -378,6 +393,21 @@ pub enum Stmt {
         iter: Expr,
         body: Block,
     },
+    /// `match expr { Type::Variant => { ... } ... }` — разбор по тегу.
+    Match {
+        line: usize,
+        subject: Expr,
+        arms: Vec<MatchArm>,
+    },
+}
+
+/// Ветвь `match`: `Enum::Вариант => { ... }`.
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub ty: String,
+    pub variant: String,
+    pub body: Block,
+    pub line: usize,
 }
 
 #[derive(Clone, Debug)]

@@ -20,6 +20,8 @@ pub struct Codegen<'a> {
     ctype: HashMap<String, String>,
     /// Объявления структур — нужны для конструкторов и составных литералов.
     structs: HashMap<String, StructDecl>,
+    /// Объявления enum — нужны для вариантов и нулевого значения.
+    enums: HashMap<String, EnumDecl>,
     /// Текущая глубина вложенности циклов — для уникальных имён
     /// переменных цикла.
     loop_depth: usize,
@@ -59,10 +61,18 @@ impl<'a> Codegen<'a> {
     pub fn new(prog: &'a Program, checker: &'a Checker) -> Codegen<'a> {
         let mut ctype = HashMap::new();
         let mut structs = HashMap::new();
+        let mut enums = HashMap::new();
         for item in &prog.items {
-            if let Item::Struct(s) = item {
-                ctype.insert(s.name.clone(), format!("Keel_{}", s.name));
-                structs.insert(s.name.clone(), s.clone());
+            match item {
+                Item::Struct(s) => {
+                    ctype.insert(s.name.clone(), format!("Keel_{}", s.name));
+                    structs.insert(s.name.clone(), s.clone());
+                }
+                Item::Enum(e) => {
+                    ctype.insert(e.name.clone(), format!("Keel_{}", e.name));
+                    enums.insert(e.name.clone(), e.clone());
+                }
+                _ => {}
             }
         }
         Codegen {
@@ -73,6 +83,7 @@ impl<'a> Codegen<'a> {
             out: String::new(),
             ctype,
             structs,
+            enums,
             loop_depth: 0,
             loop_vars: HashMap::new(),
             in_struct_init: std::cell::Cell::new(false),
@@ -214,6 +225,11 @@ impl<'a> Codegen<'a> {
         );
 
         for item in &self.prog.items {
+            if let Item::Enum(e) = item {
+                self.emit_enum(e);
+            }
+        }
+        for item in &self.prog.items {
             if let Item::Struct(s) = item {
                 self.emit_struct(s);
             }
@@ -233,6 +249,7 @@ impl<'a> Codegen<'a> {
                 Item::Func(f) => all_funcs.push(f),
                 Item::Impl(im) => all_funcs.extend(im.funcs.iter()),
                 Item::Struct(_) => {}
+                Item::Enum(_) => {}
                 // Импорты обрабатывает загрузчик модулей: до
                 // проверщика и генератора они не доходят.
                 Item::Import(_) => {}
@@ -282,6 +299,7 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 Item::Struct(_) => {}
+                Item::Enum(_) => {}
                 // Импорты обрабатывает загрузчик модулей: до
                 // проверщика и генератора они не доходят.
                 Item::Import(_) => {}
@@ -297,6 +315,21 @@ impl<'a> Codegen<'a> {
             self.out.push_str(&format!("  {};\n", self.decl(&f.ty, &f.name)));
         }
         self.out.push_str(&format!("}} {};\n\n", cname));
+    }
+
+    /// `enum` → C enum. Константы получают префикс `Keel_Тип_`, чтобы
+    /// варианты разных enum не сталкивались в общем пространстве C.
+    fn emit_enum(&mut self, e: &EnumDecl) {
+        let cname = self.ctype.get(&e.name).cloned().unwrap_or_default();
+        let mut parts = Vec::new();
+        for (i, v) in e.variants.iter().enumerate() {
+            parts.push(format!("  Keel_{}_{} = {}", e.name, v, i));
+        }
+        self.out.push_str(&format!(
+            "typedef enum {{\n{}\n}} {};\n\n",
+            parts.join(",\n"),
+            cname
+        ));
     }
 
     /// Конструктор структуры, у которой есть поле-массив.
@@ -484,6 +517,11 @@ impl<'a> Codegen<'a> {
             Type::Str => "\"\"".to_string(),
             Type::Ref(_) => "NULL".to_string(),
             Type::Named(n) => {
+                if let Some(e) = self.enums.get(n) {
+                    // Нулевое значение enum — первый вариант: у C enum
+                    // нет «нуля» как отдельного значения.
+                    return format!("Keel_{}_{}", n, e.variants[0]);
+                }
                 let c = self.ctype.get(n).cloned().unwrap_or_else(|| n.clone());
                 format!("({}){{0}}", c)
             }
@@ -584,6 +622,23 @@ impl<'a> Codegen<'a> {
                     self.out.push_str("    return __k_result;\n");
                     self.out.push_str("  }\n");
                 }
+            }
+            Stmt::Match { subject, arms, .. } => {
+                // Субъект читается по значению: ссылка разыменовывается.
+                let subj = self.value_expr(subject);
+                self.out.push_str(&format!("  switch ({}) {{\n", subj));
+                for arm in arms {
+                    self.out.push_str(&format!(
+                        "    case Keel_{}_{}: {{\n",
+                        arm.ty, arm.variant
+                    ));
+                    for s in &arm.body.stmts {
+                        self.emit_stmt(s);
+                    }
+                    self.out.push_str("      break;\n");
+                    self.out.push_str("    }\n");
+                }
+                self.out.push_str("  }\n");
             }
             Stmt::If { cond, then_block, else_block } => {
                 self.out
@@ -834,6 +889,7 @@ impl<'a> Codegen<'a> {
                 Some(cname) => cname.clone(),
                 None => self.var_name(name),
             },
+            ExprKind::Variant { ty, name } => format!("Keel_{}_{}", ty, name),
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);

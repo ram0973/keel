@@ -85,6 +85,8 @@ struct RefLocal {
 
 pub struct Checker {
     structs: HashMap<String, StructDecl>,
+    /// Объявления enum: имя → варианты.
+    enums: HashMap<String, EnumDecl>,
     funcs: HashMap<String, FuncInfo>,
     /// Методы: (имя типа, имя метода) → сигнатура. Вызов `x.m(...)`
     /// ищется по типу получателя `x`.
@@ -121,6 +123,7 @@ impl Checker {
     pub fn new() -> Checker {
         Checker {
             structs: HashMap::new(),
+            enums: HashMap::new(),
             funcs: HashMap::new(),
             methods: HashMap::new(),
             func_lines: HashMap::new(),
@@ -152,7 +155,37 @@ impl Checker {
                             ),
                         ));
                     }
+                    if let Some(prev) = self.enums.get(&s.name) {
+                        self.diags.push(Diagnostic::new(
+                            s.line,
+                            format!(
+                                "имя `{}` занято и enum, и структурой (enum — строка {})",
+                                s.name, prev.line
+                            ),
+                        ));
+                    }
                     self.structs.insert(s.name.clone(), s.clone());
+                }
+                Item::Enum(e) => {
+                    if let Some(prev) = self.enums.get(&e.name) {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!(
+                                "enum `{}` объявлен дважды (первое объявление — строка {})",
+                                e.name, prev.line
+                            ),
+                        ));
+                    }
+                    if let Some(prev) = self.structs.get(&e.name) {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!(
+                                "имя `{}` занято и структурой, и enum (структура — строка {})",
+                                e.name, prev.line
+                            ),
+                        ));
+                    }
+                    self.enums.insert(e.name.clone(), e.clone());
                 }
                 Item::Func(f) => {
                     self.declare_func(f, None);
@@ -229,6 +262,7 @@ impl Checker {
                     }
                 }
                 Item::Struct(_) => {}
+                Item::Enum(_) => {}
                 // Импорты обрабатывает загрузчик модулей: до
                 // проверщика и генератора они не доходят.
                 Item::Import(_) => {}
@@ -658,6 +692,68 @@ impl Checker {
                     }
                 }
             }
+            Stmt::Match { line, subject, arms } => {
+                let t = self.type_of(subject, ctx).deref().clone();
+                let enum_name = match &t {
+                    Type::Named(n) if self.enums.contains_key(n) => Some(n.clone()),
+                    _ => None,
+                };
+                let Some(en) = enum_name else {
+                    self.diags.push(Diagnostic::new(
+                        *line,
+                        format!("`match` требует enum, получено `{}`", t.name()),
+                    ));
+                    for arm in arms {
+                        self.check_block(&arm.body, ctx);
+                    }
+                    return;
+                };
+                let decl = self.enums.get(&en).cloned().unwrap();
+                let mut seen: Vec<String> = Vec::new();
+                for arm in arms {
+                    if arm.ty != en {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!(
+                                "ветвь `{}::{}` не относится к enum `{}`",
+                                arm.ty, arm.variant, en
+                            ),
+                        ));
+                    } else if !decl.variants.contains(&arm.variant) {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!("у enum `{}` нет варианта `{}`", en, arm.variant),
+                        ));
+                    } else if seen.contains(&arm.variant) {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!("вариант `{}` разобран дважды", arm.variant),
+                        ));
+                    } else {
+                        seen.push(arm.variant.clone());
+                    }
+                    self.check_block(&arm.body, ctx);
+                }
+                let missing: Vec<String> = decl
+                    .variants
+                    .iter()
+                    .filter(|v| !seen.contains(v))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        *line,
+                        format!(
+                            "`match` не исчерпывающий: не разобраны варианты {}",
+                            missing
+                                .iter()
+                                .map(|v| format!("`{}::{}`", en, v))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ));
+                }
+            }
             Stmt::If { cond, then_block, else_block } => {
                 self.type_of(cond, ctx);
                 self.check_block(then_block, ctx);
@@ -1006,6 +1102,23 @@ impl Checker {
                 }
                 local.ty
             }
+            ExprKind::Variant { ty, name } => match self.enums.get(ty) {
+                Some(e) if e.variants.contains(name) => Type::Named(ty.clone()),
+                Some(_) => {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("у enum `{}` нет варианта `{}`", ty, name),
+                    ));
+                    Type::Void
+                }
+                None => {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("неизвестный enum `{}`", ty),
+                    ));
+                    Type::Void
+                }
+            },
             ExprKind::Field { obj, name } => {
                 let base = self.type_of(obj, ctx);
                 let base = base.deref().clone();
@@ -1761,7 +1874,10 @@ impl Checker {
         // Ссылка — это указатель: копирование не отнимает владение
         // у оригинала. Поэтому `println(r); println(r);` законно,
         // как `&T` в Rust (там `&T: Copy`).
+        //
+        // Enum — это тег: он ничего не владеет, поэтому копируется.
         matches!(t, Type::Int | Type::Bool | Type::Str | Type::Ref(_))
+            || matches!(t, Type::Named(n) if self.enums.contains_key(n))
     }
 
     fn types_compatible(&self, a: Type, b: &Type) -> bool {
@@ -1848,6 +1964,7 @@ fn mentions_ident(e: &Expr, name: &str) -> bool {
                 || mentions_ident(else_expr, name)
         }
         ExprKind::Int(_) | ExprKind::Bool(_) | ExprKind::Str(_) => false,
+        ExprKind::Variant { .. } => false,
     }
 }
 

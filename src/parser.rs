@@ -177,6 +177,8 @@ impl Parser {
     fn parse_item(&mut self) -> PResult<Item> {
         if self.at_kw("struct") {
             Ok(Item::Struct(self.parse_struct()?))
+        } else if self.at_kw("enum") {
+            Ok(Item::Enum(self.parse_enum()?))
         } else if self.at_kw("fn") {
             Ok(Item::Func(self.parse_func()?))
         } else if self.at_kw("impl") {
@@ -185,7 +187,7 @@ impl Parser {
             Ok(Item::Import(self.parse_import()?))
         } else {
             Err(format!(
-                "строка {}: ожидалось 'struct', 'fn', 'impl', 'import' или 'const', получено {}",
+                "строка {}: ожидалось 'struct', 'enum', 'fn', 'impl', 'import' или 'const', получено {}",
                 self.line(),
                 self.describe(self.peek())
             ))
@@ -323,6 +325,37 @@ impl Parser {
         }
         self.expect_punct("}")?;
         Ok(StructDecl { name, fields, line })
+    }
+
+    /// `enum Name { A, B, C }` — варианты без данных.
+    fn parse_enum(&mut self) -> PResult<EnumDecl> {
+        let line = self.line();
+        self.expect_kw("enum")?;
+        let name = self.ident()?;
+        self.expect_punct("{")?;
+        let mut variants = Vec::new();
+        while !self.at_punct("}") {
+            let vline = self.line();
+            let v = self.ident()?;
+            if variants.contains(&v) {
+                return Err(format!(
+                    "строка {}: вариант `{}` объявлен дважды в enum `{}`",
+                    vline, v, name
+                ));
+            }
+            variants.push(v);
+            if !self.eat_punct(",") {
+                break;
+            }
+        }
+        self.expect_punct("}")?;
+        if variants.is_empty() {
+            return Err(format!(
+                "строка {}: enum `{}` без вариантов — значение такого типа создать нельзя",
+                line, name
+            ));
+        }
+        Ok(EnumDecl { name, variants, line })
     }
 
     fn parse_func(&mut self) -> PResult<FuncDecl> {
@@ -626,8 +659,8 @@ impl Parser {
             // «пропущено `let`» про сам `let`.
             let is_keyword = matches!(
                 name.as_str(),
-                "let" | "fn" | "struct" | "impl" | "if" | "else" | "while"
-                    | "for" | "do" | "return" | "break" | "continue"
+                "let" | "fn" | "struct" | "enum" | "impl" | "if" | "else" | "while"
+                    | "for" | "do" | "return" | "break" | "continue" | "match"
                     | "in" | "mut" | "true" | "false" | "const" | "import"
             );
             if !is_keyword && self.looks_like_decl_without_let() {
@@ -692,6 +725,31 @@ impl Parser {
                 None
             };
             return Ok(Stmt::If { cond, then_block, else_block });
+        }
+
+        if self.at_kw("match") {
+            let line = self.line();
+            self.bump();
+            let subject = self.parse_expr()?;
+            self.expect_punct("{")?;
+            let mut arms = Vec::new();
+            while !self.at_punct("}") {
+                let aline = self.line();
+                let ty = self.ident()?;
+                self.expect_punct("::")?;
+                let variant = self.ident()?;
+                self.expect_punct("=>")?;
+                let body = self.parse_block()?;
+                arms.push(MatchArm { ty, variant, body, line: aline });
+            }
+            self.expect_punct("}")?;
+            if arms.is_empty() {
+                return Err(format!(
+                    "строка {}: `match` без ветвей — разбирать нечего",
+                    line
+                ));
+            }
+            return Ok(Stmt::Match { line, subject, arms });
         }
 
         if self.at_kw("do") {
@@ -933,6 +991,23 @@ impl Parser {
 
     fn parse_postfix(&mut self) -> PResult<Expr> {
         let mut e = self.parse_primary()?;
+        // `Type::Variant` без вызова — значение варианта enum.
+        // `Type::name(...)` остаётся вызовом ассоциированной функции.
+        let variant = if let ExprKind::Ident(full) = &e.kind {
+            full.split_once("::")
+                .map(|(t, n)| (t.to_string(), n.to_string()))
+        } else {
+            None
+        };
+        if let Some((ty, name)) = variant {
+            if !self.at_punct("(") {
+                e = Expr {
+                    id: e.id,
+                    line: e.line,
+                    kind: ExprKind::Variant { ty, name },
+                };
+            }
+        }
         loop {
             let line = self.line();
             if self.at_punct(".") {
