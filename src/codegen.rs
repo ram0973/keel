@@ -228,6 +228,18 @@ impl<'a> Codegen<'a> {
              \x20 exit(1);\n\
              }\n\n",
         );
+        // Проверка границ индексации: выход за границы — ошибка, а не
+        // чтение чужой памяти.
+        self.out.borrow_mut().push_str(
+            "// Проверка границ индексации.\n\
+             static int64_t k_index_check(int64_t i, int64_t len, int line) {\n\
+             \x20 if (i < 0 || i >= len) {\n\
+             \x20   fprintf(stderr, \"строка %d: индекс %lld вне границ [0, %lld)\\n\", line, (long long)i, (long long)len);\n\
+             \x20   exit(1);\n\
+             \x20 }\n\
+             \x20 return i;\n\
+             }\n\n",
+        );
         // Ввод: строка и целое из stdin.
         //
         // `read_line` читает строку целиком (до '\n'), а не по слову, как
@@ -1670,18 +1682,29 @@ impl<'a> Codegen<'a> {
             ExprKind::Index { obj, idx } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
-                match base_ty {
+                let i = self.expr(idx);
+                let (data, len) = match base_ty {
                     // Ссылка на массив (T (*)[N]): индексация в C дала бы
                     // сам массив, а не элемент — нужно разыменовать.
                     Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Array(..)) => {
-                        format!("(*{})[{}]", base, self.expr(idx))
+                        let Type::Array(_, n) = inner.as_ref() else { unreachable!() };
+                        (format!("(*{})", base), n.to_string())
                     }
-                    Some(Type::Vec(_)) => format!("{}.data[{}]", base, self.expr(idx)),
-                    Some(Type::Slice(_)) => format!("{}.data[{}]", base, self.expr(idx)),
+                    Some(Type::Array(_, n)) => (base.clone(), n.to_string()),
+                    Some(Type::Vec(_)) => (format!("{}.data", base), format!("{}.len", base)),
+                    Some(Type::Slice(_)) => (format!("{}.data", base), format!("{}.len", base)),
                     Some(Type::Ref(inner)) if matches!(inner.as_ref(), Type::Vec(_)) => {
-                        format!("{}->data[{}]", base, self.expr(idx))
+                        (format!("{}->data", base), format!("{}->len", base))
                     }
-                    _ => format!("{}[{}]", base, self.expr(idx)),
+                    _ => (base.clone(), String::new()),
+                };
+                if len.is_empty() {
+                    format!("{}[{}]", base, i)
+                } else {
+                    // shortcut: индекс и база вычисляются дважды; для
+                    // выражений с побочными эффектами нужен временный —
+                    // когда такие индексы появятся.
+                    format!("{}[k_index_check({}, {}, {})]", data, i, len, e.line)
                 }
             }
             ExprKind::Call { callee, args } => {

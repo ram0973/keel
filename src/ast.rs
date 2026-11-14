@@ -186,6 +186,26 @@ impl Path {
         cross
     }
 
+    /// Может ли запись в `self` затронуть объект по пути `other`?
+    ///
+    /// В отличие от `overlaps`, длины могут различаться: запись в
+    /// `entities[0]` заменяет элемент целиком и гасит ссылку на
+    /// `entities[].hp`. `Elems` совпадает с любым индексом в обе стороны.
+    pub fn may_cover(&self, other: &Path) -> bool {
+        if self.root != other.root {
+            return false;
+        }
+        if other.segs.len() < self.segs.len() {
+            return false;
+        }
+        self.segs.iter().zip(other.segs.iter()).all(|(a, b)| match (a, b) {
+            (Seg::Elems, Seg::Idx(_))
+            | (Seg::Idx(_), Seg::Elems)
+            | (Seg::Elems, Seg::Elems) => true,
+            (a, b) => a == b,
+        })
+    }
+
     pub fn render(&self) -> String {
         let mut s = self.root.clone();
         for seg in &self.segs {
@@ -486,6 +506,26 @@ pub enum Stmt {
         subject: Expr,
         arms: Vec<MatchArm>,
     },
+}
+
+impl Stmt {
+    /// Строка оператора — для диагностики недостижимого кода.
+    pub fn line(&self) -> usize {
+        match self {
+            Stmt::Let { init, .. } => init.line,
+            Stmt::Assign { lhs, .. } => lhs.line,
+            Stmt::Expr(e) => e.line,
+            Stmt::Return { line, .. } => *line,
+            Stmt::If { cond, .. } => cond.line,
+            Stmt::While { cond, .. } => cond.line,
+            Stmt::DoWhile { cond, .. } => cond.line,
+            Stmt::Break { line } => *line,
+            Stmt::Continue { line } => *line,
+            Stmt::ForRange { line, .. } => *line,
+            Stmt::ForEach { line, .. } => *line,
+            Stmt::Match { line, .. } => *line,
+        }
+    }
 }
 
 /// Ветвь `match`: `Enum::Вариант => { ... }` или `Enum::Вариант(x) => { ... }`.

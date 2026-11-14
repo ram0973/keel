@@ -41,6 +41,7 @@ for f in examples/*.keel play/*.keel; do
     fi
     # stdin из /dev/null: примеры с read_line иначе ждали бы терминал.
     if ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 \
+       LSAN_OPTIONS=suppressions="$PWD/scripts/lsan.supp" \
        UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
        timeout 10 "$OUT/$name.bin" </dev/null >/dev/null 2>"$OUT/$name.err"; then
         echo OK

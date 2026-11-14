@@ -60,6 +60,8 @@ fn main() {
             let cc = if cfg!(target_os = "windows") { "clang" } else { "cc" };
             let st = Command::new(cc)
                 .arg("-w")
+                // Переполнение знаковых — по модулю 2^N, а не UB.
+                .arg("-fwrapv")
                 .arg(std::env::var("KEEL_OPT").unwrap_or_else(|_| "-O2".to_string()))
                 .arg("-o")
                 .arg(&out)
@@ -92,6 +94,8 @@ fn main() {
             let cc = if cfg!(target_os = "windows") { "clang" } else { "cc" };
             let st = Command::new(cc)
                 .arg("-w")
+                // Переполнение знаковых — по модулю 2^N, а не UB.
+                .arg("-fwrapv")
                 // Оптимизация: без неё сгенерированный C компилируется
                 // как -O0, и код Keel заметно медленее того, что может
                 // дать gcc. Уровень можно переопределить переменной

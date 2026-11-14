@@ -357,8 +357,26 @@ fn main() int {
 
 // 16. Срез — заимствование массива: мутация гасит.
 #[test]
-fn slice_tracks_array() {
+fn slice_write_invalidates_element_ref() {
     fails(
+        r#"
+fn main() int {
+    let mut arr [int; 3] = [1, 2, 3];
+    let r = &arr[0];
+    let s [int] = arr;
+    s[0] = 9;
+    println(r);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// Запись в элемент массива не гасит срез: срез — вид на тот же буфер.
+#[test]
+fn slice_survives_element_write() {
+    ok(
         r#"
 fn main() int {
     let mut arr [int; 3] = [1, 2, 3];
@@ -368,7 +386,6 @@ fn main() int {
     return 0;
 }
 "#,
-        "инвалидирована",
     );
 }
 
@@ -426,3 +443,110 @@ fn main() int {
 "#,
     );
 }
+
+// 20. break уносит состояние на выход из цикла.
+#[test]
+fn break_carries_state_out_of_loop() {
+    fails(
+        r#"
+struct S { x int; }
+fn consume(s S) int { return s.x; }
+fn main() int {
+    let a = S(1);
+    let mut c = true;
+    let mut x = true;
+    while c {
+        if x { consume(a); break; }
+    }
+    println(a.x);
+    return 0;
+}
+"#,
+        "перемещён",
+    );
+}
+
+// 21. continue уносит состояние на следующую итерацию.
+#[test]
+fn continue_carries_state_to_next_iteration() {
+    fails(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let r = &v[0];
+    let mut c = true;
+    let mut x = true;
+    while c {
+        if x { v.push(2); continue; }
+        println(r);
+    }
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// 22. Ветвь match с return не вливает своё состояние.
+#[test]
+fn match_diverging_arm_ignored() {
+    ok(
+        r#"
+struct S { x int; }
+fn consume(s S) int { return s.x; }
+fn main() int {
+    let a = S(1);
+    let o Option<int> = Some(1);
+    match o {
+        Some(v) => { consume(a); return v; }
+        None => {}
+    }
+    println(a.x);
+    return 0;
+}
+"#,
+    );
+}
+
+// 23. Цепочка ссылок сохраняет все цели, а не только первую.
+#[test]
+fn ref_chain_keeps_all_targets() {
+    fails(
+        r#"
+fn pick(a &int, b &int) &int { return a; }
+fn id(r &int) &int { return r; }
+fn main() int {
+    let mut x = 1;
+    let mut y = 2;
+    let r = pick(&x, &y);
+    let q = id(r);
+    y = 5;
+    println(q);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+// 24. Замена элемента гасит ссылку на поле внутри него.
+#[test]
+fn element_replace_kills_field_ref() {
+    fails(
+        r#"
+struct E { hp int; }
+struct W { entities [E; 2]; }
+fn main() int {
+    let mut w = W([E(1), E(2)]);
+    let i = 0;
+    let r = &w.entities[i].hp;
+    w.entities[0] = E(9);
+    println(r);
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
