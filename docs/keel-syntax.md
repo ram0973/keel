@@ -11,9 +11,9 @@
 авто-разыменование вместо `*`, изменяемость — через `mut`-контракты,
 а не через тип ссылки.
 
-Чего в Keel нет из Rust: `trait`, `match`, `enum`, `loop`, `mod`,
-`use`, `pub`, `if let`, `Option`/`Result`, `Vec`, обобщённые типы,
-замыкания, `?`, макросы (`println!`), `&self`/`&mut self` в методах.
+Чего в Keel нет из Rust: `trait`, `loop`, `mod`, `use`, `pub`, `if let`,
+`Option`/`Result`, `Vec`, обобщённые типы, замыкания, `?`, макросы
+(`println!`), `&self`/`&mut self` в методах.
 
 ### 2.1. Лексика
 

@@ -2797,3 +2797,162 @@ fn main() int { return f(1); }
     assert!(r.c_code.contains("k_contract_fail"));
     assert!(r.c_code.contains("__k_result"));
 }
+
+// ============================================================
+// enum и match
+// ============================================================
+
+#[test]
+fn enum_и_исчерпывающий_match_компилируются() {
+    ok(r#"
+enum Color { Red, Green, Blue }
+
+fn name(c Color) string {
+    match c {
+        Color::Red => { return "red"; }
+        Color::Green => { return "green"; }
+        Color::Blue => { return "blue"; }
+    }
+    return "?";
+}
+
+fn main() int {
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn match_требует_все_варианты() {
+    fails(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let c = Color::Red;
+    match c { Color::Red => { } }
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+#[test]
+fn match_ловит_повтор_варианта() {
+    fails(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let c = Color::Red;
+    match c { Color::Red => { } Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#,
+        "разобран дважды",
+    );
+}
+
+#[test]
+fn match_ловит_чужой_вариант() {
+    fails(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let c = Color::Red;
+    match c { Color::Red => { } Color::Green => { } Color::Blue => { } }
+    return 0;
+}
+"#,
+        "нет варианта `Blue`",
+    );
+}
+
+#[test]
+fn match_требует_enum() {
+    fails(
+        r#"
+fn main() int {
+    let x = 1;
+    match x { A::B => { } }
+    return 0;
+}
+"#,
+        "`match` требует enum",
+    );
+}
+
+#[test]
+fn неизвестный_enum_в_варианте_ловится() {
+    fails(
+        r#"
+fn main() int {
+    let c = Color::Red;
+    return 0;
+}
+"#,
+        "неизвестный enum `Color`",
+    );
+}
+
+#[test]
+fn enum_копируется_а_не_перемещается() {
+    ok(r#"
+enum Color { Red, Green }
+fn main() int {
+    let a = Color::Red;
+    let b = a;
+    match a { Color::Red => { } Color::Green => { } }
+    match b { Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn enum_в_поле_структуры_работает() {
+    ok(r#"
+enum Color { Red, Green }
+struct P { c Color; }
+fn main() int {
+    let p = P(Color::Red);
+    match p.c { Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn смена_варианта_гасит_ссылку() {
+    fails(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let mut c = Color::Red;
+    let r &Color = &c;
+    c = Color::Green;
+    match r { Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#,
+        "инвалидирована",
+    );
+}
+
+#[test]
+fn enum_и_match_попадают_в_сгенерированный_c() {
+    let r = compile(
+        r#"
+enum Color { Red, Green }
+fn main() int {
+    let c = Color::Red;
+    match c { Color::Red => { } Color::Green => { } }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    assert!(r.c_code.contains("typedef enum"));
+    assert!(r.c_code.contains("Keel_Color_Red"));
+    assert!(r.c_code.contains("switch"));
+}

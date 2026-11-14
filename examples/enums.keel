@@ -1,0 +1,38 @@
+// enum и match: именованные состояния и исчерпывающий разбор.
+//
+// Варианты без данных: значение — это тег. Enum копируется, поэтому
+// передача в функцию не отнимает владение.
+//
+// match обязан разобрать каждый вариант: пропуск — ошибка компиляции,
+// а не «забыли ветку и получили мусор». Заглушки `_` нет намеренно.
+
+enum Light { Red, Yellow, Green }
+
+fn next(l Light) Light {
+    match l {
+        Light::Red => { return Light::Green; }
+        Light::Yellow => { return Light::Red; }
+        Light::Green => { return Light::Yellow; }
+    }
+    return Light::Red;
+}
+
+fn name(l Light) string {
+    match l {
+        Light::Red => { return "красный"; }
+        Light::Yellow => { return "жёлтый"; }
+        Light::Green => { return "зелёный"; }
+    }
+    return "?";
+}
+
+fn main() int {
+    let mut l = Light::Red;
+    let mut i = 0;
+    while i < 4 {
+        println(name(l));
+        l = next(l);
+        i = i + 1;
+    }
+    return 0;
+}
