@@ -440,7 +440,15 @@ impl Parser {
             }
         }
 
-        let body = self.parse_block()?;
+        let mut body = self.parse_block()?;
+        // Тело-выражение: последнее выражение без `;` — возвращаемое значение.
+        if ret != Type::Void {
+            if let Some(Stmt::Expr(e)) = body.stmts.last() {
+                let e = e.clone();
+                body.stmts.pop();
+                body.stmts.push(Stmt::Return { line: e.line, value: Some(e) });
+            }
+        }
         Ok(FuncDecl { name, params, ret, mut_paths, pre, post, body, owner, line })
     }
 
@@ -904,6 +912,9 @@ impl Parser {
                 };
                 return Ok(Stmt::Assign { lhs, rhs: bin });
             }
+        }
+        if self.at_punct("}") {
+            return Ok(Stmt::Expr(lhs));
         }
         self.expect_punct(";")?;
         let _ = line;
