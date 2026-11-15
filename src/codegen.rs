@@ -252,6 +252,37 @@ impl<'a> Codegen<'a> {
              \x20 exit(1);\n\
              }\n\n",
         );
+        // Число/bool в строку и обратно. Память под строку — из кучи,
+        // не освобождается (как `read_line`).
+        self.out.borrow_mut().push_str(
+            "// Число/bool в строку: память из кучи, не освобождается.\n\
+             static const char* k_int_to_str(int64_t x) {\n\
+             \x20 char* b = (char*)malloc(32);\n\
+             \x20 snprintf(b, 32, \"%lld\", (long long)x);\n\
+             \x20 return b;\n\
+             }\n\
+             static const char* k_float_to_str(double x) {\n\
+             \x20 char* b = (char*)malloc(32);\n\
+             \x20 snprintf(b, 32, \"%g\", x);\n\
+             \x20 return b;\n\
+             }\n\
+             static int64_t k_str_to_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }\n\
+             static double k_str_to_float(const char* s) { return strtod(s, NULL); }\n\
+             static int64_t k_min_int(int64_t a, int64_t b) { return a < b ? a : b; }\n\
+             static int64_t k_max_int(int64_t a, int64_t b) { return a > b ? a : b; }\n\
+             static int64_t k_abs_int(int64_t a) { return a < 0 ? -a : a; }\n\
+             static double k_min_float(double a, double b) { return a < b ? a : b; }\n\
+             static double k_max_float(double a, double b) { return a > b ? a : b; }\n\
+             static double k_abs_float(double a) { return a < 0 ? -a : a; }\n\
+             static void k_assert_fail(int line) {\n\
+             \x20 fprintf(stderr, \"assert: строка %d\\n\", line);\n\
+             \x20 exit(1);\n\
+             }\n\
+             static void k_panic(const char* msg) {\n\
+             \x20 fprintf(stderr, \"%s\\n\", msg);\n\
+             \x20 exit(1);\n\
+             }\n\n",
+        );
         // Ввод: строка и целое из stdin.
         //
         // `read_line` читает строку целиком (до '\n'), а не по слову, как
@@ -2045,6 +2076,69 @@ impl<'a> Codegen<'a> {
                         .map(|a| self.expr(a))
                         .unwrap_or_else(|| "0".to_string());
                     return format!("k_close({})", fd);
+                }
+                // `to_string(x)` — число или bool в строку.
+                if name == "to_string" {
+                    let Some(a) = args.first() else {
+                        return "\"\"".to_string();
+                    };
+                    let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
+                    let base = t.deref().clone();
+                    let v = match t {
+                        Type::Ref(_) => format!("(*{})", self.expr(a)),
+                        _ => self.expr(a),
+                    };
+                    return match base {
+                        Type::Int => format!("k_int_to_str({})", v),
+                        Type::Float => format!("k_float_to_str({})", v),
+                        Type::Bool => format!("(({}) ? \"true\" : \"false\")", v),
+                        _ => v,
+                    };
+                }
+                // `to_int(s)` / `to_float(s)` — разбор строки.
+                if name == "to_int" || name == "to_float" {
+                    let v = args
+                        .first()
+                        .map(|a| self.expr(a))
+                        .unwrap_or_else(|| "\"\"".to_string());
+                    return format!("k_str_{}({})", name, v);
+                }
+                // `min`/`max`/`abs` — по типу аргумента.
+                if name == "min" || name == "max" {
+                    let a = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
+                    let b = args.get(1).map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
+                    let t = args
+                        .first()
+                        .and_then(|x| self.types.get(&x.id))
+                        .map(|t| t.deref().clone())
+                        .unwrap_or(Type::Int);
+                    let suffix = if t == Type::Float { "float" } else { "int" };
+                    return format!("k_{}_{}({}, {})", name, suffix, a, b);
+                }
+                if name == "abs" {
+                    let a = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
+                    let t = args
+                        .first()
+                        .and_then(|x| self.types.get(&x.id))
+                        .map(|t| t.deref().clone())
+                        .unwrap_or(Type::Int);
+                    let suffix = if t == Type::Float { "float" } else { "int" };
+                    return format!("k_abs_{}({})", suffix, a);
+                }
+                // `assert(cond)` — проверка в рантайме.
+                if name == "assert" {
+                    let c = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "true".to_string());
+                    return format!("({{ if (!({})) k_assert_fail({}); }})", c, e.line);
+                }
+                // `panic(msg)` — сообщение и выход с кодом 1.
+                if name == "panic" {
+                    let m = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "\"\"".to_string());
+                    return format!("k_panic({})", m);
+                }
+                // `exit(code)` — выход с кодом.
+                if name == "exit" {
+                    let c = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
+                    return format!("exit({})", c);
                 }
                 // `len` — длина строки или массива. Для массива размер
                 // известен из типа и подставляется числом; для строки

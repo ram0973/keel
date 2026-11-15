@@ -651,7 +651,10 @@ use-after-free через ссылку в поле структуры (п. 6 р�
    `bool`, `float`, `string`; `sort` — `qsort` с компаратором по типу
    элемента. `clear` гасит ссылки внутрь, как `pop`.
 5. **`to_string`/`to_int`/`to_float`, `min`/`max`/`abs`,
-   `assert`/`panic`/`exit`.** Дешёвые встроенные функции.
+   `assert`/`panic`/`exit`.** ✅ **сделано.** `to_string` — для `int`,
+   `float`, `bool`, `string`; `min`/`max`/`abs` — для `int`/`float`
+   (смешивать нельзя). `assert` печатает номер строки, `panic` —
+   сообщение; оба выходят с кодом 1.
 
 C-backend и его UB ✅ **закрыто**: порядок аргументов, `-fwrapv`,
 `#line`, префикс `k_`.

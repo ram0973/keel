@@ -3233,6 +3233,170 @@ impl Checker {
             return Type::Void;
         }
 
+        // `to_string(x)` — число или bool в строку.
+        if name == "to_string" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`to_string` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                let base = t.deref().clone();
+                if !matches!(base, Type::Int | Type::Float | Type::Bool | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!(
+                            "`to_string` работает с int, float, bool или string, получен `{}`",
+                            t.name()
+                        ),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Str;
+        }
+
+        // `to_int(s)` / `to_float(s)` — разбор строки.
+        if name == "to_int" || name == "to_float" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t.deref() != &Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`{}` ждёт строку, получен `{}`", name, t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return if name == "to_int" { Type::Int } else { Type::Float };
+        }
+
+        // `min(a, b)` / `max(a, b)` — два int или два float.
+        if name == "min" || name == "max" {
+            if args.len() != 2 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает два аргумента, получено {}", name, args.len()),
+                ));
+            }
+            let mut ty = Type::Int;
+            if let (Some(a), Some(b)) = (args.first(), args.get(1)) {
+                let at = self.type_of(a, ctx).deref().clone();
+                let bt = self.type_of(b, ctx).deref().clone();
+                if at == Type::Float && bt == Type::Float {
+                    ty = Type::Float;
+                } else if at != Type::Int || bt != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        line,
+                        format!(
+                            "`{}` ждёт два int или два float, получено `{}` и `{}`",
+                            name,
+                            at.name(),
+                            bt.name()
+                        ),
+                    ));
+                }
+                self.record_move(a, &at, ctx);
+                self.record_move(b, &bt, ctx);
+            }
+            return ty;
+        }
+
+        // `abs(x)` — модуль int или float.
+        if name == "abs" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`abs` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            let mut ty = Type::Int;
+            if let Some(a) = args.first() {
+                let at = self.type_of(a, ctx).deref().clone();
+                if at == Type::Float {
+                    ty = Type::Float;
+                } else if at != Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`abs` ждёт int или float, получен `{}`", at.name()),
+                    ));
+                }
+                self.record_move(a, &at, ctx);
+            }
+            return ty;
+        }
+
+        // `assert(cond)` — проверка в рантайме.
+        if name == "assert" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`assert` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t.deref() != &Type::Bool {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`assert` ждёт bool, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Void;
+        }
+
+        // `panic(msg)` — сообщение и выход с кодом 1.
+        if name == "panic" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`panic` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t.deref() != &Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`panic` ждёт строку, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Void;
+        }
+
+        // `exit(code)` — выход с кодом.
+        if name == "exit" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`exit` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx);
+                if t.deref() != &Type::Int {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`exit` ждёт код типа `int`, получен `{}`", t.name()),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Void;
+        }
+
         let bad = self
             .funcs
             .get(name)

@@ -877,3 +877,58 @@ fn main() int {
         "не поддерживает элементы типа `P`",
     );
 }
+
+// 37. Встроенные функции: to_string/to_int/to_float, min/max/abs,
+// assert/panic/exit.
+#[test]
+fn встроенные_функции() {
+    let r = compile(
+        r#"
+fn main() int {
+    let s = to_string(42);
+    let n = to_int("7");
+    let f = to_float("2.5");
+    let a = min(1, 2);
+    let b = max(1.0, 2.0);
+    let c = abs(-3);
+    assert(n == 7);
+    if s == "" { panic("пусто"); }
+    if f < 0.0 { exit(1); }
+    if b < 0.0 { exit(2); }
+    return a + c;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    for f in [
+        "k_int_to_str",
+        "k_str_to_int",
+        "k_str_to_float",
+        "k_min_int",
+        "k_max_float",
+        "k_abs_int",
+        "k_assert_fail",
+        "k_panic",
+    ] {
+        assert!(r.c_code.contains(f), "нет `{}`:\n{}", f, r.c_code);
+    }
+}
+
+// 38. `min`/`max` не смешивают int и float.
+#[test]
+fn min_смешанные_типы_запрещён() {
+    fails(
+        r#"
+fn main() int {
+    let x = min(1, 2.5);
+    return 0;
+}
+"#,
+        "ждёт два int или два float",
+    );
+}

@@ -790,6 +790,41 @@ UTF-8, а `strlen` считает байты. `len("Привет")` даёт `12
 каждая кириллическая буква занимает два байта. Это то же поведение, что
 у `strlen` в C и у `String::len()` в Rust.
 
+**`to_string(x)`** — число или `bool` в строку; **`to_int(s)`** /
+**`to_float(s)`** — разбор строки:
+
+```
+println(to_string(42));         // 42
+println(to_string(3.5));        // 3.5
+println(to_string(true));       // true
+println(to_int("123") + 1);     // 124
+println(to_float("2.5") * 2.0); // 5
+```
+
+`to_string` принимает `int`, `float`, `bool` или `string` (последнее —
+как есть). `to_int`/`to_float` разбирают строку как `strtoll`/`strtod`:
+на нечисловом вводе — `0`/`0.0`, без ошибки.
+
+**`min(a, b)` / `max(a, b)` / `abs(x)`** — для `int` или `float`:
+
+```
+println(min(3, 7));      // 3
+println(max(3, 7));      // 7
+println(abs(-5));        // 5
+println(min(2.5, 1.5));  // 1.5
+```
+
+Оба аргумента `min`/`max` — одного типа (`int` или `float`); смешивать
+нельзя.
+
+**`assert(cond)` / `panic(msg)` / `exit(code)`** — отказ:
+
+```
+assert(n > 0);            // иначе: "assert: строка N" и выход с кодом 1
+panic("нет данных");      // сообщение и выход с кодом 1
+exit(2);                  // выход с кодом 2
+```
+
 **`const`** — именованная константа уровня файла:
 
 ```
