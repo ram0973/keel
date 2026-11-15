@@ -787,3 +787,33 @@ fn main() int {
         r.c_code
     );
 }
+
+// 34. `unwrap` на `None`/`Err` — проверка в рантайме, а не чтение мусора.
+#[test]
+fn unwrap_checks_tag_in_c() {
+    let r = compile(
+        r#"
+fn main() int {
+    let a Option<int> = Some(1);
+    let b Result<int, string> = Ok(2);
+    return a.unwrap() + b.unwrap();
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("k_unwrap_fail") && r.c_code.contains("__o.tag != Keel_Option_int_Some"),
+        "нет проверки тега `unwrap`:\n{}",
+        r.c_code
+    );
+    assert!(
+        r.c_code.contains("__o.tag != Keel_Result_int_string_Ok"),
+        "нет проверки тега `unwrap` у `Result`:\n{}",
+        r.c_code
+    );
+}

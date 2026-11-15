@@ -308,7 +308,8 @@ match o {
 
 Методы: `unwrap()` → значение, `unwrap_or(x)` → значение или `x`,
 `is_some()`/`is_none()` у `Option`, `is_ok()`/`is_err()` у `Result`.
-`unwrap_or` вычисляет получатель один раз.
+`unwrap_or` вычисляет получатель один раз. `unwrap` на `None`/`Err` —
+сообщение и выход с кодом 1 (как проверка границ индексации).
 
 В C каждый конкретный `Option<T>`/`Result<T,E>` мономорфизируется в
 отдельный tagged union (`Keel_Option_int`, `Keel_Result_int_string`).

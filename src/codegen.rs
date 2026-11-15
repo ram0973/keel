@@ -243,6 +243,15 @@ impl<'a> Codegen<'a> {
              \x20 return i;\n\
              }\n\n",
         );
+        // `unwrap` на `None`/`Err`: сообщение и выход с кодом 1, а не
+        // чтение мусора из union.
+        self.out.borrow_mut().push_str(
+            "// `unwrap` на пустом значении — ошибка, а не чтение мусора.\n\
+             static void k_unwrap_fail(int line) {\n\
+             \x20 fprintf(stderr, \"строка %d: unwrap на пустом значении (None/Err)\\n\", line);\n\
+             \x20 exit(1);\n\
+             }\n\n",
+        );
         // Ввод: строка и целое из stdin.
         //
         // `read_line` читает строку целиком (до '\n'), а не по слову, как
@@ -2132,7 +2141,10 @@ impl<'a> Codegen<'a> {
                         _ => self.expr(obj),
                     };
                     return match name.as_str() {
-                        "unwrap" => format!("({}).data.Some._0", recv),
+                        "unwrap" => format!(
+                            "({{ {} __o = {}; if (__o.tag != {}_Some) k_unwrap_fail({}); __o.data.Some._0; }})",
+                            c, recv, c, e.line
+                        ),
                         "unwrap_or" => format!(
                             "({{ {} __o = {}; __o.tag == {}_Some ? __o.data.Some._0 : {}; }})",
                             c,
@@ -2152,7 +2164,10 @@ impl<'a> Codegen<'a> {
                         _ => self.expr(obj),
                     };
                     return match name.as_str() {
-                        "unwrap" => format!("({}).data.Ok._0", recv),
+                        "unwrap" => format!(
+                            "({{ {} __o = {}; if (__o.tag != {}_Ok) k_unwrap_fail({}); __o.data.Ok._0; }})",
+                            c, recv, c, e.line
+                        ),
                         "unwrap_or" => format!(
                             "({{ {} __o = {}; __o.tag == {}_Ok ? __o.data.Ok._0 : {}; }})",
                             c,

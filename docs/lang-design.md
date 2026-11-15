@@ -644,7 +644,8 @@ use-after-free через ссылку в поле структуры (п. 6 р�
    Литеральный `step 0` — ошибка `E017`.
 3. **`Option`/`Result`: `unwrap`, `unwrap_or`, `is_some`, `is_none`.**
    ✅ **сделано.** У `Result` — `is_ok`/`is_err`. `unwrap_or` вычисляет
-   получатель один раз (временная в C).
+   получатель один раз (временная в C). `unwrap` на `None`/`Err` —
+   проверка в рантайме: сообщение и выход с кодом 1.
 4. **`Vec`: `is_empty`, `clear`, `contains`, `sort`, `reverse`,
    `first`, `last`.** Прикладной код без этого пишется руками.
 5. **`to_string`/`to_int`/`to_float`, `min`/`max`/`abs`,
