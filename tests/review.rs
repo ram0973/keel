@@ -752,3 +752,38 @@ fn main() int {
         r.c_code
     );
 }
+
+// 33. Методы `Option`/`Result` в C: тег и поле варианта, `unwrap_or` —
+// через временную, чтобы получатель не вычислялся дважды.
+#[test]
+fn option_methods_in_c() {
+    let r = compile(
+        r#"
+fn f() Option<int> { return Some(3); }
+fn main() int {
+    let a Option<int> = Some(1);
+    let b Option<int> = None;
+    if a.is_some() && b.is_none() {
+        return f().unwrap_or(0) + a.unwrap();
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains(".data.Some._0") && r.c_code.contains("_Some)"),
+        "нет доступа к варианту:\n{}",
+        r.c_code
+    );
+    assert!(
+        r.c_code.contains("__o = k_f()"),
+        "получатель `unwrap_or` не сохранён во временную:\n{}",
+        r.c_code
+    );
+}

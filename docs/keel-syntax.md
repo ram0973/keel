@@ -306,6 +306,10 @@ match o {
 Сравнение `==` и печать `Option`/`Result` не поддерживаются — разбирайте
 через `match`.
 
+Методы: `unwrap()` → значение, `unwrap_or(x)` → значение или `x`,
+`is_some()`/`is_none()` у `Option`, `is_ok()`/`is_err()` у `Result`.
+`unwrap_or` вычисляет получатель один раз.
+
 В C каждый конкретный `Option<T>`/`Result<T,E>` мономорфизируется в
 отдельный tagged union (`Keel_Option_int`, `Keel_Result_int_string`).
 

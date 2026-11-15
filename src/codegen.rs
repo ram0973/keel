@@ -2125,6 +2125,46 @@ impl<'a> Codegen<'a> {
                         _ => "0".to_string(),
                     };
                 }
+                if let Some(Type::Option(inner)) = &obj_ty {
+                    let c = format!("Keel_Option_{}", inner.mangle());
+                    let recv = match self.types.get(&obj.id) {
+                        Some(Type::Ref(_)) => format!("(*{})", self.expr(obj)),
+                        _ => self.expr(obj),
+                    };
+                    return match name.as_str() {
+                        "unwrap" => format!("({}).data.Some._0", recv),
+                        "unwrap_or" => format!(
+                            "({{ {} __o = {}; __o.tag == {}_Some ? __o.data.Some._0 : {}; }})",
+                            c,
+                            recv,
+                            c,
+                            self.expr(&args[0])
+                        ),
+                        "is_some" => format!("(({}).tag == {}_Some)", recv, c),
+                        "is_none" => format!("(({}).tag == {}_None)", recv, c),
+                        _ => "0".to_string(),
+                    };
+                }
+                if let Some(Type::Result(ok, err)) = &obj_ty {
+                    let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                    let recv = match self.types.get(&obj.id) {
+                        Some(Type::Ref(_)) => format!("(*{})", self.expr(obj)),
+                        _ => self.expr(obj),
+                    };
+                    return match name.as_str() {
+                        "unwrap" => format!("({}).data.Ok._0", recv),
+                        "unwrap_or" => format!(
+                            "({{ {} __o = {}; __o.tag == {}_Ok ? __o.data.Ok._0 : {}; }})",
+                            c,
+                            recv,
+                            c,
+                            self.expr(&args[0])
+                        ),
+                        "is_ok" => format!("(({}).tag == {}_Ok)", recv, c),
+                        "is_err" => format!("(({}).tag == {}_Err)", recv, c),
+                        _ => "0".to_string(),
+                    };
+                }
                 let ty_name = match &obj_ty {
                     Some(Type::Named(n)) => n.clone(),
                     _ => String::new(),

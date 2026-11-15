@@ -3496,6 +3496,52 @@ fn main() int {
 }
 
 #[test]
+fn option_методы_работают() {
+    ok(
+        r#"
+fn main() int {
+    let a Option<int> = Some(42);
+    let b Option<int> = None;
+    let mut total = a.unwrap() + b.unwrap_or(7);
+    if a.is_some() { total += 1; }
+    if b.is_none() { total += 1; }
+    return total;
+}
+"#,
+    );
+}
+
+#[test]
+fn result_методы_работают() {
+    ok(
+        r#"
+fn main() int {
+    let c Result<int, string> = Ok(5);
+    let d Result<int, string> = Err("bad");
+    let mut total = c.unwrap() + d.unwrap_or(9);
+    if c.is_ok() { total += 1; }
+    if d.is_err() { total += 1; }
+    return total;
+}
+"#,
+    );
+}
+
+#[test]
+fn unwrap_or_тип_проверяется() {
+    fails(
+        r#"
+fn main() int {
+    let a Option<int> = Some(1);
+    println(a.unwrap_or("x"));
+    return 0;
+}
+"#,
+        "`unwrap_or` ждёт `int`",
+    );
+}
+
+#[test]
 fn option_печать_запрещена() {
     fails(
         r#"

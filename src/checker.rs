@@ -1054,6 +1054,73 @@ impl Checker {
         }
     }
 
+    /// Методы встроенных `Option<T>` и `Result<T, E>`: `unwrap`,
+    /// `unwrap_or`, `is_some`/`is_none` (у `Option`), `is_ok`/`is_err`
+    /// (у `Result`).
+    fn type_of_wrapper_method(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        args: &[Expr],
+        ty: &Type,
+        ctx: &mut Ctx,
+    ) -> Type {
+        let (payload, some, none) = match ty {
+            Type::Option(inner) => ((**inner).clone(), "is_some", "is_none"),
+            Type::Result(ok, _) => ((**ok).clone(), "is_ok", "is_err"),
+            _ => unreachable!(),
+        };
+        match name {
+            "unwrap" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`unwrap` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                payload
+            }
+            "unwrap_or" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of_expected(a, Some(&payload), ctx);
+                    if !self.types_compatible(payload.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!(
+                                "`unwrap_or` ждёт `{}`, получен `{}`",
+                                payload.name(),
+                                at.name()
+                            ),
+                        ));
+                    }
+                }
+                payload
+            }
+            n if n == some || n == none => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`{}` не принимает аргументов, получено {}", name, args.len()),
+                    ));
+                }
+                Type::Bool
+            }
+            _ => {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("у `{}` нет метода `{}`", ty.name(), name),
+                ));
+                Type::Void
+            }
+        }
+    }
+
     /// Получатель `push`/`pop`/`free` должен быть изменяемым.
     fn check_mut_path(
         &mut self,
@@ -2364,6 +2431,9 @@ impl Checker {
                 let obj_ty = self.type_of(obj, ctx).deref().clone();
                 if let Type::Vec(elem) = &obj_ty {
                     return self.type_of_vec_method(e, obj, name, args, elem, ctx);
+                }
+                if matches!(&obj_ty, Type::Option(_) | Type::Result(_, _)) {
+                    return self.type_of_wrapper_method(e, name, args, &obj_ty, ctx);
                 }
                 let Type::Named(tn) = obj_ty.clone() else {
                     self.diags.push(Diagnostic::new(
