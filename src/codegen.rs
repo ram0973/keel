@@ -977,6 +977,7 @@ impl<'a> Codegen<'a> {
                 self.collect_closures_expr(r);
             }
             ExprKind::Ref(inner) => self.collect_closures_expr(inner),
+            ExprKind::Try(inner) => self.collect_closures_expr(inner),
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.collect_closures_expr(cond);
                 self.collect_closures_expr(then_expr);
@@ -2539,6 +2540,41 @@ impl<'a> Codegen<'a> {
                 match self.types.get(&inner.id) {
                     Some(Type::Ref(_)) => format!("(&(*{}))", base),
                     _ => format!("(&{})", base),
+                }
+            }
+            ExprKind::Try(inner) => {
+                // `expr?` — statement expression: при `None`/`Err` — `return`
+                // из функции, иначе — значение.
+                let base = self.expr(inner);
+                let t = self.types.get(&inner.id).cloned().unwrap_or(Type::Int);
+                let t = match t {
+                    Type::Ref(i) => *i,
+                    t => t,
+                };
+                match &t {
+                    Type::Option(inner_ty) => {
+                        let cname = format!("Keel_Option_{}", inner_ty.mangle());
+                        format!(
+                            "({{ {} __t = {}; if (__t.tag != {}_Some) return ({}){{ .tag = {}_None }}; __t.data.Some._0; }})",
+                            self.ty(&t),
+                            base,
+                            cname,
+                            self.ty(&self.cur_ret),
+                            cname
+                        )
+                    }
+                    Type::Result(ok, err) => {
+                        let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                        format!(
+                            "({{ {} __t = {}; if (__t.tag != {}_Ok) return ({}){{ .tag = {}_Err, .data.Err = {{ ._0 = __t.data.Err._0 }} }}; __t.data.Ok._0; }})",
+                            self.ty(&t),
+                            base,
+                            cname,
+                            self.ty(&self.cur_ret),
+                            cname
+                        )
+                    }
+                    _ => base,
                 }
             }
         }

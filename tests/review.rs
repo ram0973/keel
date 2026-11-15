@@ -1023,3 +1023,101 @@ fn main() int {
         r.c_code
     );
 }
+
+// 42. `?` на `Result` — разворот с `return Err`.
+#[test]
+fn try_на_result() {
+    let r = compile(
+        r#"
+fn get(i int) Result<int, string> {
+    if i < 0 { return Err("neg"); }
+    return Ok(i * 10);
+}
+fn sum() Result<int, string> {
+    let a = get(1)?;
+    let b = get(2)?;
+    return Ok(a + b);
+}
+fn main() int {
+    match sum() {
+        Ok(s) => { println(s); }
+        Err(e) => { println(e); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__t.tag != Keel_Result_int_string_Ok"),
+        "нет проверки тега `?`:\n{}",
+        r.c_code
+    );
+}
+
+// 43. `?` на `Option` — разворот с `return None`.
+#[test]
+fn try_на_option() {
+    let r = compile(
+        r#"
+fn first(v &Vec<int>) Option<int> {
+    let x = v.get(0)?;
+    return Some(x);
+}
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(7);
+    match first(&v) {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__t.tag != Keel_Option_int_Some"),
+        "нет проверки тега `?`:\n{}",
+        r.c_code
+    );
+}
+
+// 44. `?` вне функции, возвращающей Option/Result, — ошибка.
+#[test]
+fn try_в_неподходящей_функции() {
+    fails(
+        r#"
+fn f() int {
+    let r Result<int, string> = Ok(1);
+    let x = r?;
+    return x;
+}
+"#,
+        "требует, чтобы функция возвращала `Result`",
+    );
+}
+
+// 45. `?` на не-Option/Result — ошибка.
+#[test]
+fn try_на_не_option() {
+    fails(
+        r#"
+fn main() int {
+    let x = 5?;
+    return 0;
+}
+"#,
+        "`?` работает с `Option` или `Result`",
+    );
+}

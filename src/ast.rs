@@ -398,6 +398,9 @@ pub enum ExprKind {
     Unary { op: UnOp, e: Box<Expr> },
     Binary { op: BinOp, l: Box<Expr>, r: Box<Expr> },
     Ref(Box<Expr>),
+    /// `expr?` — разворачивает `Option`/`Result`: при `Some`/`Ok` даёт
+    /// значение, при `None`/`Err` возвращает его из функции.
+    Try(Box<Expr>),
     /// `if cond { a } else { b }` как выражение. Ветви — одиночные
     /// выражения; значение — результат выбранной ветви.
     If {

@@ -2645,6 +2645,110 @@ impl Checker {
                 let t = self.type_of(inner, ctx);
                 Type::Ref(Box::new(t))
             }
+            ExprKind::Try(inner) => {
+                let t = self.type_of(inner, ctx).deref().clone();
+                self.record_move(inner, &t, ctx);
+                match &t {
+                    Type::Option(inner_ty) => {
+                        match &ctx.ret {
+                            Type::Option(ret_inner) => {
+                                if !self
+                                    .types_compatible((**inner_ty).clone(), ret_inner)
+                                {
+                                    self.diags.push(
+                                        Diagnostic::new(
+                                            e.line,
+                                            format!(
+                                                "`?` на `Option<{}>` в функции, возвращающей `Option<{}>`",
+                                                inner_ty.name(),
+                                                ret_inner.name()
+                                            ),
+                                        )
+                                        .code("E018")
+                                        .hint("тип значения должен совпадать"),
+                                    );
+                                }
+                            }
+                            other => {
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        format!(
+                                            "`?` на `Option` требует, чтобы функция возвращала `Option`, а она возвращает `{}`",
+                                            other.name()
+                                        ),
+                                    )
+                                    .code("E018")
+                                    .hint("верните `Option` или разберите значение через `match`"),
+                                );
+                            }
+                        }
+                        (**inner_ty).clone()
+                    }
+                    Type::Result(ok, err) => {
+                        match &ctx.ret {
+                            Type::Result(ret_ok, ret_err) => {
+                                if !self.types_compatible((**err).clone(), ret_err) {
+                                    self.diags.push(
+                                        Diagnostic::new(
+                                            e.line,
+                                            format!(
+                                                "`?` на `Result<_, {}>` в функции, возвращающей `Result<_, {}>`",
+                                                err.name(),
+                                                ret_err.name()
+                                            ),
+                                        )
+                                        .code("E018")
+                                        .hint("тип ошибки должен совпадать"),
+                                    );
+                                }
+                                if !self.types_compatible((**ok).clone(), ret_ok) {
+                                    self.diags.push(
+                                        Diagnostic::new(
+                                            e.line,
+                                            format!(
+                                                "`?` на `Result<{}, _>` в функции, возвращающей `Result<{}, _>`",
+                                                ok.name(),
+                                                ret_ok.name()
+                                            ),
+                                        )
+                                        .code("E018")
+                                        .hint("тип значения должен совпадать"),
+                                    );
+                                }
+                            }
+                            other => {
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        format!(
+                                            "`?` на `Result` требует, чтобы функция возвращала `Result`, а она возвращает `{}`",
+                                            other.name()
+                                        ),
+                                    )
+                                    .code("E018")
+                                    .hint("верните `Result` или разберите значение через `match`"),
+                                );
+                            }
+                        }
+                        (**ok).clone()
+                    }
+                    other => {
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "`?` работает с `Option` или `Result`, получено `{}`",
+                                    other.name()
+                                ),
+                            )
+                            .code("E018")
+                            .hint("`?` разворачивает `Option`/`Result`"),
+                        );
+                        Type::Int
+                    }
+                }
+            }
             ExprKind::Call { callee, args } => self.type_of_call(callee, args, ctx, e.line),
             ExprKind::Unary { op, e: inner } => {
                 let t = self.type_of(inner, ctx);
@@ -4411,6 +4515,7 @@ pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
         ExprKind::Unary { e, .. } => mentions_ident(e, name),
         ExprKind::Binary { l, r, .. } => mentions_ident(l, name) || mentions_ident(r, name),
         ExprKind::Ref(inner) => mentions_ident(inner, name),
+        ExprKind::Try(inner) => mentions_ident(inner, name),
         ExprKind::If { cond, then_expr, else_expr } => {
             mentions_ident(cond, name)
                 || mentions_ident(then_expr, name)

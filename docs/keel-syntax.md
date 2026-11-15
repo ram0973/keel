@@ -466,6 +466,8 @@ stmt        = "let" "mut"? ident (":" type)? "=" expr ";"
 pattern     = "_"
             | ident "::" ident ("(" ident ("," ident)* ")")?
             | ("Some" | "None" | "Ok" | "Err") ("(" ident ("," ident)* ")")?
+
+postfix     = primary ("." ident ("(" expr ("," expr)* ")")? | "[" expr "]" | "(" expr ("," expr)* ")" | "?")*
 ```
 
 `let` без `=` — значение без начального значения. Это нужно редко; тип
@@ -532,6 +534,25 @@ while let Some(x) = v.pop() {
 который повторяется, пока шаблон совпадает; `_` выходит из цикла.
 Шаблон — как у ветви `match`: `Some(x)`, `None`, `Ok(v)`, `Err(e)`,
 `Enum::Вариант(a, b)`.
+
+### 2.5.1.2. `?`
+
+```
+fn get(i int) Result<int, string> {
+    if i < 0 { return Err("neg"); }
+    return Ok(i * 10);
+}
+
+fn sum() Result<int, string> {
+    let a = get(1)?;
+    let b = get(2)?;
+    return Ok(a + b);
+}
+```
+
+`expr?` разворачивает `Option`/`Result`: при `Some`/`Ok` даёт значение,
+при `None`/`Err` возвращает его из функции. Функция должна возвращать
+тот же `Option`/`Result` (тип значения и тип ошибки совпадают).
 
 ### 2.5.2. Ссылка не переживает функцию
 
