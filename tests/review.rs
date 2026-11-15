@@ -691,3 +691,32 @@ fn main() int {
     );
     assert!(r.c_code.contains("k_printf"), "нет префикса:\n{}", r.c_code);
 }
+
+// 31. Обход `Vec` в C идёт по буферу и длине, а не по массиву.
+#[test]
+fn for_over_vec_uses_buffer_and_len() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let mut total = 0;
+    for e in v {
+        total += e;
+    }
+    return total;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains(".data[__ki]") && r.c_code.contains(".len;"),
+        "обход Vec не по буферу:\n{}",
+        r.c_code
+    );
+}

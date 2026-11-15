@@ -1450,10 +1450,29 @@ impl<'a> Codegen<'a> {
                 self.out.borrow_mut().push_str("  }\n");
             }
             Stmt::ForEach { var, iter, body, .. } => {
-                // Обход массива: индексируемся, копия элемента попадает
-                // в переменную цикла.
-                let arr = self.expr(iter);
-                let (elem_ty, len) = self.array_info(iter);
+                // Обход массива, `Vec` или среза: индексируемся, копия
+                // элемента попадает в переменную цикла.
+                let base = self.expr(iter);
+                let (elem_ty, data, len) = match self.types.get(&iter.id) {
+                    Some(Type::Vec(elem)) | Some(Type::Slice(elem)) => (
+                        (**elem).clone(),
+                        format!("{}.data", base),
+                        format!("{}.len", base),
+                    ),
+                    Some(Type::Ref(inner))
+                        if matches!(inner.as_ref(), Type::Vec(_) | Type::Slice(_)) =>
+                    {
+                        let elem = match inner.as_ref() {
+                            Type::Vec(e) | Type::Slice(e) => (**e).clone(),
+                            _ => unreachable!(),
+                        };
+                        (elem, format!("{}->data", base), format!("{}->len", base))
+                    }
+                    _ => {
+                        let (elem_ty, n) = self.array_info(iter);
+                        (elem_ty, base.clone(), n.to_string())
+                    }
+                };
                 let (cvar, _) = self.loop_var(var);
                 self.out.borrow_mut().push_str(&format!(
                     "  for (int64_t __ki = 0; __ki < {}; __ki++) {{\n",
@@ -1462,7 +1481,7 @@ impl<'a> Codegen<'a> {
                 self.out.borrow_mut().push_str(&format!(
                     "    {} = {}[__ki];\n",
                     self.decl(&elem_ty, &cvar),
-                    arr
+                    data
                 ));
                 self.loop_vars.insert(var.clone(), cvar);
                 for s in &body.stmts {

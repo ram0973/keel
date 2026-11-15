@@ -602,6 +602,7 @@ impl Checker {
             loops: Vec::new(),
             is_main: f.name == "main",
             diverged: false,
+            iter_borrowed: Vec::new(),
         };
 
         // Контракты: `pre` проверяется на входе, `post` — перед каждым
@@ -632,6 +633,7 @@ impl Checker {
             loops: Vec::new(),
             is_main: ctx.is_main,
             diverged: false,
+            iter_borrowed: Vec::new(),
         };
         if f.ret != Type::Void {
             let uid = self.next_uid;
@@ -1049,6 +1051,7 @@ impl Checker {
         line: usize,
         method: &str,
     ) {
+        self.check_not_iterating(path, line, ctx);
         let allowed = match root_kind {
             RootKind::Owned(uid) => ctx
                 .scope
@@ -1532,20 +1535,31 @@ impl Checker {
                 let it = self.type_of(iter, ctx);
                 let it = it.deref().clone();
                 let elem_ty = match &it {
-                    Type::Array(elem, _) => (**elem).clone(),
+                    Type::Array(elem, _) | Type::Vec(elem) | Type::Slice(elem) => (**elem).clone(),
                     other => {
                         self.diags.push(Diagnostic::new(
                             *line,
                             format!(
-                                "`for ... in` работает по массиву, получено `{}`",
+                                "`for ... in` работает по массиву, `Vec` или срезу, получено `{}`",
                                 other.name()
                             ),
                         ));
                         Type::Int
                     }
                 };
+                // Обход `Vec` держит его на время цикла: `push`/`free`/
+                // перемещение внутри тела перевыделили бы или освободили
+                // буфер под ногами обхода.
+                let borrowed = matches!(it, Type::Vec(_)).then(|| {
+                    let place = match &iter.kind {
+                        ExprKind::Ref(inner) => self.resolve_place(inner, ctx).0,
+                        _ => self.resolve_place(iter, ctx).0,
+                    };
+                    ctx.iter_borrowed.push(place.clone());
+                    place
+                });
                 // Обход даёт копию элемента (см. lang-design), поэтому
-                // массив остаётся доступен после цикла.
+                // контейнер остаётся доступен после цикла.
                 self.declare_loop_var(var, elem_ty, ctx);
                 ctx.loops.push(LoopState::default());
                 ctx.loop_depth += 1;
@@ -1557,6 +1571,9 @@ impl Checker {
                 merge_loop_states(&mut ctx.scope, &mut self.refs, &brk);
                 ctx.loops.pop();
                 ctx.loop_depth -= 1;
+                if borrowed.is_some() {
+                    ctx.iter_borrowed.pop();
+                }
                 ctx.diverged = false;
             }
         }
@@ -2082,6 +2099,10 @@ impl Checker {
             }
             Type::Ref(inner) => self.record_type_insts(inner),
             Type::Array(inner, _) => self.record_type_insts(inner),
+            Type::Slice(inner) => {
+                self.record_type_insts(inner);
+                self.record_slice_inst(inner);
+            }
             _ => {}
         }
     }
@@ -2530,6 +2551,7 @@ impl Checker {
                     loops: Vec::new(),
                     is_main: false,
                     diverged: false,
+                    iter_borrowed: Vec::new(),
                 };
                 for p in params {
                     let uid = self.next_uid;
@@ -3255,6 +3277,7 @@ impl Checker {
     /// Пути, начинающиеся с имени параметра, — забота контракта самого
     /// параметра, а не вызывающего.
     fn check_owner_is_mut(&mut self, path: &Path, line: usize, ctx: &Ctx) {
+        self.check_not_iterating(path, line, ctx);
         let Ok(uid) = path.root.parse::<u32>() else {
             return;
         };
@@ -3285,6 +3308,25 @@ impl Checker {
                 .hint("объявите переменную `let mut`"),
             );
         }
+    }
+
+    /// Обход `Vec` держит его на время цикла: менять его внутри тела нельзя.
+    fn check_not_iterating(&mut self, path: &Path, line: usize, ctx: &Ctx) {
+        let Some(b) = ctx.iter_borrowed.iter().find(|b| b.is_prefix_of(path)) else {
+            return;
+        };
+        self.diags.push(
+            Diagnostic::new(
+                line,
+                format!(
+                    "`{}` обходится в `for`: менять его внутри цикла нельзя — \
+                     перевыделение буфера оставит обход в освобождённой памяти",
+                    self.render(b)
+                ),
+            )
+            .code("E016")
+            .hint("соберите изменения и примените их после цикла"),
+        );
     }
 
     /// Путь значения выражения, если это «место» (переменная, поле, элемент).
@@ -3693,6 +3735,9 @@ impl Checker {
         if self.is_copy(ty) {
             return;
         }
+        if let Some(path) = self.place_path_of(e, ctx) {
+            self.check_not_iterating(&path, e.line, ctx);
+        }
         match &e.kind {
             ExprKind::Ident(name) => {
                 let path = ctx.scope.get(name).map(|l| l.path.clone());
@@ -4035,4 +4080,6 @@ struct Ctx {
     /// Текущая ветвь завершается `return`/`break`/`continue`:
     /// код после неё недостижим, её состояние не сливается.
     diverged: bool,
+    /// `Vec`, обходимые текущими `for`: их нельзя менять в теле цикла.
+    iter_borrowed: Vec<Path>,
 }

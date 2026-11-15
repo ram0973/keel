@@ -748,6 +748,56 @@ fn main() int {
 }
 
 #[test]
+fn for_по_vec_работает() {
+    ok(r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    v.push(2);
+    let mut total = 0;
+    for e in v {
+        total += e;
+    }
+    return total + v.len();
+}
+"#);
+}
+
+#[test]
+fn for_по_срезу_работает() {
+    ok(r#"
+fn sum(s [int]) int {
+    let mut total = 0;
+    for e in s {
+        total += e;
+    }
+    return total;
+}
+fn main() int {
+    let a [int; 3] = [1, 2, 3];
+    return sum(a);
+}
+"#);
+}
+
+#[test]
+fn for_по_vec_менять_нельзя() {
+    fails(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    for e in v {
+        v.push(e);
+    }
+    return 0;
+}
+"#,
+        "обходится в `for`",
+    );
+}
+
+#[test]
 fn границы_диапазона_должны_быть_int() {
     fails(
         r#"
