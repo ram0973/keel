@@ -798,6 +798,60 @@ fn main() int {
 }
 
 #[test]
+fn for_с_шагом_работает() {
+    ok(r#"
+fn main() int {
+    let mut total = 0;
+    for i in 0..10 step 2 {
+        total += i;
+    }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn for_обратный_работает() {
+    ok(r#"
+fn main() int {
+    let mut total = 0;
+    for i in 10..0 step -1 {
+        total += i;
+    }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn for_включительная_граница_работает() {
+    ok(r#"
+fn main() int {
+    let mut total = 0;
+    for i in 0..=5 {
+        total += i;
+    }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn for_шаг_ноль_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    for i in 0..10 step 0 {
+        println(i);
+    }
+    return 0;
+}
+"#,
+        "не может быть нулём",
+    );
+}
+
+#[test]
 fn границы_диапазона_должны_быть_int() {
     fails(
         r#"

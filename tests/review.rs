@@ -720,3 +720,35 @@ fn main() int {
         r.c_code
     );
 }
+
+// 32. `step` и `..=` в C: шаг вычисляется один раз, направление — тернарник.
+#[test]
+fn for_step_and_inclusive_in_c() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut total = 0;
+    for i in 10..=0 step -2 {
+        total += i;
+    }
+    return total;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__ks = (-INT64_C(2))") && r.c_code.contains("__ks > 0 ?"),
+        "нет шага/направления:\n{}",
+        r.c_code
+    );
+    assert!(
+        r.c_code.contains("k_i >= INT64_C(0)"),
+        "нет включительной границы:\n{}",
+        r.c_code
+    );
+}

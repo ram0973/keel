@@ -882,13 +882,20 @@ impl Parser {
             self.bump();
             let var = self.ident()?;
             self.expect_kw("in")?;
-            // Диапазон: `for i in 0..10`.
+            // Диапазон: `for i in 0..10`, `0..=10`, `0..n step 2`.
             let first = self.parse_expr()?;
-            if self.at_punct("..") {
+            if self.at_punct("..") || self.at_punct("..=") {
+                let inclusive = self.at_punct("..=");
                 self.bump();
                 let end = self.parse_expr()?;
+                let step = if self.at_kw("step") {
+                    self.bump();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 let body = self.parse_block()?;
-                return Ok(Stmt::ForRange { line, var, start: first, end, body });
+                return Ok(Stmt::ForRange { line, var, start: first, end, inclusive, step, body });
             }
             // Массив: `for x in arr`.
             let body = self.parse_block()?;

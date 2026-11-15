@@ -924,9 +924,12 @@ impl<'a> Codegen<'a> {
                 }
                 self.collect_closures_expr(cond);
             }
-            Stmt::ForRange { start, end, body, .. } => {
+            Stmt::ForRange { start, end, step, body, .. } => {
                 self.collect_closures_expr(start);
                 self.collect_closures_expr(end);
+                if let Some(s) = step {
+                    self.collect_closures_expr(s);
+                }
                 for s in &body.stmts {
                     self.collect_closures_stmt(s);
                 }
@@ -1421,9 +1424,9 @@ impl<'a> Codegen<'a> {
             Stmt::Continue { .. } => {
                 self.out.borrow_mut().push_str("  continue;\n");
             }
-            Stmt::ForRange { var, start, end, body, .. } => {
+            Stmt::ForRange { var, start, end, inclusive, step, body, .. } => {
                 // Правая граница исключительная, как в Rust и Zeta:
-                // `0..3` — это 0, 1, 2. Поэтому условие `<`.
+                // `0..3` — это 0, 1, 2. Поэтому условие `<`; `..=` — `<=`.
                 // Переменная цикла объявлена в самом `for` — иначе два
                 // вложенных цикла с одинаковым именем конфликтуют в C.
                 // В C область действия `for` охватывает всё тело, поэтому
@@ -1431,14 +1434,44 @@ impl<'a> Codegen<'a> {
                 // этого не было, внутренние циклы получают своё имя
                 // (по номеру вложенности).
                 let (cvar, _cstart) = self.loop_var(var);
-                self.out.borrow_mut().push_str(&format!(
-                    "  for ({} = {}; {} < {}; {}++) {{\n",
-                    self.decl(&Type::Int, &cvar),
-                    self.expr(start),
-                    cvar,
-                    self.expr(end),
-                    cvar
-                ));
+                let cmp = if *inclusive { "<=" } else { "<" };
+                let (init, cond, incr) = match step {
+                    Some(s) => {
+                        // Шаг может быть отрицательным: направление известно
+                        // только в рантайме, поэтому условие выбирается
+                        // тернарником. Шаг вычисляется один раз.
+                        let ks = "__ks";
+                        let cond = format!(
+                            "{} > 0 ? {} {} {} : {} {} {}",
+                            ks,
+                            cvar,
+                            cmp,
+                            self.expr(end),
+                            cvar,
+                            if *inclusive { ">=" } else { ">" },
+                            self.expr(end)
+                        );
+                        (
+                            format!(
+                                "{} = {}, {} = {}",
+                                self.decl(&Type::Int, &cvar),
+                                self.expr(start),
+                                ks,
+                                self.expr(s)
+                            ),
+                            cond,
+                            format!("{} += {}", cvar, ks),
+                        )
+                    }
+                    None => (
+                        format!("{} = {}", self.decl(&Type::Int, &cvar), self.expr(start)),
+                        format!("{} {} {}", cvar, cmp, self.expr(end)),
+                        format!("{}++", cvar),
+                    ),
+                };
+                self.out
+                    .borrow_mut()
+                    .push_str(&format!("  for ({}; {}; {}) {{\n", init, cond, incr));
                 // На время тела цикла имя переменной в Keel отображается
                 // в имя в C.
                 self.loop_vars.insert(var.clone(), cvar);
@@ -2241,9 +2274,12 @@ fn stmt_mentions(s: &Stmt, name: &str) -> bool {
             block_mentions(body, name) || crate::checker::mentions_ident(cond, name)
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => false,
-        Stmt::ForRange { start, end, body, .. } => {
+        Stmt::ForRange { start, end, step, body, .. } => {
             crate::checker::mentions_ident(start, name)
                 || crate::checker::mentions_ident(end, name)
+                || step
+                    .as_ref()
+                    .is_some_and(|s| crate::checker::mentions_ident(s, name))
                 || block_mentions(body, name)
         }
         Stmt::ForEach { iter, body, .. } => {

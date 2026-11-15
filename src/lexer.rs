@@ -133,6 +133,12 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
         }
 
         // Операторы
+        let three: String = chars[i..(i + 3).min(chars.len())].iter().collect();
+        if three == "..=" {
+            out.push(Token { tok: Tok::Punct(three), line });
+            i += 3;
+            continue;
+        }
         let two: String = chars[i..(i + 2).min(chars.len())].iter().collect();
         if TWO_CHAR.contains(&two.as_str()) {
             out.push(Token { tok: Tok::Punct(two), line });

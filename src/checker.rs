@@ -28,6 +28,18 @@ fn аргументов(n: usize) -> String {
     format!("{} {}", n, word)
 }
 
+/// Значение целого литерала (с учётом унарного минуса), если это литерал.
+fn const_int(e: &Expr) -> Option<i64> {
+    match &e.kind {
+        ExprKind::Int(n) => Some(*n),
+        ExprKind::Unary { op: UnOp::Neg, e } => match &e.kind {
+            ExprKind::Int(n) => Some(-*n),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub line: usize,
@@ -1501,7 +1513,7 @@ impl Checker {
                 }
                 ctx.diverged = true;
             }
-            Stmt::ForRange { line, var, start, end, body } => {
+            Stmt::ForRange { line, var, start, end, step, body, .. } => {
                 let st = self.type_of(start, ctx);
                 let et = self.type_of(end, ctx);
                 for (what, t) in [("начало", &st), ("конец", &et)] {
@@ -1514,6 +1526,25 @@ impl Checker {
                                 t.name()
                             ),
                         ));
+                    }
+                }
+                if let Some(s) = step {
+                    let stt = self.type_of(s, ctx);
+                    if stt != Type::Int {
+                        self.diags.push(Diagnostic::new(
+                            s.line,
+                            format!("шаг цикла должен быть int, получено `{}`", stt.name()),
+                        ));
+                    }
+                    if const_int(s) == Some(0) {
+                        self.diags.push(
+                            Diagnostic::new(
+                                s.line,
+                                "шаг цикла не может быть нулём: цикл не закончится".to_string(),
+                            )
+                            .code("E017")
+                            .hint("укажите ненулевой шаг"),
+                        );
                     }
                 }
                 // Переменная цикла — обычная локальная переменная.
