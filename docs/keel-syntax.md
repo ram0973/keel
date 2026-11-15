@@ -464,6 +464,7 @@ stmt        = "let" "mut"? ident (":" type)? "=" expr ";"
             | "continue" ";"
 
 pattern     = "_"
+            | int | "-" int | string | "true" | "false"
             | ident "::" ident ("(" ident ("," ident)* ")")?
             | ("Some" | "None" | "Ok" | "Err") ("(" ident ("," ident)* ")")?
 
@@ -553,6 +554,28 @@ fn sum() Result<int, string> {
 `expr?` разворачивает `Option`/`Result`: при `Some`/`Ok` даёт значение,
 при `None`/`Err` возвращает его из функции. Функция должна возвращать
 тот же `Option`/`Result` (тип значения и тип ошибки совпадают).
+
+### 2.5.1.3. `match` по числу, строке и `bool`
+
+```
+match x {
+    0 => { println("ноль"); }
+    1 => { println("один"); }
+    _ => { println("много"); }
+}
+
+match s {
+    "apple" => { println(1); }
+    "banana" => { println(2); }
+    _ => { println(0); }
+}
+```
+
+Субъект — `int`, `string` или `bool`; ветви — литералы и `_`. Для
+`int`/`string` нужна ветвь `_` (значений слишком много), для `bool`
+достаточно `true` и `false`. Дубликат литерала и литерал не того
+типа — ошибка. В C это `switch` по значению; для строк — `strcmp`
+и индекс ветви.
 
 ### 2.5.2. Ссылка не переживает функцию
 

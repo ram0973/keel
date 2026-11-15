@@ -1278,6 +1278,83 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// `match` по литералам: `switch` по значению (int/bool) или по
+    /// индексу ветви (string — C `switch` не умеет строки).
+    fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
+        let sw = self.next_switch_id;
+        self.next_switch_id += 1;
+        let subj_expr = self.value_expr(subject);
+        let loop_id = self.innermost_loop();
+        if loop_id.is_some() {
+            self.out
+                .borrow_mut()
+                .push_str(&format!("  bool __k_brk_{} = false;\n", sw));
+        }
+        self.break_stack.push(BreakTarget::Switch(sw));
+        if *subj_ty == Type::Str {
+            let tmp = format!("__k_s_{}", sw);
+            let idx = format!("__k_m_{}", sw);
+            self.out.borrow_mut().push_str(&format!(
+                "  const char* {} = {};\n  int64_t {} = -1;\n",
+                tmp, subj_expr, idx
+            ));
+            let mut n = 0;
+            for arm in arms {
+                if let Some(MatchLit::Str(s)) = &arm.literal {
+                    self.out.borrow_mut().push_str(&format!(
+                        "  if (strcmp({}, {}) == 0) {} = {};\n",
+                        tmp,
+                        c_string_lit(s),
+                        idx,
+                        n
+                    ));
+                    n += 1;
+                }
+            }
+            self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", idx));
+            let mut n = 0;
+            for arm in arms {
+                if arm.variant == "_" {
+                    self.out.borrow_mut().push_str("    default: {\n");
+                } else {
+                    self.out.borrow_mut().push_str(&format!("    case {}: {{\n", n));
+                    n += 1;
+                }
+                for s in &arm.body.stmts {
+                    self.emit_stmt(s);
+                }
+                self.out.borrow_mut().push_str("      break;\n    }\n");
+            }
+            self.out.borrow_mut().push_str("  }\n");
+        } else {
+            self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", subj_expr));
+            for arm in arms {
+                if arm.variant == "_" {
+                    self.out.borrow_mut().push_str("    default: {\n");
+                } else {
+                    let lit = match &arm.literal {
+                        Some(MatchLit::Int(n)) => n.to_string(),
+                        Some(MatchLit::Bool(b)) => b.to_string(),
+                        _ => "0".to_string(),
+                    };
+                    self.out.borrow_mut().push_str(&format!("    case {}: {{\n", lit));
+                }
+                for s in &arm.body.stmts {
+                    self.emit_stmt(s);
+                }
+                self.out.borrow_mut().push_str("      break;\n    }\n");
+            }
+            self.out.borrow_mut().push_str("  }\n");
+        }
+        self.break_stack.pop();
+        if let Some(lid) = loop_id {
+            self.out.borrow_mut().push_str(&format!(
+                "  if (__k_brk_{}) goto __k_loop_{};\n",
+                sw, lid
+            ));
+        }
+    }
+
     fn emit_stmt(&mut self, stmt: &Stmt) {
         // `#line` привязывает ошибки C к строке Keel: gcc сообщает
         // `file.keel:строка`, а не строку сгенерированного C.
@@ -1392,6 +1469,15 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::Match { subject, arms, .. } => {
+                let lit_ty = self.types.get(&subject.id).cloned().unwrap_or(Type::Int);
+                let lit_ty = match lit_ty {
+                    Type::Ref(inner) => *inner,
+                    t => t,
+                };
+                if matches!(lit_ty, Type::Int | Type::Bool | Type::Str) {
+                    self.emit_literal_match(subject, arms, &lit_ty);
+                    return;
+                }
                 // Субъект читается по значению: ссылка разыменовывается.
                 let sw = self.next_switch_id;
                 self.next_switch_id += 1;
@@ -1891,21 +1977,7 @@ impl<'a> Codegen<'a> {
             ExprKind::Int(n) => format!("INT64_C({})", n),
             ExprKind::Float(v) => format!("{:?}", v),
             ExprKind::Bool(b) => format!("{}", b),
-            ExprKind::Str(s) => {
-                let mut out = String::from("\"");
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\t' => out.push_str("\\t"),
-                        '\r' => out.push_str("\\r"),
-                        other => out.push(other),
-                    }
-                }
-                out.push('"');
-                out
-            }
+            ExprKind::Str(s) => c_string_lit(s),
             ExprKind::Ident(name) if name == "None" => {
                 let t = self
                     .types
@@ -2579,6 +2651,23 @@ impl<'a> Codegen<'a> {
             }
         }
     }
+}
+
+/// Строковый литерал в C с экранированием.
+fn c_string_lit(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Упоминает ли оператор имя (для liveness `Vec`).

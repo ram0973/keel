@@ -809,10 +809,10 @@ impl Parser {
             let mut arms = Vec::new();
             while !self.at_punct("}") {
                 let aline = self.line();
-                let (ty, variant, bindings) = self.parse_pattern()?;
+                let (ty, variant, bindings, literal) = self.parse_pattern()?;
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
-                arms.push(MatchArm { ty, variant, bindings, body, line: aline });
+                arms.push(MatchArm { ty, variant, bindings, literal, body, line: aline });
             }
             self.expect_punct("}")?;
             if arms.is_empty() {
@@ -963,11 +963,15 @@ impl Parser {
     }
 
     /// Шаблон ветви: `Some(x)`, `None`, `Enum::Variant(a, b)` или `_`.
-    fn parse_pattern(&mut self) -> PResult<(String, String, Vec<String>)> {
+    fn parse_pattern(&mut self) -> PResult<(String, String, Vec<String>, Option<MatchLit>)> {
         let aline = self.line();
+        // Литералы: `0`, `-1`, `"x"`, `true`/`false`.
+        if let Some(lit) = self.try_parse_lit()? {
+            return Ok((String::new(), String::new(), Vec::new(), Some(lit)));
+        }
         let first = self.ident()?;
         if first == "_" {
-            return Ok((String::new(), "_".to_string(), Vec::new()));
+            return Ok((String::new(), "_".to_string(), Vec::new(), None));
         }
         let (ty, variant) = if self.eat_punct("::") {
             let variant = self.ident()?;
@@ -979,7 +983,7 @@ impl Parser {
                 "Ok" | "Err" => "Result".to_string(),
                 _ => {
                     return Err(format!(
-                        "строка {}: ветвь `{}` должна быть `Тип::Вариант`",
+                        "строка {}: ветвь `{}` должна быть `Тип::Вариант` или литералом",
                         aline, first
                     ))
                 }
@@ -996,7 +1000,39 @@ impl Parser {
             }
             self.expect_punct(")")?;
         }
-        Ok((ty, variant, bindings))
+        Ok((ty, variant, bindings, None))
+    }
+
+    /// Литерал ветви `match`, если следующий токен — число, строка или bool.
+    fn try_parse_lit(&mut self) -> PResult<Option<MatchLit>> {
+        match self.peek().clone() {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(Some(MatchLit::Int(n)))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Some(MatchLit::Str(s)))
+            }
+            Tok::Punct(p) if p == "-" => {
+                if let Tok::Int(n) = self.peek_at(1).clone() {
+                    self.bump();
+                    self.bump();
+                    Ok(Some(MatchLit::Int(-n)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Tok::Ident(s) if s == "true" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(true)))
+            }
+            Tok::Ident(s) if s == "false" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(false)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// `if let PATTERN = EXPR { ... } else { ... }` — десугар в `match`.
@@ -1004,7 +1040,7 @@ impl Parser {
         let line = self.line();
         self.expect_kw("if")?;
         self.expect_kw("let")?;
-        let (ty, variant, bindings) = self.parse_pattern()?;
+        let (ty, variant, bindings, literal) = self.parse_pattern()?;
         self.expect_punct("=")?;
         let subject = self.parse_expr()?;
         let then_block = self.parse_block()?;
@@ -1019,11 +1055,12 @@ impl Parser {
             None
         };
         let arms = vec![
-            MatchArm { ty, variant, bindings, body: then_block, line },
+            MatchArm { ty, variant, bindings, literal, body: then_block, line },
             MatchArm {
                 ty: String::new(),
                 variant: "_".to_string(),
                 bindings: Vec::new(),
+                literal: None,
                 body: else_block.unwrap_or(Block { stmts: Vec::new() }),
                 line,
             },
@@ -1037,16 +1074,17 @@ impl Parser {
         let line = self.line();
         self.expect_kw("while")?;
         self.expect_kw("let")?;
-        let (ty, variant, bindings) = self.parse_pattern()?;
+        let (ty, variant, bindings, literal) = self.parse_pattern()?;
         self.expect_punct("=")?;
         let subject = self.parse_expr()?;
         let body = self.parse_block()?;
         let arms = vec![
-            MatchArm { ty, variant, bindings, body, line },
+            MatchArm { ty, variant, bindings, literal, body, line },
             MatchArm {
                 ty: String::new(),
                 variant: "_".to_string(),
                 bindings: Vec::new(),
+                literal: None,
                 body: Block { stmts: vec![Stmt::Break { line }] },
                 line,
             },

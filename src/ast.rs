@@ -541,8 +541,18 @@ pub struct MatchArm {
     pub variant: String,
     /// Имена, привязанные к данным варианта: `Some(x)` → `["x"]`.
     pub bindings: Vec<String>,
+    /// Литерал ветви (`0`, `"x"`, `true`). `None` — ветвь по варианту enum.
+    pub literal: Option<MatchLit>,
     pub body: Block,
     pub line: usize,
+}
+
+/// Литерал в ветви `match` по числу, строке или `bool`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchLit {
+    Int(i64),
+    Str(String),
+    Bool(bool),
 }
 
 #[derive(Clone, Debug)]

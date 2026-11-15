@@ -965,6 +965,114 @@ impl Checker {
         }
     }
 
+    /// `match` по числу, строке или `bool`: ветви — литералы и `_`.
+    fn check_match_literals(
+        &mut self,
+        line: usize,
+        arms: &[MatchArm],
+        subj_ty: &Type,
+        ctx: &mut Ctx,
+    ) {
+        let repr = |l: &MatchLit| match l {
+            MatchLit::Int(n) => n.to_string(),
+            MatchLit::Str(s) => format!("\"{}\"", s),
+            MatchLit::Bool(b) => b.to_string(),
+        };
+        let base_scope = ctx.scope.clone();
+        let base_refs = self.refs.clone();
+        let base_diverged = ctx.diverged;
+        let mut merged_scope = base_scope.clone();
+        let mut merged_refs = base_refs.clone();
+        let mut all_diverged = !arms.is_empty();
+        let mut seen: Vec<String> = Vec::new();
+        let mut has_wildcard = false;
+        for arm in arms {
+            if arm.variant == "_" {
+                has_wildcard = true;
+                if !arm.bindings.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        "у `_` не может быть привязок".to_string(),
+                    ));
+                }
+            } else if let Some(lit) = &arm.literal {
+                let lit_ty = match lit {
+                    MatchLit::Int(_) => Type::Int,
+                    MatchLit::Str(_) => Type::Str,
+                    MatchLit::Bool(_) => Type::Bool,
+                };
+                if lit_ty != *subj_ty {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        format!(
+                            "ветвь `{}` не того типа: ожидается `{}`",
+                            repr(lit),
+                            subj_ty.name()
+                        ),
+                    ));
+                }
+                let key = repr(lit);
+                if seen.contains(&key) {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        format!("ветвь `{}` разобрана дважды", key),
+                    ));
+                } else {
+                    seen.push(key);
+                }
+            } else {
+                self.diags.push(Diagnostic::new(
+                    arm.line,
+                    "ветвь `match` по значению должна быть литералом или `_`".to_string(),
+                ));
+            }
+
+            ctx.scope = base_scope.clone();
+            self.refs = base_refs.clone();
+            ctx.diverged = false;
+            let diverged = self.check_block_scoped(&arm.body, ctx);
+            if !diverged {
+                for (name, l) in &ctx.scope {
+                    if let Some(m) = merged_scope.get_mut(name).filter(|x| x.uid == l.uid) {
+                        m.moved = m.moved || l.moved;
+                        for e in &l.escapes {
+                            if !m.escapes.contains(e) {
+                                m.escapes.push(e.clone());
+                            }
+                        }
+                    }
+                }
+                for r in &self.refs {
+                    if r.dead {
+                        if let Some(m) = merged_refs.iter_mut().find(|x| x.uid == r.uid) {
+                            m.dead = true;
+                            m.killed = r.killed.clone();
+                        }
+                    }
+                }
+            }
+            all_diverged &= diverged;
+        }
+        ctx.scope = merged_scope;
+        self.refs = merged_refs;
+        ctx.diverged = base_diverged || all_diverged;
+        // Исчерпывающесть: `_` или (для bool) оба значения.
+        let complete = has_wildcard
+            || (*subj_ty == Type::Bool
+                && seen.contains(&"true".to_string())
+                && seen.contains(&"false".to_string()));
+        if !complete {
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    "`match` не исчерпывающий: добавьте ветвь `_`".to_string(),
+                )
+                .code("E012")
+                .hint("разберите все значения или добавьте `_`"),
+            );
+        }
+    }
+
     /// Методы встроенного `Vec<T>`: `push`, `len`, `get`, `pop`, `free`.
     fn type_of_vec_method(
         &mut self,
@@ -1538,6 +1646,10 @@ impl Checker {
                         ("Err".to_string(), vec![(**err).clone()]),
                     ];
                     self.check_match_variants(*line, arms, "Result", &variants, ctx);
+                    return;
+                }
+                if matches!(t, Type::Int | Type::Str | Type::Bool) {
+                    self.check_match_literals(*line, arms, &t, ctx);
                     return;
                 }
                 let enum_name = match &t {

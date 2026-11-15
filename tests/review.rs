@@ -1121,3 +1121,138 @@ fn main() int {
         "`?` работает с `Option` или `Result`",
     );
 }
+
+// 46. `match` по числу — `switch` в C.
+#[test]
+fn match_по_числу() {
+    let r = compile(
+        r#"
+fn main() int {
+    let x = 2;
+    match x {
+        0 => { println("zero"); }
+        1 => { println("one"); }
+        _ => { println("many"); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("case 0:") && r.c_code.contains("case 1:"),
+        "нет switch по числу:\n{}",
+        r.c_code
+    );
+}
+
+// 47. `match` по строке — `strcmp` и индекс ветви.
+#[test]
+fn match_по_строке() {
+    let r = compile(
+        r#"
+fn main() int {
+    let s = "banana";
+    match s {
+        "apple" => { println(1); }
+        "banana" => { println(2); }
+        _ => { println(0); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("strcmp(") && r.c_code.contains("\"banana\""),
+        "нет strcmp по строке:\n{}",
+        r.c_code
+    );
+}
+
+// 48. `match` по bool без `_` — исчерпывающий, если есть оба значения.
+#[test]
+fn match_по_bool_исчерпывающий() {
+    let r = compile(
+        r#"
+fn main() int {
+    let b = true;
+    match b {
+        true => { println(1); }
+        false => { println(0); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+}
+
+// 49. `match` по числу без `_` — ошибка.
+#[test]
+fn match_по_числу_без_wildcard() {
+    fails(
+        r#"
+fn main() int {
+    let x = 1;
+    match x {
+        0 => { }
+    }
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+// 50. Дубликат литерала — ошибка.
+#[test]
+fn match_дубликат_литерала() {
+    fails(
+        r#"
+fn main() int {
+    let x = 1;
+    match x {
+        0 => { }
+        0 => { }
+        _ => { }
+    }
+    return 0;
+}
+"#,
+        "разобрана дважды",
+    );
+}
+
+// 51. Литерал не того типа — ошибка.
+#[test]
+fn match_литерал_не_того_типа() {
+    fails(
+        r#"
+fn main() int {
+    let x = 1;
+    match x {
+        "a" => { }
+        _ => { }
+    }
+    return 0;
+}
+"#,
+        "не того типа",
+    );
+}
