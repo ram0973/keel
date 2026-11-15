@@ -817,3 +817,63 @@ fn main() int {
         r.c_code
     );
 }
+
+// 35. Прикладные методы `Vec`: is_empty, clear, contains, sort, reverse,
+// first, last.
+#[test]
+fn vec_прикладные_методы() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(3);
+    v.push(1);
+    v.push(2);
+    if v.is_empty() { return 1; }
+    if !v.contains(2) { return 2; }
+    v.sort();
+    if v.first().unwrap() != 1 { return 3; }
+    if v.last().unwrap() != 3 { return 4; }
+    v.reverse();
+    if v.first().unwrap() != 3 { return 5; }
+    v.clear();
+    if !v.is_empty() { return 6; }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    for f in [
+        "k_vec_int_is_empty",
+        "k_vec_int_clear",
+        "k_vec_int_contains",
+        "k_vec_int_sort",
+        "k_vec_int_reverse",
+        "k_vec_int_first",
+        "k_vec_int_last",
+    ] {
+        assert!(r.c_code.contains(f), "нет `{}`:\n{}", f, r.c_code);
+    }
+}
+
+// 36. `contains`/`sort` на структурах — ошибка, а не сравнение байтов.
+#[test]
+fn vec_contains_на_структуре_запрещён() {
+    fails(
+        r#"
+struct P { x int; }
+fn main() int {
+    let mut v Vec<P> = Vec::new();
+    v.push(P(1));
+    println(v.contains(P(1)));
+    return 0;
+}
+"#,
+        "не поддерживает элементы типа `P`",
+    );
+}

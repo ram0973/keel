@@ -1044,6 +1044,91 @@ impl Checker {
                 }
                 Type::Void
             }
+            "is_empty" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`is_empty` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                Type::Bool
+            }
+            "clear" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`clear` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "clear");
+                // Элементы исчезают: ссылки внутрь больше не на что указывать.
+                self.invalidate_inside(&path, e.line, "clear");
+                Type::Void
+            }
+            "contains" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`contains` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of_expected(a, Some(elem), ctx);
+                    if !self.types_compatible(elem.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`contains` ждёт `{}`, получен `{}`", elem.name(), at.name()),
+                        ));
+                    }
+                }
+                if !matches!(elem, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`contains` не поддерживает элементы типа `{}`", elem.name()),
+                    ));
+                }
+                Type::Bool
+            }
+            "sort" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`sort` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "sort");
+                if !matches!(elem, Type::Int | Type::Bool | Type::Float | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`sort` не поддерживает элементы типа `{}`", elem.name()),
+                    ));
+                }
+                Type::Void
+            }
+            "reverse" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`reverse` не принимает аргументов, получено {}", args.len()),
+                    ));
+                }
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, "reverse");
+                Type::Void
+            }
+            "first" | "last" => {
+                if !args.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`{}` не принимает аргументов, получено {}", name, args.len()),
+                    ));
+                }
+                let ty = Type::Option(Box::new(elem.clone()));
+                self.record_option_inst(&ty);
+                ty
+            }
             _ => {
                 self.diags.push(Diagnostic::new(
                     e.line,

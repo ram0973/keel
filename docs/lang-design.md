@@ -647,7 +647,9 @@ use-after-free через ссылку в поле структуры (п. 6 р�
    получатель один раз (временная в C). `unwrap` на `None`/`Err` —
    проверка в рантайме: сообщение и выход с кодом 1.
 4. **`Vec`: `is_empty`, `clear`, `contains`, `sort`, `reverse`,
-   `first`, `last`.** Прикладной код без этого пишется руками.
+   `first`, `last`.** ✅ **сделано.** `contains`/`sort` — для `int`,
+   `bool`, `float`, `string`; `sort` — `qsort` с компаратором по типу
+   элемента. `clear` гасит ссылки внутрь, как `pop`.
 5. **`to_string`/`to_int`/`to_float`, `min`/`max`/`abs`,
    `assert`/`panic`/`exit`.** Дешёвые встроенные функции.
 

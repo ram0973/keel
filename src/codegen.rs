@@ -707,6 +707,54 @@ impl<'a> Codegen<'a> {
             "static void k_vec_{m}_free({cname}* v) {{\n  free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
             m = m, cname = cname
         ));
+        self.out.borrow_mut().push_str(&format!(
+            "static bool k_vec_{m}_is_empty(const {cname}* v) {{ return v->len == 0; }}\n\n",
+            m = m, cname = cname
+        ));
+        self.out.borrow_mut().push_str(&format!(
+            "static void k_vec_{m}_clear({cname}* v) {{ v->len = 0; }}\n\n",
+            m = m, cname = cname
+        ));
+        // Сравнение по содержимому: строки — `strcmp`, остальные — `==`.
+        let eq = match inner {
+            Type::Str => "strcmp(v->data[i], x) == 0",
+            _ => "v->data[i] == x",
+        };
+        self.out.borrow_mut().push_str(&format!(
+            "static bool k_vec_{m}_contains(const {cname}* v, {elem} x) {{\n  for (int64_t i = 0; i < v->len; i++) if ({eq}) return true;\n  return false;\n}}\n\n",
+            m = m, cname = cname, elem = elem, eq = eq
+        ));
+        // Компаратор для `qsort`: порядок по значению, строки — `strcmp`.
+        let cmp = match inner {
+            Type::Str => "return strcmp(*(const char* const*)a, *(const char* const*)b);",
+            Type::Float => {
+                "double x = *(const double*)a, y = *(const double*)b; return (x > y) - (x < y);"
+            }
+            Type::Bool => {
+                "bool x = *(const bool*)a, y = *(const bool*)b; return (int)x - (int)y;"
+            }
+            _ => "int64_t x = *(const int64_t*)a, y = *(const int64_t*)b; return (x > y) - (x < y);",
+        };
+        self.out.borrow_mut().push_str(&format!(
+            "static int k_vec_{m}_cmp(const void* a, const void* b) {{ {cmp} }}\n\n",
+            m = m, cmp = cmp
+        ));
+        self.out.borrow_mut().push_str(&format!(
+            "static void k_vec_{m}_sort({cname}* v) {{ if (v->len > 1) qsort(v->data, (size_t)v->len, sizeof({elem}), k_vec_{m}_cmp); }}\n\n",
+            m = m, cname = cname, elem = elem
+        ));
+        self.out.borrow_mut().push_str(&format!(
+            "static void k_vec_{m}_reverse({cname}* v) {{\n  for (int64_t i = 0, j = v->len - 1; i < j; i++, j--) {{\n    {elem} t = v->data[i];\n    v->data[i] = v->data[j];\n    v->data[j] = t;\n  }}\n}}\n\n",
+            m = m, cname = cname, elem = elem
+        ));
+        self.out.borrow_mut().push_str(&format!(
+            "static {opt} k_vec_{m}_first(const {cname}* v) {{\n  if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[0] }} }};\n}}\n\n",
+            opt = opt, m = m, cname = cname
+        ));
+        self.out.borrow_mut().push_str(&format!(
+            "static {opt} k_vec_{m}_last(const {cname}* v) {{\n  if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[v->len - 1] }} }};\n}}\n\n",
+            opt = opt, m = m, cname = cname
+        ));
     }
 
     fn emit_forward_decls(&mut self) {
@@ -2131,6 +2179,15 @@ impl<'a> Codegen<'a> {
                         "get" => format!("k_vec_{}_get({}, {})", m, recv, self.expr(&args[0])),
                         "pop" => format!("k_vec_{}_pop({})", m, recv),
                         "free" => format!("k_vec_{}_free({})", m, recv),
+                        "is_empty" => format!("k_vec_{}_is_empty({})", m, recv),
+                        "clear" => format!("k_vec_{}_clear({})", m, recv),
+                        "contains" => {
+                            format!("k_vec_{}_contains({}, {})", m, recv, self.expr(&args[0]))
+                        }
+                        "sort" => format!("k_vec_{}_sort({})", m, recv),
+                        "reverse" => format!("k_vec_{}_reverse({})", m, recv),
+                        "first" => format!("k_vec_{}_first({})", m, recv),
+                        "last" => format!("k_vec_{}_last({})", m, recv),
                         _ => "0".to_string(),
                     };
                 }
