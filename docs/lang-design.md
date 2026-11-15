@@ -1362,7 +1362,7 @@ let registry Registry = Registry(users, count);
 | `if let` / `while let` | средняя | ✅ **сделано.** `if let Some(x) = opt { ... }` — десугар в `match` с `_` |
 | `?` | средняя | ✅ **сделано.** Десугар в `match` + `return`. Для `Result` |
 | `match` по числам и строкам | средняя | ✅ **сделано.** `match x { 0 => ..., 1 => ..., _ => ... }` |
-| `match` guards | средняя | `match x { n if n > 0 => ... }` |
+| `match` guards | средняя | ✅ **сделано.** `match x { n if n > 0 => ... }` |
 | `or`-паттерны | средняя | `A \| B => ...` |
 | `loop { }` | очень низкая | `for (;;)`. Но `while true` уже работает |
 | `break` со значением | средняя | `let x = loop { break 5; };` — цикл как выражение |

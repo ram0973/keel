@@ -810,9 +810,14 @@ impl Parser {
             while !self.at_punct("}") {
                 let aline = self.line();
                 let (ty, variant, bindings, literal) = self.parse_pattern()?;
+                let guard = if self.eat_kw("if") {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
-                arms.push(MatchArm { ty, variant, bindings, literal, body, line: aline });
+                arms.push(MatchArm { ty, variant, bindings, literal, guard, body, line: aline });
             }
             self.expect_punct("}")?;
             if arms.is_empty() {
@@ -1055,12 +1060,13 @@ impl Parser {
             None
         };
         let arms = vec![
-            MatchArm { ty, variant, bindings, literal, body: then_block, line },
+            MatchArm { ty, variant, bindings, literal, guard: None, body: then_block, line },
             MatchArm {
                 ty: String::new(),
                 variant: "_".to_string(),
                 bindings: Vec::new(),
                 literal: None,
+                guard: None,
                 body: else_block.unwrap_or(Block { stmts: Vec::new() }),
                 line,
             },
@@ -1079,12 +1085,13 @@ impl Parser {
         let subject = self.parse_expr()?;
         let body = self.parse_block()?;
         let arms = vec![
-            MatchArm { ty, variant, bindings, literal, body, line },
+            MatchArm { ty, variant, bindings, literal, guard: None, body, line },
             MatchArm {
                 ty: String::new(),
                 variant: "_".to_string(),
                 bindings: Vec::new(),
                 literal: None,
+                guard: None,
                 body: Block { stmts: vec![Stmt::Break { line }] },
                 line,
             },

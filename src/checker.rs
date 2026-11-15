@@ -849,12 +849,12 @@ impl Checker {
                     arm.line,
                     format!("у enum `{}` нет варианта `{}`", en, arm.variant),
                 ));
-            } else if seen.contains(&arm.variant) {
+            } else if arm.guard.is_none() && seen.contains(&arm.variant) {
                 self.diags.push(Diagnostic::new(
                     arm.line,
                     format!("вариант `{}` разобран дважды", arm.variant),
                 ));
-            } else {
+            } else if arm.guard.is_none() {
                 seen.push(arm.variant.clone());
             }
 
@@ -896,6 +896,18 @@ impl Checker {
                             escapes: Vec::new(),
                         },
                     );
+                }
+            }
+            if let Some(g) = &arm.guard {
+                let gt = self.type_of(g, ctx);
+                if gt != Type::Bool && gt != Type::Void {
+                    self.diags.push(Diagnostic::new(
+                        g.line,
+                        format!(
+                            "условие `if` в ветви `match` должно быть bool, получено `{}`",
+                            gt.name()
+                        ),
+                    ));
                 }
             }
             let diverged = self.check_block_scoped(&arm.body, ctx);
@@ -1012,12 +1024,12 @@ impl Checker {
                     ));
                 }
                 let key = repr(lit);
-                if seen.contains(&key) {
+                if arm.guard.is_none() && seen.contains(&key) {
                     self.diags.push(Diagnostic::new(
                         arm.line,
                         format!("ветвь `{}` разобрана дважды", key),
                     ));
-                } else {
+                } else if arm.guard.is_none() {
                     seen.push(key);
                 }
             } else {
@@ -1030,6 +1042,18 @@ impl Checker {
             ctx.scope = base_scope.clone();
             self.refs = base_refs.clone();
             ctx.diverged = false;
+            if let Some(g) = &arm.guard {
+                let gt = self.type_of(g, ctx);
+                if gt != Type::Bool && gt != Type::Void {
+                    self.diags.push(Diagnostic::new(
+                        g.line,
+                        format!(
+                            "условие `if` в ветви `match` должно быть bool, получено `{}`",
+                            gt.name()
+                        ),
+                    ));
+                }
+            }
             let diverged = self.check_block_scoped(&arm.body, ctx);
             if !diverged {
                 for (name, l) in &ctx.scope {

@@ -543,6 +543,8 @@ pub struct MatchArm {
     pub bindings: Vec<String>,
     /// Литерал ветви (`0`, `"x"`, `true`). `None` — ветвь по варианту enum.
     pub literal: Option<MatchLit>,
+    /// Условие-«страж»: `Some(x) if x > 0 => ...`.
+    pub guard: Option<Expr>,
     pub body: Block,
     pub line: usize,
 }

@@ -1256,3 +1256,68 @@ fn main() int {
         "не того типа",
     );
 }
+
+// 52. `match` с условием-«стражем» — `if`-цепочка в C.
+#[test]
+fn match_с_guard() {
+    let r = compile(
+        r#"
+fn main() int {
+    let o Option<int> = Some(5);
+    match o {
+        Some(x) if x > 0 => { println("pos"); }
+        Some(x) => { println("non-pos"); }
+        None => { println("none"); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__k_match_end_") && r.c_code.contains("k_x > INT64_C(0)"),
+        "нет if-цепочки для guard:\n{}",
+        r.c_code
+    );
+}
+
+// 53. Guard не того типа — ошибка.
+#[test]
+fn match_guard_не_bool() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    match o {
+        Some(x) if x => { }
+        _ => { }
+    }
+    return 0;
+}
+"#,
+        "должно быть bool",
+    );
+}
+
+// 54. Guard не покрывает вариант: нужен `_` или вторая ветвь.
+#[test]
+fn match_guard_не_исчерпывающий() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(1);
+    match o {
+        Some(x) if x > 0 => { }
+        None => { }
+    }
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}

@@ -1278,6 +1278,132 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// `match` с условиями-«стражами»: `if`-цепочка вместо `switch`
+    /// (в `switch` два `case` одного варианта недопустимы).
+    fn emit_guarded_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
+        let sw = self.next_switch_id;
+        self.next_switch_id += 1;
+        let subj_expr = self.value_expr(subject);
+        let end = format!("__k_match_end_{}", sw);
+        let (cname, variants, is_payload) = match subj_ty {
+            Type::Option(inner) => {
+                let c = format!("Keel_Option_{}", inner.mangle());
+                let vs = vec![
+                    ("Some".to_string(), vec![(**inner).clone()]),
+                    ("None".to_string(), Vec::new()),
+                ];
+                (c, vs, true)
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                let vs = vec![
+                    ("Ok".to_string(), vec![(**ok).clone()]),
+                    ("Err".to_string(), vec![(**err).clone()]),
+                ];
+                (c, vs, true)
+            }
+            Type::Named(n) => {
+                let e = self.enums.get(n);
+                let vs: Vec<(String, Vec<Type>)> = e
+                    .map(|e| {
+                        e.variants
+                            .iter()
+                            .map(|v| (v.name.clone(), v.payload.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let payload = e
+                    .map(|e| e.variants.iter().any(|v| !v.payload.is_empty()))
+                    .unwrap_or(false);
+                (
+                    self.ctype.get(n).cloned().unwrap_or_else(|| n.clone()),
+                    vs,
+                    payload,
+                )
+            }
+            _ => (String::new(), Vec::new(), false),
+        };
+        let is_lit = matches!(subj_ty, Type::Int | Type::Bool | Type::Str);
+        // Субъект вычисляется один раз.
+        let subj = {
+            let tmp = format!("__k_subj_{}", sw);
+            self.out.borrow_mut().push_str(&format!(
+                "  {} = {};\n",
+                self.decl(subj_ty, &tmp),
+                subj_expr
+            ));
+            tmp
+        };
+        let tag = if is_payload {
+            format!("{}.tag", subj)
+        } else {
+            subj.clone()
+        };
+        for arm in arms {
+            let cond = if arm.variant == "_" {
+                "1".to_string()
+            } else if is_lit {
+                match &arm.literal {
+                    Some(MatchLit::Int(n)) => format!("{} == INT64_C({})", tag, n),
+                    Some(MatchLit::Bool(b)) => format!("{} == {}", tag, b),
+                    Some(MatchLit::Str(s)) => {
+                        format!("strcmp({}, {}) == 0", tag, c_string_lit(s))
+                    }
+                    None => "0".to_string(),
+                }
+            } else if is_payload {
+                format!("{} == {}_{}", tag, cname, arm.variant)
+            } else {
+                format!("{} == Keel_{}_{}", tag, arm.ty, arm.variant)
+            };
+            self.out.borrow_mut().push_str(&format!("  if ({}) {{\n", cond));
+            let payload: Vec<Type> = variants
+                .iter()
+                .find(|(n, _)| n == &arm.variant)
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default();
+            let saved: Vec<(String, Option<String>)> = arm
+                .bindings
+                .iter()
+                .map(|b| (b.clone(), self.var_names.borrow().get(b).cloned()))
+                .collect();
+            if is_payload {
+                for (i, b) in arm.bindings.iter().enumerate() {
+                    let cname = self.fresh_var_name(b);
+                    let ty = payload.get(i).cloned().unwrap_or(Type::Int);
+                    let decl = self.decl(&ty, &cname);
+                    self.out.borrow_mut().push_str(&format!(
+                        "    {} = {}.data.{}._{};\n",
+                        decl, subj, arm.variant, i
+                    ));
+                }
+            }
+            let guard = arm.guard.as_ref().map(|g| self.expr(g));
+            if let Some(g) = &guard {
+                self.out.borrow_mut().push_str(&format!("    if ({}) {{\n", g));
+            }
+            for s in &arm.body.stmts {
+                self.emit_stmt(s);
+            }
+            self.out.borrow_mut().push_str(&format!("      goto {};\n", end));
+            if guard.is_some() {
+                self.out.borrow_mut().push_str("    }\n");
+            }
+            self.out.borrow_mut().push_str("  }\n");
+            for (b, prev) in saved {
+                match prev {
+                    Some(v) => {
+                        self.var_names.borrow_mut().insert(b, v);
+                    }
+                    None => {
+                        self.var_names.borrow_mut().remove(&b);
+                    }
+                }
+            }
+        }
+        self.out.borrow_mut().push_str(&format!("  {}:;\n", end));
+    }
+
     /// `match` по литералам: `switch` по значению (int/bool) или по
     /// индексу ветви (string — C `switch` не умеет строки).
     fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
@@ -1474,6 +1600,10 @@ impl<'a> Codegen<'a> {
                     Type::Ref(inner) => *inner,
                     t => t,
                 };
+                if arms.iter().any(|a| a.guard.is_some()) {
+                    self.emit_guarded_match(subject, arms, &lit_ty);
+                    return;
+                }
                 if matches!(lit_ty, Type::Int | Type::Bool | Type::Str) {
                     self.emit_literal_match(subject, arms, &lit_ty);
                     return;
