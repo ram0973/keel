@@ -1358,7 +1358,7 @@ let registry Registry = Registry(users, count);
 
 | Что | Цена | Зачем |
 |---|---|---|
-| `if let` / `while let` | средняя | `if let Some(x) = opt { ... }` — десугар в `match`. Главный потребитель `Option` |
+| `if let` / `while let` | средняя | ✅ **сделано.** `if let Some(x) = opt { ... }` — десугар в `match` с `_` |
 | `?` | средняя | Десугар в `match` + `return`. Для `Result` |
 | `match` по числам и строкам | средняя | `match x { 0 => ..., 1 => ..., _ => ... }` |
 | `match` guards | средняя | `match x { n if n > 0 => ... }` |

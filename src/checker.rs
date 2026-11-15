@@ -820,9 +820,23 @@ impl Checker {
         let mut merged_refs = base_refs.clone();
         let mut all_diverged = !arms.is_empty();
         let mut seen: Vec<String> = Vec::new();
+        let mut has_wildcard = false;
         for arm in arms {
-            let variant = variants.iter().find(|(n, _)| n == &arm.variant).cloned();
-            if arm.ty != en {
+            let is_wild = arm.variant == "_";
+            let variant = if is_wild {
+                None
+            } else {
+                variants.iter().find(|(n, _)| n == &arm.variant).cloned()
+            };
+            if is_wild {
+                has_wildcard = true;
+                if !arm.bindings.is_empty() {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        "у `_` не может быть привязок".to_string(),
+                    ));
+                }
+            } else if arm.ty != en {
                 self.diags.push(Diagnostic::new(
                     arm.line,
                     format!(
@@ -923,11 +937,15 @@ impl Checker {
         ctx.scope = merged_scope;
         self.refs = merged_refs;
         ctx.diverged = base_diverged || all_diverged;
-        let missing: Vec<String> = variants
-            .iter()
-            .filter(|(n, _)| !seen.contains(n))
-            .map(|(n, _)| n.clone())
-            .collect();
+        let missing: Vec<String> = if has_wildcard {
+            Vec::new()
+        } else {
+            variants
+                .iter()
+                .filter(|(n, _)| !seen.contains(n))
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
         if !missing.is_empty() {
             self.diags.push(
                 Diagnostic::new(
@@ -1529,7 +1547,7 @@ impl Checker {
                 let Some(en) = enum_name else {
                     self.diags.push(Diagnostic::new(
                         *line,
-                        format!("`match` требует enum, получено `{}`", t.name()),
+                        format!("разбор по вариантам требует enum, получено `{}`", t.name()),
                     ));
                     for arm in arms {
                         self.check_block(&arm.body, ctx);

@@ -932,3 +932,94 @@ fn main() int {
         "ждёт два int или два float",
     );
 }
+
+// 39. `if let` / `while let` — десугар в `match` с ветвью `_`.
+#[test]
+fn if_let_и_while_let() {
+    let r = compile(
+        r#"
+fn main() int {
+    let o Option<int> = Some(5);
+    if let Some(x) = o {
+        println(x);
+    } else {
+        println(0);
+    }
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    while let Some(y) = v.pop() {
+        println(y);
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(r.c_code.contains("default:"), "нет ветви `_`:\n{}", r.c_code);
+}
+
+// 40. `break` в ветви `match` выходит из цикла, а не из `switch`.
+#[test]
+fn break_в_match_выходит_из_цикла() {
+    let r = compile(
+        r#"
+enum E { A, B }
+fn main() int {
+    let mut i = 0;
+    while i < 3 {
+        i += 1;
+        match E::A {
+            E::A => { break; }
+            E::B => { }
+        }
+    }
+    return i;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__k_brk_") && r.c_code.contains("goto __k_loop_"),
+        "break в match не через goto:\n{}",
+        r.c_code
+    );
+}
+
+// 41. Субъект `match` вычисляется один раз.
+#[test]
+fn match_субъект_вычисляется_один_раз() {
+    let r = compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    match v.pop() {
+        Some(x) => { println(x); }
+        None => { println(0); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(
+        r.diagnostics.is_empty(),
+        "{}",
+        format_diagnostics(&r.diagnostics)
+    );
+    assert!(
+        r.c_code.contains("__k_subj_") && r.c_code.matches("k_vec_int_pop").count() == 2,
+        "субъект `match` вычисляется дважды:\n{}",
+        r.c_code
+    );
+}

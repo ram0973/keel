@@ -73,6 +73,18 @@ pub struct Codegen<'a> {
     cur_fn_name: String,
     /// Файл текущей функции — для `#line` в сгенерированном C.
     cur_file: String,
+    /// Куда ведёт `break`: цикл или `switch` (у `match`). В C `break`
+    /// внутри `switch` выходит из `switch`, а не из цикла — поэтому
+    /// `break` в ветви `match` ставит флаг и выходит по `goto`.
+    break_stack: Vec<BreakTarget>,
+    next_loop_id: usize,
+    next_switch_id: usize,
+}
+
+/// Ближайшая конструкция, из которой выходит `break`.
+enum BreakTarget {
+    Loop(usize),
+    Switch(usize),
 }
 
 /// Вид определения типа для топологической сортировки.
@@ -131,6 +143,9 @@ impl<'a> Codegen<'a> {
             cur_post: Vec::new(),
             cur_fn_name: String::new(),
             cur_file: String::new(),
+            break_stack: Vec::new(),
+            next_loop_id: 0,
+            next_switch_id: 0,
         }
     }
 
@@ -1377,7 +1392,9 @@ impl<'a> Codegen<'a> {
             }
             Stmt::Match { subject, arms, .. } => {
                 // Субъект читается по значению: ссылка разыменовывается.
-                let subj = self.value_expr(subject);
+                let sw = self.next_switch_id;
+                self.next_switch_id += 1;
+                let subj_expr = self.value_expr(subject);
                 let subj_ty = self.types.get(&subject.id).cloned().unwrap_or(Type::Int);
                 let subj_ty = match subj_ty {
                     Type::Ref(inner) => *inner,
@@ -1422,19 +1439,44 @@ impl<'a> Codegen<'a> {
                     }
                     _ => (String::new(), Vec::new(), false),
                 };
+                // Субъект с данными читается дважды (тег и payload) —
+                // сохраняем во временную, иначе `match v.pop()` вызовет
+                // `pop` дважды.
+                let subj = if is_payload {
+                    let tmp = format!("__k_subj_{}", sw);
+                    self.out.borrow_mut().push_str(&format!(
+                        "  {} = {};\n",
+                        self.decl(&subj_ty, &tmp),
+                        subj_expr
+                    ));
+                    tmp
+                } else {
+                    subj_expr
+                };
                 let tag = if is_payload {
                     format!("{}.tag", subj)
                 } else {
                     subj.clone()
                 };
+                let loop_id = self.innermost_loop();
+                if loop_id.is_some() {
+                    self.out
+                        .borrow_mut()
+                        .push_str(&format!("  bool __k_brk_{} = false;\n", sw));
+                }
+                self.break_stack.push(BreakTarget::Switch(sw));
                 self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", tag));
                 for arm in arms {
-                    let case = if is_payload {
-                        format!("{}_{}", cname, arm.variant)
+                    if arm.variant == "_" {
+                        self.out.borrow_mut().push_str("    default: {\n");
                     } else {
-                        format!("Keel_{}_{}", arm.ty, arm.variant)
-                    };
-                    self.out.borrow_mut().push_str(&format!("    case {}: {{\n", case));
+                        let case = if is_payload {
+                            format!("{}_{}", cname, arm.variant)
+                        } else {
+                            format!("Keel_{}_{}", arm.ty, arm.variant)
+                        };
+                        self.out.borrow_mut().push_str(&format!("    case {}: {{\n", case));
+                    }
                     // Привязки данных: `Some(x)` → `int64_t x = ...`.
                     let payload: Vec<Type> = variants
                         .iter()
@@ -1474,6 +1516,13 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 self.out.borrow_mut().push_str("  }\n");
+                self.break_stack.pop();
+                if let Some(lid) = loop_id {
+                    self.out.borrow_mut().push_str(&format!(
+                        "  if (__k_brk_{}) goto __k_loop_{};\n",
+                        sw, lid
+                    ));
+                }
             }
             Stmt::If { cond, then_block, else_block } => {
                 self.out.borrow_mut()
@@ -1491,23 +1540,44 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::While { cond, body } => {
+                let id = self.next_loop_id;
+                self.next_loop_id += 1;
+                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut()
                     .push_str(&format!("  while ({}) {{\n", self.expr(cond)));
                 for s in &body.stmts {
                     self.emit_stmt(s);
                 }
                 self.out.borrow_mut().push_str("  }\n");
+                self.break_stack.pop();
+                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::DoWhile { body, cond } => {
+                let id = self.next_loop_id;
+                self.next_loop_id += 1;
+                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut().push_str("  do {\n");
                 for s in &body.stmts {
                     self.emit_stmt(s);
                 }
                 self.out.borrow_mut()
                     .push_str(&format!("  }} while ({});\n", self.expr(cond)));
+                self.break_stack.pop();
+                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::Break { .. } => {
-                self.out.borrow_mut().push_str("  break;\n");
+                // В C `break` внутри `switch` выходит из `switch`, а не из
+                // цикла. Поэтому `break` в ветви `match` ставит флаг, а
+                // после `switch` — `goto` на выход из цикла.
+                match self.break_stack.last() {
+                    Some(BreakTarget::Switch(id)) => {
+                        let id = *id;
+                        self.out
+                            .borrow_mut()
+                            .push_str(&format!("  __k_brk_{} = true; break;\n", id));
+                    }
+                    _ => self.out.borrow_mut().push_str("  break;\n"),
+                }
             }
             Stmt::Continue { .. } => {
                 self.out.borrow_mut().push_str("  continue;\n");
@@ -1522,6 +1592,9 @@ impl<'a> Codegen<'a> {
                 // этого не было, внутренние циклы получают своё имя
                 // (по номеру вложенности).
                 let (cvar, _cstart) = self.loop_var(var);
+                let id = self.next_loop_id;
+                self.next_loop_id += 1;
+                self.break_stack.push(BreakTarget::Loop(id));
                 let cmp = if *inclusive { "<=" } else { "<" };
                 let (init, cond, incr) = match step {
                     Some(s) => {
@@ -1569,6 +1642,8 @@ impl<'a> Codegen<'a> {
                 self.loop_vars.remove(var);
                 self.loop_depth -= 1;
                 self.out.borrow_mut().push_str("  }\n");
+                self.break_stack.pop();
+                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::ForEach { var, iter, body, .. } => {
                 // Обход массива, `Vec` или среза: индексируемся, копия
@@ -1595,6 +1670,9 @@ impl<'a> Codegen<'a> {
                     }
                 };
                 let (cvar, _) = self.loop_var(var);
+                let id = self.next_loop_id;
+                self.next_loop_id += 1;
+                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut().push_str(&format!(
                     "  for (int64_t __ki = 0; __ki < {}; __ki++) {{\n",
                     len
@@ -1611,6 +1689,8 @@ impl<'a> Codegen<'a> {
                 self.loop_vars.remove(var);
                 self.loop_depth -= 1;
                 self.out.borrow_mut().push_str("  }\n");
+                self.break_stack.pop();
+                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
         }
     }
@@ -1657,6 +1737,14 @@ impl<'a> Codegen<'a> {
             format!("k_{}__{}", var, depth)
         };
         (name, var.to_string())
+    }
+
+    /// Ближайший цикл — цель `goto` для `break` из `switch`.
+    fn innermost_loop(&self) -> Option<usize> {
+        self.break_stack.iter().rev().find_map(|t| match t {
+            BreakTarget::Loop(id) => Some(*id),
+            BreakTarget::Switch(_) => None,
+        })
     }
 
     /// Тип элемента и длина массива — для обхода `for ... in`.
