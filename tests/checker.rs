@@ -3016,7 +3016,9 @@ fn main() int {
     assert!(r.diagnostics.is_empty());
     assert!(r.c_code.contains("typedef enum"));
     assert!(r.c_code.contains("Keel_Color_Red"));
-    assert!(r.c_code.contains("switch"));
+    // Ветви — цепочка if/else по тегу, чтобы `break` в ветви относился
+    // к объемлющему циклу, а не к `switch`.
+    assert!(r.c_code.contains("__k_subj == Keel_Color_Red"));
 }
 
 // ============================================================
@@ -4022,5 +4024,292 @@ fn main() int {
     return total + len(r.items);
 }
 "#);
+}
+
+// `for` обходит и `Vec`, и срез: элемент копируется, коллекция остаётся.
+#[test]
+fn for_по_vec_и_срезу_компилируется() {
+    ok(r#"
+fn sum_vec(items &Vec<int>) int {
+    let mut total = 0;
+    for x in items { total += x; }
+    return total;
+}
+fn sum_slice(xs [int]) int {
+    let mut total = 0;
+    for x in xs { total += x; }
+    return total;
+}
+fn main() int {
+    let a [int; 3] = [1, 2, 3];
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    return sum_vec(&v) + sum_slice(a);
+}
+"#);
+}
+
+// Шаг диапазона — только int.
+#[test]
+fn for_step_должен_быть_int() {
+    fails(
+        r#"
+fn main() int {
+    for i in 0..10 step "два" { println(i); }
+    return 0;
+}
+"#,
+        "шаг (`step`)",
+    );
+}
+
+// `..=` включает правую границу, разбор не путает его с `..`.
+#[test]
+fn for_включительный_диапазон_компилируется() {
+    ok(r#"
+fn main() int {
+    let mut n = 0;
+    for i in 0..=2 { n += i; }
+    for i in 3..=1 step -1 { n += i; }
+    return n;
+}
+"#);
+}
+
+// Методы `Option`/`Result` без `match`.
+#[test]
+fn option_и_result_методы_компилируются() {
+    ok(r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    let n Option<int> = None;
+    let r Result<int, string> = Ok(5);
+    let e Result<int, string> = Err("нет");
+    let mut total = 0;
+    if o.is_some() { total += o.unwrap(); }
+    if n.is_none() { total += n.unwrap_or(1); }
+    if r.is_ok() { total += r.unwrap_or(0); }
+    if e.is_err() { total += e.unwrap_or(2); }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn unwrap_or_чужой_тип_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    return o.unwrap_or("нет");
+}
+"#,
+        "`unwrap_or` ждёт `int`",
+    );
+}
+
+#[test]
+fn option_неизвестный_метод_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    return o.value();
+}
+"#,
+        "у `Option<int>` нет метода `value`",
+    );
+}
+
+// Методы `Vec`: запросы и перестановки.
+#[test]
+fn vec_методы_компилируются() {
+    ok(r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(2); v.push(1);
+    let mut n = 0;
+    if v.is_empty() { n += 1; }
+    if v.contains(1) { n += 1; }
+    v.sort();
+    v.reverse();
+    n += v.first().unwrap_or(0) + v.last().unwrap_or(0);
+    v.clear();
+    return n;
+}
+"#);
+}
+
+// `sort` — только для типов с порядком.
+#[test]
+fn vec_sort_по_структуре_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let mut v Vec<S> = Vec::new();
+    v.push(S(1));
+    v.sort();
+    return 0;
+}
+"#,
+        "`sort` работает с `int`, `float` и `string`",
+    );
+}
+
+// Дешёвые встроенные функции.
+#[test]
+fn встроенные_функции_компилируются() {
+    ok(r#"
+fn main() int {
+    let s string = to_string(42);
+    let n = to_int("41") > 40;
+    assert(n, "сравнение");
+    if argc() > 100 { panic("слишком много аргументов"); }
+    if argc() > 200 { exit(2); }
+    return min(len(s), max(1, abs(-3)));
+}
+"#);
+}
+
+#[test]
+fn to_string_от_структуры_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let s = to_string(S(1));
+    return 0;
+}
+"#,
+        "`to_string` работает с int, float, bool и string",
+    );
+}
+
+#[test]
+fn assert_условие_не_bool_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    assert(1, "не bool");
+    return 0;
+}
+"#,
+        "`assert` ждёт условие типа `bool`",
+    );
+}
+
+// `==` по структуре/массиву: в C это не компилируется или сравнивает
+// адреса, поэтому ошибка ловится в проверщике.
+#[test]
+fn сравнение_структуры_и_массива_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let a = S(1);
+    let b = S(1);
+    return a == b;
+}
+"#,
+        "сравнение структур, кортежей и массивов",
+    );
+    fails(
+        r#"
+fn main() int {
+    let a [int; 2] = [1, 2];
+    let b [int; 2] = [1, 2];
+    return a == b;
+}
+"#,
+        "сравнение структур, кортежей и массивов",
+    );
+}
+
+// `if let` — сахар над `match`: вариант, привязка и `else` как вторая
+// ветвь. Работает для `Option` и `Result`.
+#[test]
+fn if_let_компилируется() {
+    ok(r#"
+fn find(xs &[int; 3], t int) Option<int> {
+    for i in 0..3 {
+        if xs[i] == t { return Some(i); }
+    }
+    return None;
+}
+fn main() int {
+    let xs [int; 3] = [1, 2, 3];
+    let mut n = 0;
+    if let Some(i) = find(&xs, 2) {
+        n += i;
+    } else {
+        n += 10;
+    }
+    if let None = find(&xs, 9) { n += 1; }
+    let r Result<int, string> = Ok(5);
+    if let Ok(v) = r { n += v; }
+    if let Err(e) = r { println(e); }
+    return n;
+}
+"#);
+}
+
+#[test]
+fn if_let_чужой_вариант_ошибка_разбора() {
+    parse_fails(
+        r#"
+fn main() int {
+    let x = 1;
+    if let Foo(y) = x { println(y); }
+    return 0;
+}
+"#,
+        "`if let` ждёт вариант `Option` или `Result`",
+    );
+}
+
+// `while let` — цикл с разбором на каждой итерации.
+#[test]
+fn while_let_компилируется() {
+    ok(r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let mut total = 0;
+    while let Some(x) = v.pop() {
+        total += x;
+    }
+    while let None = v.get(total) {
+        total += 1;
+        if total > 2 { break; }
+    }
+    return total;
+}
+"#);
+}
+
+// `break` из ветви `match` относится к объемлющему циклу, а не к самому
+// `match` (в C `switch` ловил бы его на себя).
+#[test]
+fn break_из_ветви_match_выходит_из_цикла() {
+    let r = compile(
+        r#"
+enum State { Go, Stop }
+fn main() int {
+    let mut n = 0;
+    while n < 100 {
+        match State::Stop {
+            State::Go => { n += 1; }
+            State::Stop => { break; }
+        }
+    }
+    return n;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    // Ветви — if/else, а не switch: там `break` вышел бы из switch.
+    assert!(!r.c_code.contains("switch (__k_subj"));
 }
 

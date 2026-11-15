@@ -1030,10 +1030,173 @@ impl Checker {
                 }
                 Type::Void
             }
+            "is_empty" | "first" | "last" => {
+                self.expect_no_args(e.line, name, args);
+                if name == "is_empty" {
+                    Type::Bool
+                } else {
+                    let ty = Type::Option(Box::new(elem.clone()));
+                    self.record_option_inst(&ty);
+                    ty
+                }
+            }
+            "clear" | "reverse" | "sort" => {
+                self.expect_no_args(e.line, name, args);
+                if name == "sort" && !matches!(elem, Type::Int | Type::Float | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!(
+                            "`sort` работает с `int`, `float` и `string`, у элемента тип `{}`",
+                            elem.name()
+                        ),
+                    ));
+                }
+                // Порядок элементов меняется — ссылки в элементы гаснут.
+                let (path, root_kind) = self.resolve_place(obj, ctx);
+                self.check_mut_path(&path, &root_kind, ctx, e.line, name);
+                self.invalidate_inside(&path, e.line, name);
+                Type::Void
+            }
+            "contains" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`contains` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                // Сравнение по значению есть только у этих типов; у
+                // структур в C сравнивать нечего (байты выравнивания).
+                if !matches!(elem, Type::Int | Type::Float | Type::Bool | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!(
+                            "`contains` работает с `int`, `float`, `bool` и `string`, \
+                             у элемента тип `{}`",
+                            elem.name()
+                        ),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of(a, ctx);
+                    if !self.types_compatible(elem.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`contains` ждёт `{}`, получен `{}`", elem.name(), at.name()),
+                        ));
+                    }
+                    self.record_move(a, &at, ctx);
+                }
+                Type::Bool
+            }
             _ => {
                 self.diags.push(Diagnostic::new(
                     e.line,
                     format!("у `Vec` нет метода `{}`", name),
+                ));
+                Type::Void
+            }
+        }
+    }
+
+    /// Проверка, что метод вызван без аргументов.
+    fn expect_no_args(&mut self, line: usize, name: &str, args: &[Expr]) {
+        if !args.is_empty() {
+            self.diags.push(Diagnostic::new(
+                line,
+                format!("`{}` не принимает аргументов, получено {}", name, args.len()),
+            ));
+        }
+    }
+
+    /// Методы встроенного `Option<T>`: `unwrap`, `unwrap_or`, `is_some`, `is_none`.
+    fn type_of_option_method(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        args: &[Expr],
+        inner: &Type,
+        ctx: &mut Ctx,
+    ) -> Type {
+        match name {
+            "is_some" | "is_none" => {
+                self.expect_no_args(e.line, name, args);
+                Type::Bool
+            }
+            "unwrap" => {
+                self.expect_no_args(e.line, name, args);
+                inner.clone()
+            }
+            "unwrap_or" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of(a, ctx);
+                    if !self.types_compatible(inner.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`unwrap_or` ждёт `{}`, получен `{}`", inner.name(), at.name()),
+                        ));
+                    }
+                    self.record_move(a, &at, ctx);
+                }
+                inner.clone()
+            }
+            _ => {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("у `Option<{}>` нет метода `{}`", inner.name(), name),
+                ));
+                Type::Void
+            }
+        }
+    }
+
+    /// Методы встроенного `Result<T, E>`: `unwrap`, `unwrap_or`, `is_ok`, `is_err`.
+    fn type_of_result_method(
+        &mut self,
+        e: &Expr,
+        name: &str,
+        args: &[Expr],
+        ok: &Type,
+        err: &Type,
+        ctx: &mut Ctx,
+    ) -> Type {
+        match name {
+            "is_ok" | "is_err" => {
+                self.expect_no_args(e.line, name, args);
+                Type::Bool
+            }
+            "unwrap" => {
+                self.expect_no_args(e.line, name, args);
+                ok.clone()
+            }
+            "unwrap_or" => {
+                if args.len() != 1 {
+                    self.diags.push(Diagnostic::new(
+                        e.line,
+                        format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
+                    ));
+                }
+                if let Some(a) = args.first() {
+                    let at = self.type_of(a, ctx);
+                    if !self.types_compatible(ok.clone(), &at) {
+                        self.diags.push(Diagnostic::new(
+                            a.line,
+                            format!("`unwrap_or` ждёт `{}`, получен `{}`", ok.name(), at.name()),
+                        ));
+                    }
+                    self.record_move(a, &at, ctx);
+                }
+                ok.clone()
+            }
+            _ => {
+                self.diags.push(Diagnostic::new(
+                    e.line,
+                    format!("у `Result<{}, {}>` нет метода `{}`", ok.name(), err.name(), name),
                 ));
                 Type::Void
             }
@@ -1498,7 +1661,7 @@ impl Checker {
                 }
                 ctx.diverged = true;
             }
-            Stmt::ForRange { line, var, start, end, body } => {
+            Stmt::ForRange { line, var, start, end, inclusive: _, step, body } => {
                 let st = self.type_of(start, ctx);
                 let et = self.type_of(end, ctx);
                 for (what, t) in [("начало", &st), ("конец", &et)] {
@@ -1510,6 +1673,23 @@ impl Checker {
                                 what,
                                 t.name()
                             ),
+                        ));
+                    }
+                }
+                if let Some(s) = step {
+                    let stept = self.type_of(s, ctx);
+                    if stept != Type::Int {
+                        self.diags.push(Diagnostic::new(
+                            s.line,
+                            format!("шаг (`step`) должен быть int, получено `{}`", stept.name()),
+                        ));
+                    }
+                    // Шаг 0 — вечный цикл; ловим литерал, вычисляемый 0
+                    // (свёртки констант нет).
+                    if matches!(s.kind, ExprKind::Int(0)) {
+                        self.diags.push(Diagnostic::new(
+                            s.line,
+                            "шаг `step` не может быть 0 — цикл не завершится".to_string(),
                         ));
                     }
                 }
@@ -1532,12 +1712,12 @@ impl Checker {
                 let it = self.type_of(iter, ctx);
                 let it = it.deref().clone();
                 let elem_ty = match &it {
-                    Type::Array(elem, _) => (**elem).clone(),
+                    Type::Array(elem, _) | Type::Vec(elem) | Type::Slice(elem) => (**elem).clone(),
                     other => {
                         self.diags.push(Diagnostic::new(
                             *line,
                             format!(
-                                "`for ... in` работает по массиву, получено `{}`",
+                                "`for ... in` работает по массиву, срезу или Vec, получено `{}`",
                                 other.name()
                             ),
                         ));
@@ -2313,6 +2493,12 @@ impl Checker {
                 if let Type::Vec(elem) = &obj_ty {
                     return self.type_of_vec_method(e, obj, name, args, elem, ctx);
                 }
+                if let Type::Option(inner) = &obj_ty {
+                    return self.type_of_option_method(e, name, args, inner, ctx);
+                }
+                if let Type::Result(ok, err) = &obj_ty {
+                    return self.type_of_result_method(e, name, args, ok, err, ctx);
+                }
                 let Type::Named(tn) = obj_ty.clone() else {
                     self.diags.push(Diagnostic::new(
                         e.line,
@@ -2471,6 +2657,21 @@ impl Checker {
                             self.diags.push(Diagnostic::new(
                                 e.line,
                                 "сравнение Vec не поддерживается — сравните длину и элементы"
+                                    .to_string(),
+                            ));
+                        }
+                        // Структура и массив в C не сравниваются, а массив
+                        // сравнился бы по адресу — это молча неверный код.
+                        let compound = [&lt, &rt].into_iter().any(|t| match t {
+                            Type::Array(..) | Type::Tuple(_) => true,
+                            Type::Named(n) => self.structs.contains_key(n),
+                            _ => false,
+                        });
+                        if compound {
+                            self.diags.push(Diagnostic::new(
+                                e.line,
+                                "сравнение структур, кортежей и массивов не поддерживается — \
+                                 сравните поля или элементы"
                                     .to_string(),
                             ));
                         }
@@ -2887,6 +3088,154 @@ impl Checker {
                 ));
             }
             return Type::Int;
+        }
+
+        // `to_string(x)` — строка из числа, bool или строки.
+        if name == "to_string" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`to_string` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx).deref().clone();
+                if !matches!(t, Type::Int | Type::Float | Type::Bool | Type::Str) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!(
+                            "`to_string` работает с int, float, bool и string, получен `{}`",
+                            t.name()
+                        ),
+                    ));
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Str;
+        }
+
+        // `to_int(s)` / `to_float(s)` — разбор строки. На мусоре — 0,
+        // как `atoi`/`atof` в C: ошибка ввода — забота программы.
+        if name == "to_int" || name == "to_float" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx).deref().clone();
+                if t != Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`{}` ждёт строку, получен `{}`", name, t.name()),
+                    ));
+                }
+            }
+            return if name == "to_int" { Type::Int } else { Type::Float };
+        }
+
+        // `min(a, b)` / `max(a, b)` — оба аргумента одного типа, int или float.
+        if name == "min" || name == "max" {
+            if args.len() != 2 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает два аргумента, получено {}", name, args.len()),
+                ));
+            }
+            let mut ty = Type::Int;
+            if let Some(a) = args.first() {
+                ty = self.type_of(a, ctx).deref().clone();
+                if !matches!(ty, Type::Int | Type::Float) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`{}` работает с int и float, получен `{}`", name, ty.name()),
+                    ));
+                    ty = Type::Int;
+                }
+            }
+            for a in args.iter().skip(1) {
+                let t = self.type_of(a, ctx).deref().clone();
+                if !self.types_compatible(ty.clone(), &t) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`{}` ждёт `{}`, получен `{}`", name, ty.name(), t.name()),
+                    ));
+                }
+            }
+            return ty;
+        }
+
+        // `abs(x)` — модуль числа.
+        if name == "abs" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`abs` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx).deref().clone();
+                if !matches!(t, Type::Int | Type::Float) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`abs` работает с int и float, получен `{}`", t.name()),
+                    ));
+                    return Type::Int;
+                }
+                return t;
+            }
+            return Type::Int;
+        }
+
+        // `assert(cond, msg)` — проверка во время выполнения.
+        if name == "assert" {
+            if args.len() != 2 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`assert` принимает условие и сообщение, получено {}", args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx).deref().clone();
+                if t != Type::Bool {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`assert` ждёт условие типа `bool`, получен `{}`", t.name()),
+                    ));
+                }
+            }
+            if let Some(a) = args.get(1) {
+                let t = self.type_of(a, ctx).deref().clone();
+                if t != Type::Str {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`assert` ждёт сообщение-строку, получен `{}`", t.name()),
+                    ));
+                }
+            }
+            return Type::Void;
+        }
+
+        // `panic(msg)` и `exit(code)` — аварийное и обычное завершение.
+        if name == "panic" || name == "exit" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                ));
+            }
+            if let Some(a) = args.first() {
+                let t = self.type_of(a, ctx).deref().clone();
+                let want = if name == "panic" { Type::Str } else { Type::Int };
+                if !self.types_compatible(want.clone(), &t) {
+                    self.diags.push(Diagnostic::new(
+                        a.line,
+                        format!("`{}` ждёт `{}`, получен `{}`", name, want.name(), t.name()),
+                    ));
+                }
+            }
+            return Type::Void;
         }
 
         // `argc` — сколько аргументов получила программа, включая

@@ -233,6 +233,8 @@ cargo run -- run examples/language-tour.keel
 | `examples/enums.keel` | `enum` и `match`: состояния светофора, исчерпывающий разбор, копирование тега |
 | `examples/option.keel` | Варианты с данными: `Opt::Some(x)`, привязка в `match`, поиск по массиву |
 | `examples/option-result.keel` | Встроенные `Option<T>`/`Result<T,E>`: `Some`/`None`/`Ok`/`Err`, вложенный `Option`, деление с ошибкой |
+| `examples/vec.keel` | `Vec<T>`: `push`, `get`, `pop`, обход, автоматическое освобождение |
+| `examples/conveniences.keel` | Прикладные мелочи: `for` по `Vec`/срезу, `step`/`..=`, методы `Option`/`Result` и `Vec`, `to_string`, `min`/`max`/`abs`, `assert` |
 | `examples/self-value.keel` | Зачем нужен `self` без `&`: единственный случай — положить объект в поле другой структуры |
 | `examples/modules.keel` | Модули: три файла, `import`, плоские имена. `registry.keel` сам подключает `user.keel` |
 | `experiments/clif/` | Эксперимент: та же функция, но собранная в IR Cranelift напрямую. Оценка перехода с C-бэкенда на собственный IR |

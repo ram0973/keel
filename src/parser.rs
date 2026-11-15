@@ -695,6 +695,58 @@ impl Parser {
         }
     }
 
+    /// Шаблон `Вариант(x)` в `if let` / `while let`: тип enum'а, вариант,
+    /// имена привязок. Произвольные enum'ы не поддержаны — только встроенные
+    /// `Option`/`Result`, у которых известны все варианты.
+    fn parse_let_pattern(&mut self, kw: &str) -> PResult<(String, String, Vec<String>)> {
+        let line = self.line();
+        let first = self.ident()?;
+        let (ty, variant) = if self.eat_punct("::") {
+            (first, self.ident()?)
+        } else {
+            match first.as_str() {
+                "Some" | "None" => ("Option".to_string(), first),
+                "Ok" | "Err" => ("Result".to_string(), first),
+                _ => {
+                    return Err(format!(
+                        "строка {}: {} ждёт вариант `Option` или `Result`",
+                        line, kw
+                    ))
+                }
+            }
+        };
+        let mut bindings = Vec::new();
+        if self.eat_punct("(") {
+            while !self.at_punct(")") {
+                bindings.push(self.ident()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct(")")?;
+        }
+        Ok((ty, variant, bindings))
+    }
+
+    /// Вторая ветвь для `if let`/`while let`: парный вариант
+    /// (`Some` ↔ `None`, `Ok` ↔ `Err`) с телом по умолчанию.
+    /// Данные несут `Some`, `Ok` и `Err`, у `None` их нет.
+    fn let_other_arm(&self, ty: &str, variant: &str, line: usize, body: Block) -> PResult<MatchArm> {
+        let other = match variant {
+            "Some" => "None",
+            "None" => "Some",
+            "Ok" => "Err",
+            "Err" => "Ok",
+            _ => return Err(format!("строка {}: неизвестный вариант `{}`", line, variant)),
+        };
+        let bindings = if other == "None" {
+            Vec::new()
+        } else {
+            vec!["_".to_string()]
+        };
+        Ok(MatchArm { ty: ty.to_string(), variant: other.to_string(), bindings, body, line })
+    }
+
     fn parse_block(&mut self) -> PResult<Block> {
         self.expect_punct("{")?;
         let mut stmts = Vec::new();
@@ -767,6 +819,56 @@ impl Parser {
             let e = self.parse_expr()?;
             self.expect_punct(";")?;
             return Ok(Stmt::Return { line, value: Some(e) });
+        }
+
+        // `if let Some(x) = expr { ... } [else { ... }]` — сахар над
+        // `match` с двумя ветвями. Встроенные enum'ы знают свои варианты,
+        // поэтому недостающая ветвь достраивается здесь: проверка и
+        // кодогенерация остаются прежними.
+        if self.at_kw("if") && matches!(self.peek_at(1), Tok::Ident(k) if k == "let") {
+            let line = self.line();
+            self.bump();
+            self.bump();
+            let (ty, variant, bindings) = self.parse_let_pattern("`if let`")?;
+            self.expect_punct("=")?;
+            let subject = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let else_body = if self.eat_kw("else") {
+                if self.at_kw("if") {
+                    Some(Block { stmts: vec![self.parse_stmt()?] })
+                } else {
+                    Some(self.parse_block()?)
+                }
+            } else {
+                None
+            };
+            let arms = vec![
+                MatchArm { ty: ty.clone(), variant: variant.clone(), bindings, body, line },
+                self.let_other_arm(&ty, &variant, line, else_body.unwrap_or(Block { stmts: Vec::new() }))?,
+            ];
+            return Ok(Stmt::Match { line, subject, arms });
+        }
+
+        // `while let Some(x) = expr { ... }` — сахар над
+        // `while true { match expr { Some(x) => ..., _ => break } }`:
+        // субъект вычисляется заново на каждой итерации, как в Rust.
+        if self.at_kw("while") && matches!(self.peek_at(1), Tok::Ident(k) if k == "let") {
+            let line = self.line();
+            self.bump();
+            self.bump();
+            let (ty, variant, bindings) = self.parse_let_pattern("`while let`")?;
+            self.expect_punct("=")?;
+            let subject = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let arms = vec![
+                MatchArm { ty: ty.clone(), variant: variant.clone(), bindings, body, line },
+                self.let_other_arm(&ty, &variant, line, Block { stmts: vec![Stmt::Break { line }] })?,
+            ];
+            let cond = Expr { id: self.id(), line, kind: ExprKind::Bool(true) };
+            return Ok(Stmt::While {
+                cond,
+                body: Block { stmts: vec![Stmt::Match { line, subject, arms }] },
+            });
         }
 
         if self.at_kw("if") {
@@ -886,11 +988,22 @@ impl Parser {
             let first = self.parse_expr()?;
             if self.at_punct("..") {
                 self.bump();
+                // `..=` лексер отдаёт как `..` и `=`.
+                let inclusive = self.at_punct("=");
+                if inclusive {
+                    self.bump();
+                }
                 let end = self.parse_expr()?;
+                let step = if self.at_kw("step") {
+                    self.bump();
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
                 let body = self.parse_block()?;
-                return Ok(Stmt::ForRange { line, var, start: first, end, body });
+                return Ok(Stmt::ForRange { line, var, start: first, end, inclusive, step, body });
             }
-            // Массив: `for x in arr`.
+            // Массив, Vec или срез: `for x in arr`.
             let body = self.parse_block()?;
             return Ok(Stmt::ForEach { line, var, iter: first, body });
         }

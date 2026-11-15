@@ -11,7 +11,7 @@
 авто-разыменование вместо `*`, изменяемость — через `mut`-контракты,
 а не через тип ссылки.
 
-Чего в Keel нет из Rust: `trait`, `loop`, `mod`, `use`, `if let`,
+Чего в Keel нет из Rust: `trait`, `loop`, `mod`, `use`,
 пользовательские обобщённые типы, замыкания с захватом, `?`, макросы
 (`println!`), `&self`/`&mut self` в методах.
 
@@ -306,6 +306,45 @@ match o {
 Сравнение `==` и печать `Option`/`Result` не поддерживаются — разбирайте
 через `match`.
 
+Без `match` — короткие методы: `unwrap()` (значение; на `None`/`Err`
+печатает сообщение и завершает программу с кодом 1), `unwrap_or(x)`
+(значение или запасное `x`), `is_some()`/`is_none()` у `Option`,
+`is_ok()`/`is_err()` у `Result`.
+
+```
+let n Option<int> = None;
+println(n.unwrap_or(0));   // 0
+println(n.is_none());      // true
+```
+
+**`if let`** — ветка по одному варианту, без полного `match`:
+
+```
+if let Some(x) = v.get(1) {
+    println("есть: ", x);
+} else {
+    println("нет");
+}
+if let Err(e) = parse(s) { println(e); }
+```
+
+Это сахар: разбор превращает его в `match` с двумя ветвями, вторая
+берётся из `else` (или пустая). Привязок и вложенности — как у `match`.
+Поддержаны только `Option` и `Result`: у произвольного enum'а парного
+варианта может не быть.
+
+**`while let`** — то же в цикле: разбор повторяется, пока вариант
+совпадает.
+
+```
+while let Some(x) = stack.pop() {
+    total += x;
+}
+```
+
+Разворачивается в `while true { match ... }` с `break` во второй ветви,
+поэтому субъект вычисляется заново на каждой итерации.
+
 В C каждый конкретный `Option<T>`/`Result<T,E>` мономорфизируется в
 отдельный tagged union (`Keel_Option_int`, `Keel_Result_int_string`).
 
@@ -331,8 +370,14 @@ v.free();
 
 `Vec<T>` — встроенный растущий массив в куче, без пользовательских
 дженериков. Методы: `push(x)`, `len()`, `get(i)` → `Option<T>`,
-`pop()` → `Option<T>`, `free()`. Индексация `v[i]` — чтение и запись.
-`push`/`pop`/`free` требуют `mut`-получателя.
+`pop()` → `Option<T>`, `free()`, `is_empty()`, `contains(x)` → `bool`,
+`first()`/`last()` → `Option<T>`, `sort()`, `reverse()`, `clear()`.
+Индексация `v[i]` — чтение и запись.
+`push`/`pop`/`free`/`sort`/`reverse`/`clear` требуют `mut`-получателя.
+
+`sort` работает с `int`, `float` и `string` (строки — по содержимому);
+`clear` обнуляет длину, но оставляет буфер. Обход — `for x in v`:
+элемент копируется, `Vec` остаётся доступен после цикла.
 
 `push` перевыделяет буфер, поэтому гасит ссылки на элементы
 (`&v[0]` после `push` невалидна). Элемент — копируемый тип (`int`,
@@ -445,8 +490,11 @@ stmt        = "let" "mut"? ident (":" type)? "=" expr ";"
             | expr ";"
             | "return" expr? ";"
             | "if" expr block ("else" (if_stmt | block))?
+            | "if" "let" ident ("::" ident)? ("(" ident ")")? "=" expr block ("else" (if_stmt | block))?
             | "while" expr block
-            | "for" ident "in" expr block
+            | "while" "let" ident ("::" ident)? ("(" ident ")")? "=" expr block
+            | "for" ident "in" expr block                      ; по массиву/Vec/срезу
+            | "for" ident "in" expr (".." | "..=") expr ("step" expr)? block
             | "match" expr "{" (ident "::" ident ("(" ident ("," ident)* ")")? "=>" block)* "}"
             | "break" ";"
             | "continue" ";"
@@ -494,6 +542,9 @@ match o {
 
 `match` не перемещает субъект: он читает тег. Данные копируются в
 привязки — поэтому они и ограничены копируемыми типами.
+
+`break` и `continue` внутри ветви относятся к ближайшему **циклу**, а не
+к `match` — как в Rust. На этом стоит `while let`.
 
 ### 2.5.2. Ссылка не переживает функцию
 
@@ -758,7 +809,7 @@ println();                     // просто перевод строки
 как `true`/`false`, числа — как целые. Ссылка печатается по значению
 (авторазыменование).
 
-**`len(x)`** — длина строки или массива, всегда `int`:
+**`len(x)`** — длина строки, массива, среза или `Vec`, всегда `int`:
 
 ```
 let s = "hello";
@@ -769,6 +820,10 @@ println(len(a));        // 4
 
 let r &[int; 4] = &a;
 println(len(r));        // 4 — размер известен из типа
+
+let mut v Vec<int> = Vec::new();
+v.push(1);
+println(len(v));        // 1 — считается в рантайме
 ```
 
 Для массива значение известно **на этапе компиляции** (размер — часть

@@ -485,12 +485,16 @@ pub enum Stmt {
     },
     /// `for x in a..b` — цикл по диапазону целых чисел.
     /// Правая граница исключительная, как в Rust и Zeta: `0..3` — это
-    /// 0, 1, 2.
+    /// 0, 1, 2; `0..=3` — 0..3; шаг — `step N`.
     ForRange {
         line: usize,
         var: String,
         start: Expr,
         end: Expr,
+        /// `..=` — правая граница включается.
+        inclusive: bool,
+        /// `step N` — шаг, `None` — шаг 1.
+        step: Option<Expr>,
         body: Block,
     },
     /// `for x in arr` — цикл по элементам массива.
