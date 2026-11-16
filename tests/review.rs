@@ -1,3 +1,21 @@
+
+/// Вызовы функции `name` в C-коде, перед которыми нет идентификатора:
+/// `ke_realloc(` — это не `realloc(`.
+fn calls(c: &str, name: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let bytes = c.as_bytes();
+    let mut i = 0;
+    while let Some(p) = c[i..].find(name) {
+        let at = i + p;
+        let before = if at == 0 { b' ' } else { bytes[at - 1] };
+        let is_ident = before.is_ascii_alphanumeric() || before == b'_';
+        if !is_ident && c[at + name.len()..].starts_with('(') {
+            out.push(at);
+        }
+        i = at + name.len();
+    }
+    out
+}
 // Проверка замечаний ревью checker.rs. Каждый тест — гипотеза из ревью.
 // Пока тест падает — дыра реальна; после исправления он должен проходить.
 
@@ -805,4 +823,51 @@ fn main() int {
     .unwrap();
     assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
     assert!(r.c_code.contains("k_vec_int_free(&k_h.items)"));
+}
+
+// Рантайм с собственным аллокатором: сгенерированный код не должен
+// звать malloc/realloc/free напрямую — только через ke_*.
+#[test]
+fn сгенерированный_код_зовёт_свой_аллокатор() {
+    let r = keelc::compile(
+        r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    println(v.len());
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Рантайм подставлен целиком.
+    assert!(c.contains("void *ke_alloc(size_t size)"));
+    assert!(c.contains("ke_live_blocks"));
+    // В сгенерированном коде — только ke_*. Прямые вызовы libc есть
+    // ровно в самом рантайме: malloc, realloc и free внутри ke_*.
+    // Считаем вызовы, не перед которыми стоит идентификатор — иначе
+    // `ke_realloc(` посчитался бы как `realloc(`.
+    assert_eq!(calls(c, "malloc").len(), 1, "прямой malloc в коде");
+    assert_eq!(calls(c, "realloc").len(), 1, "прямой realloc в коде");
+    assert_eq!(calls(c, "free").len(), 1, "прямой free в коде");
+    // А вот ke_* — используются.
+    assert!(c.contains("ke_alloc("));
+    assert!(c.contains("ke_free("));
+}
+
+// Рантайм ловит освобождение мусорного указателя.
+#[test]
+fn рантайм_ловит_мусорный_указатель() {
+    let r = keelc::compile(
+        r#"
+fn main() int {
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("освобождение мусорного указателя"));
 }

@@ -9,6 +9,10 @@ use crate::ast::*;
 use crate::checker::Checker;
 use std::collections::HashMap;
 
+/// Рантайм Keel: собственный аллокатор (`ke_alloc`/`ke_realloc`/`ke_free`),
+/// счётчики живых блоков и отчёт об утечках на выходе.
+const KEEL_RUNTIME: &str = include_str!("../runtime/keel_rt.c");
+
 pub struct Codegen<'a> {
     prog: &'a Program,
     types: &'a HashMap<u32, Type>,
@@ -312,6 +316,11 @@ impl<'a> Codegen<'a> {
 
     pub fn generate(mut self) -> String {
         self.out.borrow_mut().push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+        // Рантайм с собственным аллокатором. Подставляется целиком:
+        // сгенерированный C остаётся самодостаточным — его можно
+        // собрать, не имея исходников Keel.
+        self.out.borrow_mut().push_str(KEEL_RUNTIME);
+        self.out.borrow_mut().push_str("\n");
         // Нарушение контракта pre/post: сообщение в stderr и выход.
         // Это проверка, а не доказательство: контракт говорит «здесь
         // значение гарантированно есть», а не «поверьте».
@@ -366,14 +375,14 @@ impl<'a> Codegen<'a> {
              // Память не освобождается — см. волну 8 в docs/lang-design.md.\n\
              static char* k_read_line(void) {\n\
              \x20 size_t cap = 64, len = 0;\n\
-             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 char* buf = (char*)ke_alloc(cap);\n\
              \x20 if (!buf) return NULL;\n\
              \x20 int c;\n\
              \x20 while ((c = getchar()) != EOF && c != '\\n') {\n\
-             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)ke_realloc(buf, cap); }\n\
              \x20   buf[len++] = (char)c;\n\
              \x20 }\n\
-             \x20 if (c == EOF && len == 0) { free(buf); return NULL; }\n\
+             \x20 if (c == EOF && len == 0) { ke_free(buf); return NULL; }\n\
              \x20 buf[len] = '\\0';\n\
              \x20 return buf;\n\
              }\n\n\
@@ -407,10 +416,10 @@ impl<'a> Codegen<'a> {
              \x20 FILE* f = (FILE*)(intptr_t)fd;\n\
              \x20 if (!f) return \"\";\n\
              \x20 size_t cap = 256, len = 0;\n\
-             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 char* buf = (char*)ke_alloc(cap);\n\
              \x20 if (!buf) return \"\";\n\
              \x20 for (;;) {\n\
-             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)ke_realloc(buf, cap); }\n\
              \x20   size_t n = fread(buf + len, 1, cap - len - 1, f);\n\
              \x20   len += n;\n\
              \x20   if (n == 0) break;\n\
@@ -438,7 +447,7 @@ impl<'a> Codegen<'a> {
              // Освобождения пока нет — см. волну 8 в docs/lang-design.md.\n\
              static char* k_str_concat(const char* a, const char* b) {\n\
              \x20 size_t la = strlen(a), lb = strlen(b);\n\
-             \x20 char* r = (char*)malloc(la + lb + 1);\n\
+             \x20 char* r = (char*)ke_alloc(la + lb + 1);\n\
              \x20 memcpy(r, a, la);\n\
              \x20 memcpy(r + la, b, lb + 1);\n\
              \x20 return r;\n\
@@ -805,7 +814,7 @@ impl<'a> Codegen<'a> {
             cname = cname, m = m
         ));
         self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_push({cname}* v, {elem} x) {{\n  if (v->len == v->cap) {{\n    v->cap = v->cap ? v->cap * 2 : 4;\n    v->data = ({elem}*)realloc(v->data, (size_t)v->cap * sizeof({elem}));\n  }}\n  v->data[v->len++] = x;\n}}\n\n",
+            "static void k_vec_{m}_push({cname}* v, {elem} x) {{\n  if (v->len == v->cap) {{\n    v->cap = v->cap ? v->cap * 2 : 4;\n    v->data = ({elem}*)ke_realloc(v->data, (size_t)v->cap * sizeof({elem}));\n  }}\n  v->data[v->len++] = x;\n}}\n\n",
             m = m, cname = cname, elem = elem
         ));
         self.out.borrow_mut().push_str(&format!(
@@ -821,7 +830,7 @@ impl<'a> Codegen<'a> {
             opt = opt, m = m, cname = cname
         ));
         self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_free({cname}* v) {{\n  free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
+            "static void k_vec_{m}_free({cname}* v) {{\n  ke_free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
             m = m, cname = cname
         ));
         self.out.borrow_mut().push_str(&format!(
