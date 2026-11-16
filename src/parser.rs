@@ -57,6 +57,12 @@ impl Parser {
                 self.bump();
                 Ok(Some(MatchLit::Int(n)))
             }
+            Tok::Float(_) => {
+                Err(format!(
+                    "строка {}: `match` по `float` не поддерживается",
+                    self.line()
+                ))
+            }
             Tok::Str(s) => {
                 self.bump();
                 Ok(Some(MatchLit::Str(s)))
@@ -1359,6 +1365,11 @@ impl Parser {
                 self.expect_punct(")")?;
                 let id = self.id();
                 e = Expr { id, line, kind: ExprKind::Call { callee: Box::new(e), args } };
+            } else if self.at_punct("?") {
+                // `expr?` — оператор пропагации ошибки.
+                self.bump();
+                let id = self.id();
+                e = Expr { id, line, kind: ExprKind::Try(Box::new(e)) };
             } else {
                 break;
             }

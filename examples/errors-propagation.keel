@@ -1,0 +1,37 @@
+// Оператор `?` — пропагация ошибки.
+//
+// `expr?` — это «если Err, верни его дальше; иначе продолжи со
+// значением». Без `?` то же самое писалось бы вчетверо длиннее.
+//
+// Правила:
+//   - субъект — `Result<T, E>`, `?` даёт значение `T`;
+//   - функция обязана сама возвращать `Result`;
+//   - тип ошибки должен совпадать с ошибкой функции.
+
+fn parse(s string) Result<int, string> {
+    if s == "42" {
+        return Ok(42);
+    }
+    return Err("не число");
+}
+
+fn double(x int) Result<int, string> {
+    return Ok(x * 2);
+}
+
+fn chain(s string) Result<int, string> {
+    let a = parse(s)?;
+    let b = double(a)?;
+    return Ok(b + 1);
+}
+
+fn main() {
+    match chain("42") {
+        Ok(v) => { println("ок: ", v); }
+        Err(e) => { println("ошибка: ", e); }
+    }
+    match chain("нет") {
+        Ok(v) => { println("ок: ", v); }
+        Err(e) => { println("ошибка: ", e); }
+    }
+}

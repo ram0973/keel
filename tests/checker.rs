@@ -4474,3 +4474,178 @@ fn main() int {
 "#,
     );
 }
+
+// Регрессии: ветвь `_` в `match` по значению. Раньше `_` всегда
+// порождала `else` без предшествующего `if` — gcc получал битый C.
+#[test]
+fn match_по_значению_только_подстановка_даёт_корректный_c() {
+    let r = compile(
+        r#"
+fn main() int {
+    let x = 5;
+    match x {
+        _ => { println("any"); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // `else` без `if` — ошибка gcc; проверяем, что такого нет.
+    assert!(!r.c_code.contains("else {"));
+}
+
+#[test]
+fn match_по_значению_подстановка_не_в_конце_ловится() {
+    fails(
+        r#"
+fn main() int {
+    let x = 5;
+    match x {
+        _ => { println("any"); }
+        0 => { println("zero"); }
+    }
+    return 0;
+}
+"#,
+        "должна быть последней",
+    );
+}
+
+#[test]
+fn match_по_enum_не_принимает_подстановку() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red => { println("red"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+        "не принимает `_`",
+    );
+}
+
+#[test]
+fn match_по_float_ловится_понятным_сообщением() {
+    // Ошибка разбора: `float` не разбирается по значению.
+    parse_fails(
+        r#"
+fn main() int {
+    let x = 1.5;
+    match x {
+        1.5 => { println("one point five"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+        "по `float` не поддерживается",
+    );
+}
+
+#[test]
+fn match_по_ссылке_на_строку_разбирает_литералы() {
+    ok(
+        r#"
+fn main() int {
+    let s = "abc";
+    let r = &s;
+    match r {
+        "abc" => { println("eq"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+// Оператор `?` — пропагация ошибки.
+#[test]
+fn оператор_вопрос_распаковывает_ok() {
+    ok(
+        r#"
+fn parse(s string) Result<int, string> {
+    if s == "42" {
+        return Ok(42);
+    }
+    return Err("не число");
+}
+fn double(x int) Result<int, string> {
+    return Ok(x * 2);
+}
+fn chain(s string) Result<int, string> {
+    let a = parse(s)?;
+    let b = double(a)?;
+    return Ok(b + 1);
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn оператор_вопрос_требует_result() {
+    fails(
+        r#"
+fn f(x int) int {
+    return x?;
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "требует `Result`",
+    );
+}
+
+#[test]
+fn оператор_вопрос_требует_функцию_с_result() {
+    fails(
+        r#"
+fn g() Result<int, string> {
+    return Ok(1);
+}
+fn f() int {
+    let x = g()?;
+    return x;
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "возвращающую `Result`",
+    );
+}
+
+// Регрессия: срез в параметре функции. Тип среза не регистрировался
+// среди инстанциаций, и в C появлялся необъявленный `Keel_Slice_*`.
+#[test]
+fn срез_в_параметре_функции_даёт_корректный_c() {
+    let r = compile(
+        r#"
+fn first(names [string]) string {
+    if len(names) == 0 {
+        return "?";
+    }
+    return names[0];
+}
+fn main() int {
+    let names [string; 2] = ["a", "b"];
+    println(first(names));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("Keel_Slice_string"));
+}

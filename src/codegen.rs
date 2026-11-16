@@ -38,6 +38,9 @@ pub struct Codegen<'a> {
     structs: HashMap<String, StructDecl>,
     /// Объявления enum — нужны для вариантов и нулевого значения.
     enums: HashMap<String, EnumDecl>,
+    /// Счётчик временных переменных для выражений с побочными
+    /// эффектами (например, `expr?`).
+    tmp_counter: std::cell::Cell<u32>,
     /// Текущая глубина вложенности циклов — для уникальных имён
     /// переменных цикла.
     loop_depth: usize,
@@ -125,6 +128,7 @@ impl<'a> Codegen<'a> {
             loop_vars: HashMap::new(),
             in_struct_init: std::cell::Cell::new(false),
             shadow_count: std::cell::RefCell::new(HashMap::new()),
+            tmp_counter: std::cell::Cell::new(0),
             var_names: std::cell::RefCell::new(HashMap::new()),
             in_main: false,
             cur_ret: Type::Void,
@@ -1021,6 +1025,7 @@ impl<'a> Codegen<'a> {
                 self.collect_closures_expr(r);
             }
             ExprKind::Ref(inner) => self.collect_closures_expr(inner),
+            ExprKind::Try(inner) => self.collect_closures_expr(inner),
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.collect_closures_expr(cond);
                 self.collect_closures_expr(then_expr);
@@ -1355,8 +1360,15 @@ impl<'a> Codegen<'a> {
                 continue;
             }
             if cond.is_empty() {
-                // Ветвь `_`: `else` без условия.
-                self.out.borrow_mut().push_str("  else {\n");
+                // Ветвь `_`: `else` без условия. Но `else` требует
+                // предшествующего `if` — если условных ветвей не было
+                // (или `_` стоит первой), нужен безусловный `if`.
+                if first {
+                    self.out.borrow_mut().push_str("  if (1) {\n");
+                } else {
+                    self.out.borrow_mut().push_str("  else {\n");
+                }
+                first = false;
             } else {
                 self.out.borrow_mut().push_str(&format!(
                     "  {} ({}) {{\n",
@@ -1750,6 +1762,13 @@ impl<'a> Codegen<'a> {
     /// `x`, второе — `x__1`, третье — `x__2`. Иначе C скажет
     /// «redefinition». Имя запоминается в `var_names`, чтобы обращения
     /// к переменной шли к правильному объявлению.
+    /// Следующее уникальное имя временной переменной.
+    fn next_tmp_id(&self) -> u32 {
+        let n = self.tmp_counter.get();
+        self.tmp_counter.set(n + 1);
+        n
+    }
+
     fn fresh_var_name(&self, name: &str) -> String {
         let mut counts = self.shadow_count.borrow_mut();
         let n = counts.get(name).copied().unwrap_or(0);
@@ -2503,6 +2522,32 @@ impl<'a> Codegen<'a> {
                     self.value_expr(cond),
                     self.value_expr(then_expr),
                     self.value_expr(else_expr)
+                )
+            }
+            ExprKind::Try(inner) => {
+                // `expr?` — если `Err`, возвращаем его из функции.
+                //
+                // Statement expression — расширение gcc/clang: внутри
+                // блока можно сделать `return`, а значение блока — это
+                // значение выражения.
+                let t = self.types.get(&inner.id).cloned().unwrap_or(Type::Int);
+                let (ok_ty, err_ty) = match t {
+                    Type::Ref(inner) => match *inner {
+                        Type::Result(ok, err) => (*ok, *err),
+                        other => (other, Type::Str),
+                    },
+                    Type::Result(ok, err) => (*ok, *err),
+                    other => (other, Type::Str),
+                };
+                let c = format!("Keel_Result_{}_{}", ok_ty.mangle(), err_ty.mangle());
+                let v = self.value_expr(inner);
+                let tmp = format!("__k_q{}", self.next_tmp_id());
+                // Последнее выражение statement-expression требует `;`.
+                format!(
+                    "({{ {c} {t} = {v}; if ({t}.tag == {c}_Err) return ({c}){{ .tag = {c}_Err, .data.Err = {{ ._0 = {t}.data.Err._0 }} }}; {t}.data.Ok._0; }})",
+                    c = c,
+                    t = tmp,
+                    v = v
                 )
             }
             ExprKind::Array(items) => {

@@ -405,6 +405,9 @@ pub enum ExprKind {
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
+    /// `expr?` — оператор пропагации ошибки. Субъект — `Result<T, E>`;
+    /// значение — `T`, а при `Err` функция возвращает `Err` дальше.
+    Try(Box<Expr>),
     /// Замыкание `|x| expr` или `|x| { ... }`.
     Closure {
         params: Vec<Param>,

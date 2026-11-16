@@ -17,6 +17,7 @@
 //      05-modules.keel           модули: файл = модуль
 //      06-practice.keel          телефонная книга — всё вместе
 //      07-errors.keel            ошибки компилятора и их смысл
+//      08-results.keel           Option, Result, оператор ?
 //
 //  Подробное описание — в play/README.md.
 //

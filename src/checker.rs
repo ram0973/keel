@@ -809,9 +809,21 @@ impl Checker {
         let mut seen: Vec<String> = Vec::new();
         let mut has_wildcard = false;
 
-        for arm in arms {
+        for (idx, arm) in arms.iter().enumerate() {
             if arm.literal.is_none() && arm.variant == "_" {
                 has_wildcard = true;
+                // `_` заглушка — только последняя: иначе ветви после неё
+                // недостижимы.
+                if idx + 1 != arms.len() {
+                    self.diags.push(
+                        Diagnostic::new(
+                            arm.line,
+                            "ветвь `_` должна быть последней".to_string(),
+                        )
+                        .code("E017")
+                        .hint("перенесите `_` в конец `match`"),
+                    );
+                }
             }
             // Каждая ветвь стартует с одного состояния.
             ctx.scope = base_scope.clone();
@@ -927,7 +939,18 @@ impl Checker {
         let mut seen: Vec<String> = Vec::new();
         for arm in arms {
             let variant = variants.iter().find(|(n, _)| n == &arm.variant).cloned();
-            if arm.ty != en {
+            if arm.literal.is_none() && arm.variant == "_" {
+                // Заглушка `_` в `match` по enum не нужна: разбор и так
+                // исчерпывающий. Если её написали — значит, забыли вариант.
+                self.diags.push(
+                    Diagnostic::new(
+                        arm.line,
+                        "`match` по enum не принимает `_`: разберите все варианты".to_string(),
+                    )
+                    .code("E017")
+                    .hint("уберите `_` и разберите каждый вариант enum"),
+                );
+            } else if arm.ty != en {
                 self.diags.push(Diagnostic::new(
                     arm.line,
                     format!(
@@ -2385,6 +2408,12 @@ impl Checker {
             }
             Type::Ref(inner) => self.record_type_insts(inner),
             Type::Array(inner, _) => self.record_type_insts(inner),
+            // Срез в параметре или поле — его C-структура должна быть
+            // сгенерирована, даже если срез нигде не создаётся.
+            Type::Slice(inner) => {
+                self.record_type_insts(inner);
+                self.record_slice_inst(inner);
+            }
             _ => {}
         }
     }
@@ -2875,6 +2904,60 @@ impl Checker {
                 }
                 let ret = self.check_closure_body(body, &mut ctx);
                 Type::Fn(param_tys, Box::new(ret))
+            }
+            ExprKind::Try(inner) => {
+                // `expr?` — субъект `Result<T, E>`, значение `T`.
+                let t = self.type_of(inner, ctx).deref().clone();
+                match t {
+                    Type::Result(ok, err) => {
+                        // Ошибку нужно куда-то вернуть: функция обязана
+                        // сама возвращать `Result`. Иначе `Err` ушёл бы
+                        // в функцию с другим типом возврата.
+                        let ret = ctx.ret.clone();
+                        let ret_err = match &ret {
+                            Type::Result(_, e) => Some((**e).clone()),
+                            _ => None,
+                        };
+                        match ret_err {
+                            None => {
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        format!(
+                                            "`?` требует функцию, возвращающую `Result`, а здесь `{}`",
+                                            ret.name()
+                                        ),
+                                    )
+                                    .code("E016")
+                                    .hint("оберните результат в `Result` или разберите его через `match`"),
+                                );
+                            }
+                            Some(re) => {
+                                if !self.types_compatible(re, &err) {
+                                    self.diags.push(Diagnostic::new(
+                                        e.line,
+                                        format!(
+                                            "`?`: ошибка `{}` не совпадает с ошибкой функции `{}`",
+                                            err.name(),
+                                            ret.name()
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        *ok
+                    }
+                    other => {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!(
+                                "`?` требует `Result`, получено `{}`",
+                                other.name()
+                            ),
+                        ));
+                        Type::Int
+                    }
+                }
             }
             ExprKind::If { cond, then_expr, else_expr } => {
                 self.type_of(cond, ctx);
@@ -4457,6 +4540,7 @@ fn merge_loop_states(
 pub(crate) fn mentions_ident(e: &Expr, name: &str) -> bool {
     match &e.kind {
         ExprKind::Ident(n) => n == name,
+        ExprKind::Try(inner) => mentions_ident(inner, name),
         ExprKind::Field { obj, .. } => mentions_ident(obj, name),
         ExprKind::Index { obj, idx } => mentions_ident(obj, name) || mentions_ident(idx, name),
         ExprKind::Array(items) => items.iter().any(|i| mentions_ident(i, name)),
