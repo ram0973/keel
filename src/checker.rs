@@ -810,7 +810,42 @@ impl Checker {
         let mut has_wildcard = false;
 
         for (idx, arm) in arms.iter().enumerate() {
-            if arm.literal.is_none() && arm.variant == "_" {
+            // Привязка субъекта к имени: `n if n > 0 => { ... }`.
+            let mut saved_bind: Option<(String, Option<Local>)> = None;
+            if let Some(name) = &arm.bind {
+                let prev = ctx.scope.get(name).cloned();
+                let uid = self.next_uid;
+                self.next_uid += 1;
+                self.names.insert(uid, name.clone());
+                ctx.scope.insert(
+                    name.clone(),
+                    Local {
+                        uid,
+                        ty: subj_ty.clone(),
+                        path: Path::root(&uid.to_string()),
+                        ref_target: None,
+                        ref_uid: None,
+                        moved: false,
+                        is_mut: false,
+                        escapes: Vec::new(),
+                    },
+                );
+                saved_bind = Some((name.clone(), prev));
+            }
+            // Guard: условие должно быть bool.
+            if let Some(g) = &arm.guard {
+                let gt = self.type_of(g, ctx);
+                if gt != Type::Bool {
+                    self.diags.push(Diagnostic::new(
+                        g.line,
+                        format!(
+                            "условие ветви должно быть bool, получено `{}`",
+                            gt.name()
+                        ),
+                    ));
+                }
+            }
+            if arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none() {
                 has_wildcard = true;
                 // `_` заглушка — только последняя: иначе ветви после неё
                 // недостижимы.
@@ -856,29 +891,45 @@ impl Checker {
                         MatchLit::Str(s) => format!("str:{}", s),
                         MatchLit::Bool(b) => format!("bool:{}", b),
                     };
-                    if seen.contains(&key) {
-                        // В сообщении — сам литерал, а не внутренний ключ.
-                        let shown = match lit {
-                            MatchLit::Int(n) => n.to_string(),
-                            MatchLit::Str(s) => format!("\"{}\"", s),
-                            MatchLit::Bool(b) => b.to_string(),
-                        };
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!("значение `{}` разобрано дважды", shown),
-                        ));
-                    } else {
-                        seen.push(key);
+                    // Ветвь с guard — отдельная ветвь: `1 if n > 0` и `1`
+                    // разбирают разные случаи, как в Rust.
+                    if arm.guard.is_none() {
+                        if seen.contains(&key) {
+                            // В сообщении — сам литерал, а не внутренний ключ.
+                            let shown = match lit {
+                                MatchLit::Int(n) => n.to_string(),
+                                MatchLit::Str(s) => format!("\"{}\"", s),
+                                MatchLit::Bool(b) => b.to_string(),
+                            };
+                            self.diags.push(Diagnostic::new(
+                                arm.line,
+                                format!("значение `{}` разобрано дважды", shown),
+                            ));
+                        } else {
+                            seen.push(key);
+                        }
                     }
                 }
-            } else if arm.variant != "_" {
+            } else if arm.variant != "_" && arm.bind.is_none() {
                 self.diags.push(Diagnostic::new(
                     arm.line,
-                    "ветвь `match` по значению должна быть литералом или `_`".to_string(),
+                    "ветвь `match` по значению должна быть литералом, привязкой или `_`"
+                        .to_string(),
                 ));
             }
 
             let diverged = self.check_block_scoped(&arm.body, ctx);
+            // Привязка ветви живёт только в её теле.
+            if let Some((name, prev)) = saved_bind {
+                match prev {
+                    Some(l) => {
+                        ctx.scope.insert(name, l);
+                    }
+                    None => {
+                        ctx.scope.remove(&name);
+                    }
+                }
+            }
             if !diverged {
                 for (name, l) in &ctx.scope {
                     if let Some(m) = merged_scope.get_mut(name).filter(|x| x.uid == l.uid) {
@@ -963,12 +1014,12 @@ impl Checker {
                     arm.line,
                     format!("у enum `{}` нет варианта `{}`", en, arm.variant),
                 ));
-            } else if seen.contains(&arm.variant) {
+            } else if arm.guard.is_none() && seen.contains(&arm.variant) {
                 self.diags.push(Diagnostic::new(
                     arm.line,
                     format!("вариант `{}` разобран дважды", arm.variant),
                 ));
-            } else {
+            } else if arm.guard.is_none() {
                 seen.push(arm.variant.clone());
             }
 
@@ -1010,6 +1061,20 @@ impl Checker {
                             escapes: Vec::new(),
                         },
                     );
+                }
+            }
+            // Guard: условие проверяется в области видимости привязок
+            // варианта — `Some(x) if x > 0`.
+            if let Some(g) = &arm.guard {
+                let gt = self.type_of(g, ctx);
+                if gt != Type::Bool {
+                    self.diags.push(Diagnostic::new(
+                        g.line,
+                        format!(
+                            "условие ветви должно быть bool, получено `{}`",
+                            gt.name()
+                        ),
+                    ));
                 }
             }
             let diverged = self.check_block_scoped(&arm.body, ctx);

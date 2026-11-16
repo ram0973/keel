@@ -545,6 +545,12 @@ pub struct MatchArm {
     /// Литерал ветви (`0`, `"x"`, `true`) — для `match` по значению.
     /// `None` — ветвь по варианту enum.
     pub literal: Option<MatchLit>,
+    /// Условие-guard: `Some(x) if x > 0 => { ... }`.
+    /// Ветвь выполняется, только если условие истинно.
+    pub guard: Option<Expr>,
+    /// Имя, которому привязывается субъект: `n if n > 0 => { ... }`.
+    /// Только для `match` по значению.
+    pub bind: Option<String>,
     pub body: Block,
     pub line: usize,
 }

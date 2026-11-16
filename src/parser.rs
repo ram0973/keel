@@ -50,6 +50,15 @@ impl Parser {
 
     // --- вспомогательное ---
 
+    /// Guard ветви `match`: `if <условие>` перед `=>`.
+    fn parse_guard(&mut self) -> PResult<Option<Expr>> {
+        if !self.at_kw("if") {
+            return Ok(None);
+        }
+        self.bump();
+        Ok(Some(self.parse_expr()?))
+    }
+
     /// Литерал ветви `match`, если следующий токен — число, строка или bool.
     fn try_parse_lit(&mut self) -> PResult<Option<MatchLit>> {
         match self.peek().clone() {
@@ -787,6 +796,8 @@ impl Parser {
             variant: other.to_string(),
             bindings,
             literal: None,
+            guard: None,
+            bind: None,
             body,
             line,
         })
@@ -893,6 +904,8 @@ impl Parser {
                     variant: variant.clone(),
                     bindings,
                     literal: None,
+                    guard: None,
+                    bind: None,
                     body,
                     line,
                 },
@@ -918,6 +931,8 @@ impl Parser {
                     variant: variant.clone(),
                     bindings,
                     literal: None,
+                    guard: None,
+                    bind: None,
                     body,
                     line,
                 },
@@ -968,6 +983,7 @@ impl Parser {
                 let aline = self.line();
                 // Ветвь по значению: литерал (`0`, `"x"`, `true`) или `_`.
                 if let Some(literal) = self.try_parse_lit()? {
+                    let guard = self.parse_guard()?;
                     self.expect_punct("=>")?;
                     let body = self.parse_block()?;
                     arms.push(MatchArm {
@@ -975,6 +991,8 @@ impl Parser {
                         variant: String::new(),
                         bindings: Vec::new(),
                         literal: Some(literal),
+                        guard,
+                        bind: None,
                         body,
                         line: aline,
                     });
@@ -989,12 +1007,33 @@ impl Parser {
                         variant: "_".to_string(),
                         bindings: Vec::new(),
                         literal: None,
+                        guard: None,
+                        bind: None,
                         body,
                         line: aline,
                     });
                     continue;
                 }
                 let first = self.ident()?;
+                // Привязка к субъекту: `n if n > 0 => { ... }`.
+                // Только в `match` по значению — там, где нет вариантов.
+                let is_builtin = matches!(first.as_str(), "Some" | "None" | "Ok" | "Err");
+                if !is_builtin && !self.at_punct("::") {
+                    let guard = self.parse_guard()?;
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: String::new(),
+                        bindings: Vec::new(),
+                        literal: None,
+                        guard,
+                        bind: Some(first),
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
                 let (ty, variant) = if self.eat_punct("::") {
                     let variant = self.ident()?;
                     (first, variant)
@@ -1022,6 +1061,7 @@ impl Parser {
                     }
                     self.expect_punct(")")?;
                 }
+                let guard = self.parse_guard()?;
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
                 arms.push(MatchArm {
@@ -1029,6 +1069,8 @@ impl Parser {
                     variant,
                     bindings,
                     literal: None,
+                    guard,
+                    bind: None,
                     body,
                     line: aline,
                 });

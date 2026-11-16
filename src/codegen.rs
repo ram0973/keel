@@ -1331,6 +1331,30 @@ impl<'a> Codegen<'a> {
     /// Генерируется цепочкой `if/else` (как `match` по enum), а не
     /// `switch`: `break`/`continue` из ветви относятся к объемлющему
     /// циклу, а в `switch` били бы по самому `switch`.
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    ///
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    ///
+    /// **Guard** (`паттерн if условие`): если условие ложно, ветвь
+    /// пропускается и разбор продолжается со следующей. Поэтому
+    /// ветви с guard — отдельные `if`, а не `else if`: в `else if`
+    /// неудачный guard просто ушёл бы в конец цепочки.
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    ///
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    ///
+    /// **Guard** (`паттерн if условие`) — часть условия ветви:
+    /// `if (субъект == 5 && (n > 0))`. Если условие ложно, ветвь не
+    /// подходит и разбор идёт к следующей — как в Rust.
+    ///
+    /// **Привязка** (`n if n > 0`) объявляется до цепочки: guard
+    /// читает её значение.
     fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
         let subj = self.value_expr(subject);
         // Субъект вычисляется один раз: это может быть вызов.
@@ -1338,10 +1362,21 @@ impl<'a> Codegen<'a> {
             "  {{\n  __typeof__({}) __k_subj = {};\n",
             subj, subj
         ));
-        let mut first = true;
-        let mut has_default = false;
+        // Привязки объявляются до цепочки: guard читает их значение.
         for arm in arms {
-            let cond = match (&arm.literal, &subj_ty) {
+            if let Some(name) = &arm.bind {
+                let cname = self.fresh_var_name(name);
+                let decl = self.decl(subj_ty, &cname);
+                self.out.borrow_mut().push_str(&format!("  {} = __k_subj;\n", decl));
+            }
+        }
+        let mut first = true;
+        // Есть ли guard: тогда цепочка `else if` не годится.
+        let match_has_guard = arms.iter().any(|a| a.guard.is_some());
+        for arm in arms {
+            let is_default = arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none();
+            // Условие ветви: совпадение значения и, если есть, guard.
+            let mut cond = match (&arm.literal, subj_ty) {
                 (Some(MatchLit::Int(n)), _) => format!("__k_subj == {}", n),
                 (Some(MatchLit::Bool(b)), _) => {
                     format!("__k_subj == {}", if *b { 1 } else { 0 })
@@ -1349,17 +1384,19 @@ impl<'a> Codegen<'a> {
                 (Some(MatchLit::Str(s)), Type::Str) => {
                     format!("strcmp(__k_subj, {}) == 0", c_string_lit(s))
                 }
-                // `_` — ветвь по умолчанию.
-                (None, _) => {
-                    has_default = true;
-                    String::new()
-                }
+                // Ветвь с привязкой: значение подходит любое, решает guard.
+                (None, _) => String::new(),
                 _ => "0".to_string(),
             };
-            if arm.literal.is_none() && arm.variant != "_" {
-                continue;
+            if let Some(g) = &arm.guard {
+                let gexpr = self.expr(g);
+                cond = if cond.is_empty() {
+                    format!("({})", gexpr)
+                } else {
+                    format!("{} && ({})", cond, gexpr)
+                };
             }
-            if cond.is_empty() {
+            if is_default {
                 // Ветвь `_`: `else` без условия. Но `else` требует
                 // предшествующего `if` — если условных ветвей не было
                 // (или `_` стоит первой), нужен безусловный `if`.
@@ -1369,10 +1406,22 @@ impl<'a> Codegen<'a> {
                     self.out.borrow_mut().push_str("  else {\n");
                 }
                 first = false;
+            } else if cond.is_empty() {
+                // Ветвь без условия (привязка без guard) закрывает разбор.
+                if first {
+                    self.out.borrow_mut().push_str("  if (1) {\n");
+                } else {
+                    self.out.borrow_mut().push_str("  else {\n");
+                }
+                first = false;
             } else {
+                // Guard — часть условия, но `else if` цепочку портит:
+                // неудачный guard ушёл бы в конец цепочки, а не к
+                // следующей ветви. Поэтому при наличии guard каждая
+                // ветвь — отдельный `if`.
                 self.out.borrow_mut().push_str(&format!(
                     "  {} ({}) {{\n",
-                    if first { "if" } else { "else if" },
+                    if first && !match_has_guard { "if" } else { "if" },
                     cond
                 ));
                 first = false;
@@ -1383,7 +1432,6 @@ impl<'a> Codegen<'a> {
             self.out.borrow_mut().push_str("  }\n");
         }
         self.out.borrow_mut().push_str("  }\n");
-        let _ = has_default;
     }
 
     fn emit_stmt(&mut self, stmt: &Stmt) {
@@ -1567,6 +1615,8 @@ impl<'a> Codegen<'a> {
                     "__k_subj".to_string()
                 };
                 let mut first = true;
+                // Есть ли guard: тогда цепочка `else if` не годится.
+                let match_has_guard = arms.iter().any(|a| a.guard.is_some());
                 for arm in arms {
                     let case = if is_payload {
                         format!("{}_{}", cname, arm.variant)
@@ -1576,9 +1626,19 @@ impl<'a> Codegen<'a> {
                     // Цепочка `if/else` вместо `switch`: `break`/`continue`
                     // из ветви относятся к объемлющему циклу, а в `switch`
                     // они били бы по самому `switch`.
+                    //
+                    // Guard (`Some(x) if x > 0`) читает привязку `x`,
+                    // а она объявляется в теле ветви. Поэтому guard —
+                    // вложенный `if` внутри ветви: сначала тег, потом
+                    // условие.
+                    //
+                    // Из-за guard'ов цепочка `else if` не годится: она
+                    // привязана к первой ветви, и неудачный guard ушёл бы
+                    // в конец цепочки, а не к следующей ветви. Поэтому
+                    // при наличии guard каждая ветвь — отдельный `if`.
                     self.out.borrow_mut().push_str(&format!(
                         "  {} ({} == {}) {{\n",
-                        if first { "if" } else { "else if" },
+                        if first && !match_has_guard { "if" } else { "if" },
                         tag,
                         case
                     ));
@@ -1605,8 +1665,20 @@ impl<'a> Codegen<'a> {
                             ));
                         }
                     }
-                    for s in &arm.body.stmts {
-                        self.emit_stmt(s);
+                    if let Some(g) = &arm.guard {
+                        // Условие читает привязку `x` — она уже объявлена.
+                        let gexpr = self.expr(g);
+                        self.out
+                            .borrow_mut()
+                            .push_str(&format!("    if ({}) {{\n", gexpr));
+                        for s in &arm.body.stmts {
+                            self.emit_stmt(s);
+                        }
+                        self.out.borrow_mut().push_str("    }\n");
+                    } else {
+                        for s in &arm.body.stmts {
+                            self.emit_stmt(s);
+                        }
                     }
                     self.out.borrow_mut().push_str("  }\n");
                     for (b, prev) in saved {

@@ -4649,3 +4649,81 @@ fn main() int {
     assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
     assert!(r.c_code.contains("Keel_Slice_string"));
 }
+
+// `match` guards: условие после паттерна.
+#[test]
+fn match_с_guard_по_значению_разбирает_привязку() {
+    ok(
+        r#"
+fn classify(n int) string {
+    match n {
+        n if n < 0 => { return "отрицательное"; }
+        0 => { return "ноль"; }
+        _ => { return "положительное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_по_enum_читает_привязку() {
+    ok(
+        r#"
+fn kind(o Option<int>) string {
+    match o {
+        Some(x) if x > 10 => { return "большое"; }
+        Some(_) => { return "маленькое"; }
+        None => { return "нет"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_и_литералом_не_считается_повтором() {
+    // `1 if n > 0` и `1` — разные ветви, как в Rust.
+    ok(
+        r#"
+fn f(n int) string {
+    match n {
+        1 if n > 0 => { return "один положительный"; }
+        1 => { return "просто один"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_ловит_не_bool_условие() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        n if n => { return "плохо"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "условие ветви должно быть bool",
+    );
+}
