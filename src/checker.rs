@@ -1675,14 +1675,18 @@ impl Checker {
                         let ret = ctx.ret.clone();
                         let t = self.type_of_expected(e, Some(&ret), ctx);
                         if !self.types_compatible(ctx.ret.clone(), &t) {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!(
-                                    "тип возврата: ожидался `{}`, получен `{}`",
-                                    ctx.ret.name(),
-                                    t.name()
-                                ),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!(
+                                        "тип возврата: ожидался `{}`, получен `{}`",
+                                        ctx.ret.name(),
+                                        t.name()
+                                    ),
+                                )
+                                .code("E008")
+                                .hint("приведите значение к типу возврата функции"),
+                            );
                         }
                         // Ссылка не должна пережить кадр, в котором создана.
                         self.check_return_escapes(e, ctx);
