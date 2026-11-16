@@ -15,6 +15,12 @@ pub struct Parser {
     /// обязано быть известно компилятору. Область видимости — файл:
     /// константы, объявленные до места использования, видны ниже.
     consts: HashMap<String, ConstVal>,
+    /// Был ли последний разобранный оператор выражением **без** `;`.
+    ///
+    /// Тело функции: последнее выражение без `;` — возвращаемое
+    /// значение, с `;` — обычный оператор, значение отбрасывается.
+    /// Различие важно: `fn f() int { g(); }` не возвращает значение `g()`.
+    last_stmt_semi: bool,
 }
 
 /// Значение именованной константы. Только то, что известно компилятору.
@@ -29,7 +35,7 @@ type PResult<T> = Result<T, String>;
 
 impl Parser {
     pub fn new(src: &str) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0, consts: HashMap::new() })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0, consts: HashMap::new(), last_stmt_semi: false })
     }
 
     /// Парсер с заданным начальным значением счётчика id.
@@ -39,7 +45,7 @@ impl Parser {
     /// файла попадёт на выражение из другого — и сгенерированный C
     /// окажется неверным (`self.name` вместо `self->name`).
     pub fn with_id_start(src: &str, start: u32) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start, consts: HashMap::new() })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start, consts: HashMap::new(), last_stmt_semi: false })
     }
 
     /// Сколько id израсходовано — чтобы продолжить нумерацию в
@@ -489,8 +495,9 @@ impl Parser {
         }
 
         let mut body = self.parse_block()?;
-        // Тело-выражение: последнее выражение без `;` — возвращаемое значение.
-        if ret != Type::Void {
+        // Тело-выражение: последнее выражение **без `;`** — возвращаемое
+        // значение. С `;` — обычный оператор, и значение отбрасывается.
+        if ret != Type::Void && !self.last_stmt_semi {
             if let Some(Stmt::Expr(e)) = body.stmts.last() {
                 let e = e.clone();
                 body.stmts.pop();
@@ -815,6 +822,16 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
+        let r = self.parse_stmt_inner();
+        // Оператор не-выражение (return, let, цикл…) — не тело-выражение.
+        // Флаг ставится после разбора: вложенные блоки могли его сбить.
+        if !matches!(r, Ok(Stmt::Expr(_))) {
+            self.last_stmt_semi = true;
+        }
+        r
+    }
+
+    fn parse_stmt_inner(&mut self) -> PResult<Stmt> {
         let line = self.line();
 
         // Похоже на объявление без `let`: `x int = 0;` вместо
@@ -954,7 +971,11 @@ impl Parser {
             // оператора (`if cond { stmts } else { stmts }`).
             let save = (self.pos, self.next_id);
             match self.parse_if_expr() {
-                Ok(e) => return Ok(Stmt::Expr(e)),
+                Ok(e) => {
+                    // `if ... { ... } else { ... }` без `;` — тело-выражение.
+                    self.last_stmt_semi = false;
+                    return Ok(Stmt::Expr(e));
+                }
                 Err(_) => {
                     self.pos = save.0;
                     self.next_id = save.1;
@@ -1232,10 +1253,14 @@ impl Parser {
             }
         }
         if self.at_punct("}") {
+            // Последнее выражение тела без `;` — возвращаемое значение.
+            self.last_stmt_semi = false;
             return Ok(Stmt::Expr(lhs));
         }
         self.expect_punct(";")?;
         let _ = line;
+        // Выражение с `;` — обычный оператор: значение отбрасывается.
+        self.last_stmt_semi = true;
         Ok(Stmt::Expr(lhs))
     }
 

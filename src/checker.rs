@@ -170,7 +170,7 @@ pub struct Checker {
     /// `Vec`-локальные, которые надо освободить в конце функции:
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
-    pub vec_drops: HashMap<String, Vec<(String, Type, Vec<String>)>>,
+    pub vec_drops: HashMap<String, Vec<VecDrop>>,
     diags: Diags,
 }
 
@@ -183,6 +183,19 @@ struct FuncInfo {
     file: String,
     /// Видна ли функция из других файлов (`pub` или метод типа).
     public: bool,
+}
+
+/// `Vec`, который нужно освободить в конце функции.
+///
+/// `field` — `None` для локальной переменной, `Some("items")` для
+/// `Vec` внутри поля структуры (`Holder { items: v }`): буфер
+/// принадлежит структуре, её и освобождаем.
+#[derive(Clone, Debug)]
+pub struct VecDrop {
+    pub name: String,
+    pub field: Option<String>,
+    pub ty: Type,
+    pub aliases: Vec<String>,
 }
 
 impl Checker {
@@ -713,7 +726,7 @@ impl Checker {
         // явно. Это конец области видимости, а не liveness (п. 3.10):
         // liveness требует отслеживания последнего использования и
         // вставки free раньше — следующий шаг.
-        let mut drops: Vec<(String, Type, Vec<String>)> = Vec::new();
+        let mut drops: Vec<VecDrop> = Vec::new();
         for (name, l) in &ctx.scope {
             if l.moved {
                 continue;
@@ -721,9 +734,18 @@ impl Checker {
             if !matches!(l.ty, Type::Vec(_)) {
                 continue;
             }
-            // Параметры не освобождаем: владелец — вызывающий.
+            // Параметр-ссылка: владелец — вызывающий. Но owned-параметр
+            // (`fn f(w Vec<int>)`) — владение перешло к callee, и буфер
+            // освобождать ему: иначе он утекает при каждом перемещении
+            // Vec в вызов.
             if f.params.iter().any(|p| &p.name == name) {
-                continue;
+                let owned = f
+                    .params
+                    .iter()
+                    .any(|p| &p.name == name && matches!(p.kind, ParamKind::Owned));
+                if !owned {
+                    continue;
+                }
             }
             // Псевдонимы: локальные ссылки, указывающие внутрь этого Vec.
             // Освобождать раньше их последнего использования нельзя.
@@ -745,7 +767,40 @@ impl Checker {
                     aliases.push(an.clone());
                 }
             }
-            drops.push((name.clone(), l.ty.clone(), aliases));
+            drops.push(VecDrop {
+                name: name.clone(),
+                field: None,
+                ty: l.ty.clone(),
+                aliases,
+            });
+        }
+        // `Vec` внутри поля структуры: `Holder { items: v }`. Буфер
+        // принадлежит структуре, и освобождать его должна она.
+        for (name, l) in &ctx.scope {
+            if l.moved {
+                continue;
+            }
+            let Type::Named(sname) = &l.ty else {
+                continue;
+            };
+            // Параметр-владелец: освобождает вызывающий.
+            if f.params.iter().any(|p| &p.name == name) {
+                continue;
+            }
+            let Some(decl) = self.structs.get(sname) else {
+                continue;
+            };
+            for fld in &decl.fields {
+                if !matches!(fld.ty, Type::Vec(_)) {
+                    continue;
+                }
+                drops.push(VecDrop {
+                    name: name.clone(),
+                    field: Some(fld.name.clone()),
+                    ty: fld.ty.clone(),
+                    aliases: Vec::new(),
+                });
+            }
         }
         if !drops.is_empty() {
             self.vec_drops.insert(Self::func_key(f), drops);

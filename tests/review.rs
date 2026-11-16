@@ -691,3 +691,118 @@ fn main() int {
     );
     assert!(r.c_code.contains("k_printf"), "нет префикса:\n{}", r.c_code);
 }
+
+// Тело-выражение: последнее выражение **без `;`** — возвращаемое
+// значение. С `;` — обычный оператор, значение отбрасывается.
+#[test]
+fn тело_выражение_без_точки_с_запятой_возвращает_значение() {
+    let r = keelc::compile(
+        r#"
+fn g() int { return 5; }
+fn f() int {
+    g()
+}
+fn main() int { return 0; }
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("return k_g()"));
+}
+
+#[test]
+fn тело_выражение_с_точкой_с_запятой_значение_отбрасывает() {
+    let r = keelc::compile(
+        r#"
+fn g() int { return 5; }
+fn f() int {
+    g();
+}
+fn main() int { return 0; }
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // `g();` — обычный оператор, а не возвращаемое значение.
+    assert!(!r.c_code.contains("return k_g()"));
+}
+
+// Замыкание с void-телом: `return <expr>;` в void-функции — невалидный C.
+#[test]
+fn замыкание_с_void_телом_даёт_корректный_c() {
+    let r = keelc::compile(
+        r#"
+fn main() int {
+    let f = |x int| { println("got ", x); };
+    f(1);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // У void-замыкания не должно быть `return <expr>;`.
+    assert!(!r.c_code.contains("return printf"));
+}
+
+// Вложенные замыкания: имена не должны совпадать, и вложенное должно
+// быть объявлено раньше использования.
+#[test]
+fn вложенные_замыкания_получают_разные_имена() {
+    let r = keelc::compile(
+        r#"
+fn main() int {
+    let f = |x int| { let g = |y int| y + 1; g(x) * 10; };
+    println(f(2));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("closure_0"));
+    assert!(r.c_code.contains("closure_1"));
+}
+
+// Vec, перемещённая в вызов: буфер освобождает callee.
+#[test]
+fn vec_перемещённая_в_вызов_освобождается_калеем() {
+    let r = keelc::compile(
+        r#"
+fn consume(w Vec<int>) {
+    println("consumed ", len(w));
+}
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    consume(v);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("k_vec_int_free(&k_w)"));
+}
+
+// Vec в поле структуры: буфер принадлежит структуре.
+#[test]
+fn vec_в_поле_структуры_освобождается() {
+    let r = keelc::compile(
+        r#"
+struct Holder {
+    items Vec<int>;
+}
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let h Holder = Holder { items: v };
+    println(len(h.items));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("k_vec_int_free(&k_h.items)"));
+}

@@ -26,11 +26,21 @@ pub struct Codegen<'a> {
     /// Конкретные типы срезов.
     slice_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
-    vec_drops: &'a HashMap<String, Vec<(String, Type, Vec<String>)>>,
+    vec_drops: &'a HashMap<String, Vec<crate::checker::VecDrop>>,
     /// Тела замыканий — эмитятся после функций.
     closures: std::cell::RefCell<Vec<String>>,
+    /// Сигнатуры замыканий — нужны forward-декларации: вложенное
+    /// замыкание вызывается из тела внешнего, а определено позже.
+    closure_sigs: std::cell::RefCell<Vec<String>>,
     /// Отложенные замыкания: (имя, параметры, тело, тип).
     pending_closures: std::cell::RefCell<Vec<(String, Vec<Param>, Block, Type)>>,
+    /// Имена замыканий по id выражения. Регистрация идемпотентна:
+    /// замыкание опознаётся и при сборе, и при генерации — имя должно
+    /// совпадать, а тело не должно эмититься дважды.
+    closure_names: std::cell::RefCell<HashMap<u32, String>>,
+    /// Счётчик имён замыканий. Единый и монотонный: вложенные замыкания
+    /// не должны получать одно и то же имя.
+    closure_counter: std::cell::Cell<u32>,
     out: std::cell::RefCell<String>,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -119,7 +129,10 @@ impl<'a> Codegen<'a> {
             slice_insts: &checker.slice_insts,
             vec_drops: &checker.vec_drops,
             closures: std::cell::RefCell::new(Vec::new()),
+            closure_sigs: std::cell::RefCell::new(Vec::new()),
             pending_closures: std::cell::RefCell::new(Vec::new()),
+            closure_names: std::cell::RefCell::new(HashMap::new()),
+            closure_counter: std::cell::Cell::new(0),
             out: std::cell::RefCell::new(String::new()),
             ctype,
             structs,
@@ -524,9 +537,19 @@ impl<'a> Codegen<'a> {
                     self.shadow_count.borrow_mut().insert(p.name.clone(), 1);
                 }
                 let mut s = format!("static {} {}({}) {{\n", ret_ty, name, args.join(", "));
+                self.closure_sigs
+                    .borrow_mut()
+                    .push(format!("static {} {}({});\n", ret_ty, name, args.join(", ")));
                 let saved = std::mem::take(&mut *self.out.borrow_mut());
+                // Возвращаемое значение замыкания: у `void`-замыкания
+                // `return <expr>;` — невалидный C («return with a value,
+                // in function returning void»).
+                let returns_value = match &ret {
+                    Type::Fn(_, r) => !matches!(r.as_ref(), Type::Void),
+                    _ => false,
+                };
                 for (i, stmt) in body.stmts.iter().enumerate() {
-                    if i == body.stmts.len() - 1 {
+                    if i == body.stmts.len() - 1 && returns_value {
                         if let Stmt::Expr(e) = stmt {
                             let v = self.expr(e);
                             self.out.borrow_mut().push_str(&format!("  return {};\n", v));
@@ -542,6 +565,16 @@ impl<'a> Codegen<'a> {
             }
         }
         // Эмитим тела замыканий до функций.
+        // Сначала сигнатуры: вложенное замыкание вызывается из тела
+        // внешнего, а определено позже — без forward-декларации C
+        // не знает символ.
+        let sigs = std::mem::take(&mut *self.closure_sigs.borrow_mut());
+        for s in &sigs {
+            self.out.borrow_mut().push_str(s);
+        }
+        if !sigs.is_empty() {
+            self.out.borrow_mut().push('\n');
+        }
         let closures = std::mem::take(&mut *self.closures.borrow_mut());
         for c in &closures {
             self.out.borrow_mut().push_str(c);
@@ -982,17 +1015,31 @@ impl<'a> Codegen<'a> {
         self.out.borrow_mut().push_str(&text);
     }
 
+    /// Имя замыкания по id выражения; при первом обращении замыкание
+    /// ставится в очередь на эмит. Повторное обращение возвращает то же
+    /// имя и не дублирует тело.
+    fn register_closure(&self, e: &Expr, params: &[Param], body: &Block) -> String {
+        if let Some(name) = self.closure_names.borrow().get(&e.id) {
+            return name.clone();
+        }
+        let n = self.closure_counter.get();
+        self.closure_counter.set(n + 1);
+        let name = format!("closure_{}", n);
+        self.closure_names
+            .borrow_mut()
+            .insert(e.id, name.clone());
+        let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
+        self.pending_closures
+            .borrow_mut()
+            .push((name.clone(), params.to_vec(), body.clone(), ret));
+        name
+    }
+
     fn collect_closures_expr(&self, e: &Expr) {
         match &e.kind {
             ExprKind::Closure { params, body } => {
-                let name = format!(
-                    "closure_{}",
-                    self.closures.borrow().len() + self.pending_closures.borrow().len()
-                );
-                let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
-                self.pending_closures
-                    .borrow_mut()
-                    .push((name, params.clone(), body.clone(), ret));
+                let name = self.register_closure(e, params, body);
+                let _ = name;
                 for stmt in &body.stmts {
                     self.collect_closures_stmt(stmt);
                 }
@@ -1185,39 +1232,53 @@ impl<'a> Codegen<'a> {
             .get(&crate::checker::Checker::func_key(f))
             .cloned()
             .unwrap_or_default();
-        let last_use: Vec<(String, Type, usize)> = drops
+        let last_use: Vec<(crate::checker::VecDrop, usize)> = drops
             .into_iter()
-            .map(|(name, ty, aliases)| {
+            .map(|d| {
                 let idx = f
                     .body
                     .stmts
                     .iter()
                     .rposition(|s| {
-                        stmt_mentions(s, &name)
-                            || aliases.iter().any(|a| stmt_mentions(s, a))
+                        stmt_mentions(s, &d.name)
+                            || d.aliases.iter().any(|a| stmt_mentions(s, a))
                     })
                     .unwrap_or(usize::MAX);
-                (name, ty, idx)
+                (d, idx)
             })
             .collect();
         for (i, stmt) in f.body.stmts.iter().enumerate() {
             self.emit_stmt(stmt);
-            for (name, ty, idx) in &last_use {
+            for (d, idx) in &last_use {
                 if *idx == i {
-                    if let Type::Vec(inner) = ty {
+                    if let Type::Vec(inner) = &d.ty {
                         let m = inner.mangle();
-                        let cname = self.var_name(name);
-                        self.out.borrow_mut().push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                        let cname = self.var_name(&d.name);
+                        // Поле структуры: `&k_h.items`.
+                        let target = match &d.field {
+                            Some(field) => format!("{}.{}", cname, field),
+                            None => cname,
+                        };
+                        self.out
+                            .borrow_mut()
+                            .push_str(&format!("  k_vec_{}_free(&{});\n", m, target));
                     }
                 }
             }
         }
-        for (name, ty, idx) in &last_use {
+        // Vec, которые не упоминались нигде — освобождаем в конце.
+        for (d, idx) in &last_use {
             if *idx == usize::MAX {
-                if let Type::Vec(inner) = ty {
+                if let Type::Vec(inner) = &d.ty {
                     let m = inner.mangle();
-                    let cname = self.var_name(name);
-                    self.out.borrow_mut().push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                    let cname = self.var_name(&d.name);
+                    let target = match &d.field {
+                        Some(field) => format!("{}.{}", cname, field),
+                        None => cname,
+                    };
+                    self.out
+                        .borrow_mut()
+                        .push_str(&format!("  k_vec_{}_free(&{});\n", m, target));
                 }
             }
         }
@@ -2648,17 +2709,7 @@ impl<'a> Codegen<'a> {
                 };
                 format!("({} {} {})", ls, opstr, rs)
             }
-            ExprKind::Closure { params, body } => {
-                let name = format!(
-                    "closure_{}",
-                    self.closures.borrow().len() + self.pending_closures.borrow().len()
-                );
-                let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
-                self.pending_closures
-                    .borrow_mut()
-                    .push((name.clone(), params.clone(), body.clone(), ret));
-                name
-            }
+            ExprKind::Closure { params, body } => self.register_closure(e, params, body),
             ExprKind::If { cond, then_expr, else_expr } => {
                 // Тернарный оператор C: значение — результат выбранной
                 // ветви, типы у обеих ветвей совпадают (проверил checker).
