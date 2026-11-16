@@ -2843,6 +2843,9 @@ fn c_string_lit(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            // Нулевой байт лекер не пропускает, но на всякий случай:
+            // в C-литерал он попасть не должен.
+            '\0' => out.push_str("\\0"),
             other => out.push(other),
         }
     }
