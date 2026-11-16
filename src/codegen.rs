@@ -1321,6 +1321,59 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
+        let subj = self.value_expr(subject);
+        // Субъект вычисляется один раз: это может быть вызов.
+        self.out.borrow_mut().push_str(&format!(
+            "  {{\n  __typeof__({}) __k_subj = {};\n",
+            subj, subj
+        ));
+        let mut first = true;
+        let mut has_default = false;
+        for arm in arms {
+            let cond = match (&arm.literal, &subj_ty) {
+                (Some(MatchLit::Int(n)), _) => format!("__k_subj == {}", n),
+                (Some(MatchLit::Bool(b)), _) => {
+                    format!("__k_subj == {}", if *b { 1 } else { 0 })
+                }
+                (Some(MatchLit::Str(s)), Type::Str) => {
+                    format!("strcmp(__k_subj, {}) == 0", c_string_lit(s))
+                }
+                // `_` — ветвь по умолчанию.
+                (None, _) => {
+                    has_default = true;
+                    String::new()
+                }
+                _ => "0".to_string(),
+            };
+            if arm.literal.is_none() && arm.variant != "_" {
+                continue;
+            }
+            if cond.is_empty() {
+                // Ветвь `_`: `else` без условия.
+                self.out.borrow_mut().push_str("  else {\n");
+            } else {
+                self.out.borrow_mut().push_str(&format!(
+                    "  {} ({}) {{\n",
+                    if first { "if" } else { "else if" },
+                    cond
+                ));
+                first = false;
+            }
+            for s in &arm.body.stmts {
+                self.emit_stmt(s);
+            }
+            self.out.borrow_mut().push_str("  }\n");
+        }
+        self.out.borrow_mut().push_str("  }\n");
+        let _ = has_default;
+    }
+
     fn emit_stmt(&mut self, stmt: &Stmt) {
         // `#line` привязывает ошибки C к строке Keel: gcc сообщает
         // `file.keel:строка`, а не строку сгенерированного C.
@@ -1442,6 +1495,13 @@ impl<'a> Codegen<'a> {
                     Type::Ref(inner) => *inner,
                     t => t,
                 };
+                // `match` по числу, строке или `bool` — цепочка сравнений.
+                if matches!(subj_ty, Type::Int | Type::Str | Type::Bool)
+                    && arms.iter().any(|a| a.literal.is_some() || a.variant == "_")
+                {
+                    self.emit_literal_match(subject, arms, &subj_ty);
+                    return;
+                }
                 // (C-имя типа, варианты (имя, payload), есть ли данные)
                 let (cname, variants, is_payload) = match &subj_ty {
                     Type::Option(inner) => {
@@ -1860,21 +1920,7 @@ impl<'a> Codegen<'a> {
             ExprKind::Int(n) => format!("INT64_C({})", n),
             ExprKind::Float(v) => format!("{:?}", v),
             ExprKind::Bool(b) => format!("{}", b),
-            ExprKind::Str(s) => {
-                let mut out = String::from("\"");
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\t' => out.push_str("\\t"),
-                        '\r' => out.push_str("\\r"),
-                        other => out.push(other),
-                    }
-                }
-                out.push('"');
-                out
-            }
+            ExprKind::Str(s) => c_string_lit(s),
             ExprKind::Ident(name) if name == "None" => {
                 let t = self
                     .types
@@ -2533,4 +2579,21 @@ fn stmt_mentions(s: &Stmt, name: &str) -> bool {
 
 fn block_mentions(b: &Block, name: &str) -> bool {
     b.stmts.iter().any(|s| stmt_mentions(s, name))
+}
+
+/// C-литерал строки с экранированием.
+fn c_string_lit(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }

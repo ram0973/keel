@@ -791,6 +791,125 @@ impl Checker {
 
     /// Общая проверка `match` по фиксированному набору вариантов:
     /// пользовательский enum, `Option` или `Result`.
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    fn check_match_literals(
+        &mut self,
+        line: usize,
+        arms: &[MatchArm],
+        subj_ty: &Type,
+        ctx: &mut Ctx,
+    ) {
+        let base_scope = ctx.scope.clone();
+        let base_refs = self.refs.clone();
+        let base_diverged = ctx.diverged;
+        let mut merged_scope = base_scope.clone();
+        let mut merged_refs = base_refs.clone();
+        let mut all_diverged = !arms.is_empty();
+        let mut seen: Vec<String> = Vec::new();
+        let mut has_wildcard = false;
+
+        for arm in arms {
+            if arm.literal.is_none() && arm.variant == "_" {
+                has_wildcard = true;
+            }
+            // Каждая ветвь стартует с одного состояния.
+            ctx.scope = base_scope.clone();
+            self.refs = base_refs.clone();
+            ctx.diverged = false;
+
+            if let Some(lit) = &arm.literal {
+                // Тип литерала должен совпадать с типом субъекта.
+                let lit_ty = match lit {
+                    MatchLit::Int(_) => Type::Int,
+                    MatchLit::Str(_) => Type::Str,
+                    MatchLit::Bool(_) => Type::Bool,
+                };
+                if lit_ty != *subj_ty {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        format!(
+                            "литерал `{}` не совпадает с типом `{}`",
+                            match lit {
+                                MatchLit::Int(n) => n.to_string(),
+                                MatchLit::Str(s) => format!("\"{}\"", s),
+                                MatchLit::Bool(b) => b.to_string(),
+                            },
+                            subj_ty.name()
+                        ),
+                    ));
+                } else {
+                    let key = match lit {
+                        MatchLit::Int(n) => format!("int:{}", n),
+                        MatchLit::Str(s) => format!("str:{}", s),
+                        MatchLit::Bool(b) => format!("bool:{}", b),
+                    };
+                    if seen.contains(&key) {
+                        // В сообщении — сам литерал, а не внутренний ключ.
+                        let shown = match lit {
+                            MatchLit::Int(n) => n.to_string(),
+                            MatchLit::Str(s) => format!("\"{}\"", s),
+                            MatchLit::Bool(b) => b.to_string(),
+                        };
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!("значение `{}` разобрано дважды", shown),
+                        ));
+                    } else {
+                        seen.push(key);
+                    }
+                }
+            } else if arm.variant != "_" {
+                self.diags.push(Diagnostic::new(
+                    arm.line,
+                    "ветвь `match` по значению должна быть литералом или `_`".to_string(),
+                ));
+            }
+
+            let diverged = self.check_block_scoped(&arm.body, ctx);
+            if !diverged {
+                for (name, l) in &ctx.scope {
+                    if let Some(m) = merged_scope.get_mut(name).filter(|x| x.uid == l.uid) {
+                        m.moved = m.moved || l.moved;
+                        for e in &l.escapes {
+                            if !m.escapes.contains(e) {
+                                m.escapes.push(e.clone());
+                            }
+                        }
+                    }
+                }
+                for r in &self.refs {
+                    if r.dead {
+                        if let Some(m) = merged_refs.iter_mut().find(|x| x.uid == r.uid) {
+                            m.dead = true;
+                            m.killed = r.killed.clone();
+                        }
+                    }
+                }
+            }
+            all_diverged &= diverged;
+        }
+        ctx.scope = merged_scope;
+        self.refs = merged_refs;
+        ctx.diverged = base_diverged || all_diverged;
+
+        // Исчерпывающесть: `_` либо (для `bool`) оба значения.
+        let complete = has_wildcard
+            || (*subj_ty == Type::Bool
+                && seen.contains(&"bool:true".to_string())
+                && seen.contains(&"bool:false".to_string()));
+        if !complete {
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    "`match` не исчерпывающий: добавьте ветвь `_`".to_string(),
+                )
+                .code("E012")
+                .hint("разберите все значения или добавьте `_`"),
+            );
+        }
+    }
+
     fn check_match_variants(
         &mut self,
         line: usize,
@@ -1502,6 +1621,10 @@ impl Checker {
             }
             Stmt::Match { line, subject, arms } => {
                 let t = self.type_of(subject, ctx).deref().clone();
+                if matches!(t, Type::Int | Type::Str | Type::Bool) {
+                    self.check_match_literals(*line, arms, &t, ctx);
+                    return;
+                }
                 if let Type::Option(inner) = &t {
                     let variants = vec![
                         ("Some".to_string(), vec![(**inner).clone()]),

@@ -2931,10 +2931,12 @@ fn main() int {
 
 #[test]
 fn match_требует_enum() {
+    // `float` не разбирается ни по варианту enum, ни по значению —
+    // `match` для него запрещён.
     fails(
         r#"
 fn main() int {
-    let x = 1;
+    let x = 1.5;
     match x { A::B => { } }
     return 0;
 }
@@ -4313,3 +4315,162 @@ fn main() int {
     assert!(!r.c_code.contains("switch (__k_subj"));
 }
 
+// `match` по значению: число, строка, `bool`.
+#[test]
+fn match_по_числу_разбирает_литералы() {
+    ok(
+        r#"
+fn f(n int) int {
+    match n {
+        0 => { return 10; }
+        1 => { return 20; }
+        _ => { return 30; }
+    }
+    return 0;
+}
+fn main() int {
+    return f(1);
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_строке_разбирает_литералы() {
+    ok(
+        r#"
+fn f(s string) string {
+    match s {
+        "ok" => { return "да"; }
+        "err" => { return "нет"; }
+        _ => { return "?"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_bool_полон_без_подстановки() {
+    // Оба значения `bool` — исчерпывающесть достигнута без `_`.
+    ok(
+        r#"
+fn f(b bool) string {
+    match b {
+        true => { return "да"; }
+        false => { return "нет"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_числу_ловит_несовпадение_типа() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        "x" => { return "строка"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не совпадает с типом",
+    );
+}
+
+#[test]
+fn match_по_числу_ловит_повтор_значения() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        1 => { return "раз"; }
+        1 => { return "два"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "разобрано дважды",
+    );
+}
+
+#[test]
+fn match_по_числу_требует_ветвь_подстановки() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        1 => { return "раз"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+#[test]
+fn match_по_bool_требует_ветвь_подстановки() {
+    fails(
+        r#"
+fn f(b bool) string {
+    match b {
+        true => { return "да"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+#[test]
+fn match_по_значению_не_ломает_исчерпывающий_match_по_enum() {
+    // Оба вида `match` живут в одном файле: разбор не смешивается.
+    ok(
+        r#"
+enum Light { Red, Green }
+fn by_value(n int) int {
+    match n {
+        0 => { return 1; }
+        _ => { return 2; }
+    }
+    return 0;
+}
+fn by_tag(l Light) int {
+    match l {
+        Light::Red => { return 1; }
+        Light::Green => { return 2; }
+    }
+    return 0;
+}
+fn main() int {
+    return by_value(0) + by_tag(Light::Red);
+}
+"#,
+    );
+}

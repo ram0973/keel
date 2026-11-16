@@ -1,0 +1,50 @@
+// match по значению: число, строка, bool.
+//
+// Когда субъект — не enum, а число, строка или bool, match разбирает
+// его по значению. Ветви — литералы, последняя может быть `_`.
+//
+// Правила те же, что у match по enum:
+//   - значение не повторяется;
+//   - тип литерала совпадает с типом субъекта;
+//   - разбор исчерпывающий: нужен `_` либо оба значения bool.
+//
+// Строки сравниваются по содержимому.
+
+fn size(n int) string {
+    match n {
+        0 => { return "нуль"; }
+        1 => { return "один"; }
+        _ => { return "много"; }
+    }
+    return "?";
+}
+
+fn verdict(s string) string {
+    match s {
+        "ok" => { return "хорошо"; }
+        "err" => { return "плохо"; }
+        _ => { return "неизвестно"; }
+    }
+    return "?";
+}
+
+fn sign(b bool) string {
+    match b {
+        true => { return "да"; }
+        false => { return "нет"; }
+    }
+    return "?";
+}
+
+fn main() {
+    println(size(0));
+    println(size(1));
+    println(size(42));
+
+    println(verdict("ok"));
+    println(verdict("err"));
+    println(verdict("???"));
+
+    println(sign(true));
+    println(sign(false));
+}

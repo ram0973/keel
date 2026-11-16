@@ -50,6 +50,38 @@ impl Parser {
 
     // --- вспомогательное ---
 
+    /// Литерал ветви `match`, если следующий токен — число, строка или bool.
+    fn try_parse_lit(&mut self) -> PResult<Option<MatchLit>> {
+        match self.peek().clone() {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(Some(MatchLit::Int(n)))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Some(MatchLit::Str(s)))
+            }
+            Tok::Punct(p) if p == "-" => {
+                if let Tok::Int(n) = self.peek_at(1).clone() {
+                    self.bump();
+                    self.bump();
+                    Ok(Some(MatchLit::Int(-n)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Tok::Ident(s) if s == "true" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(true)))
+            }
+            Tok::Ident(s) if s == "false" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(false)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].tok
     }
@@ -744,7 +776,14 @@ impl Parser {
         } else {
             vec!["_".to_string()]
         };
-        Ok(MatchArm { ty: ty.to_string(), variant: other.to_string(), bindings, body, line })
+        Ok(MatchArm {
+            ty: ty.to_string(),
+            variant: other.to_string(),
+            bindings,
+            literal: None,
+            body,
+            line,
+        })
     }
 
     fn parse_block(&mut self) -> PResult<Block> {
@@ -843,7 +882,14 @@ impl Parser {
                 None
             };
             let arms = vec![
-                MatchArm { ty: ty.clone(), variant: variant.clone(), bindings, body, line },
+                MatchArm {
+                    ty: ty.clone(),
+                    variant: variant.clone(),
+                    bindings,
+                    literal: None,
+                    body,
+                    line,
+                },
                 self.let_other_arm(&ty, &variant, line, else_body.unwrap_or(Block { stmts: Vec::new() }))?,
             ];
             return Ok(Stmt::Match { line, subject, arms });
@@ -861,7 +907,14 @@ impl Parser {
             let subject = self.parse_expr()?;
             let body = self.parse_block()?;
             let arms = vec![
-                MatchArm { ty: ty.clone(), variant: variant.clone(), bindings, body, line },
+                MatchArm {
+                    ty: ty.clone(),
+                    variant: variant.clone(),
+                    bindings,
+                    literal: None,
+                    body,
+                    line,
+                },
                 self.let_other_arm(&ty, &variant, line, Block { stmts: vec![Stmt::Break { line }] })?,
             ];
             let cond = Expr { id: self.id(), line, kind: ExprKind::Bool(true) };
@@ -907,6 +960,34 @@ impl Parser {
             let mut arms = Vec::new();
             while !self.at_punct("}") {
                 let aline = self.line();
+                // Ветвь по значению: литерал (`0`, `"x"`, `true`) или `_`.
+                if let Some(literal) = self.try_parse_lit()? {
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: String::new(),
+                        bindings: Vec::new(),
+                        literal: Some(literal),
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
+                if matches!(self.peek(), Tok::Ident(s) if s == "_") {
+                    self.bump();
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: "_".to_string(),
+                        bindings: Vec::new(),
+                        literal: None,
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
                 let first = self.ident()?;
                 let (ty, variant) = if self.eat_punct("::") {
                     let variant = self.ident()?;
@@ -918,7 +999,7 @@ impl Parser {
                         "Ok" | "Err" => "Result".to_string(),
                         _ => {
                             return Err(format!(
-                                "строка {}: ветвь `{}` должна быть `Тип::Вариант`",
+                                "строка {}: ветвь `{}` должна быть `Тип::Вариант` или литералом",
                                 aline, first
                             ))
                         }
@@ -937,7 +1018,14 @@ impl Parser {
                 }
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
-                arms.push(MatchArm { ty, variant, bindings, body, line: aline });
+                arms.push(MatchArm {
+                    ty,
+                    variant,
+                    bindings,
+                    literal: None,
+                    body,
+                    line: aline,
+                });
             }
             self.expect_punct("}")?;
             if arms.is_empty() {

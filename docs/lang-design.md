@@ -1342,7 +1342,7 @@ let registry Registry = Registry(users, count);
 |---|---|---|
 | `if let` / `while let` | средняя | `if let Some(x) = opt { ... }` — десугар в `match`. Главный потребитель `Option`. **сделано** (только `Option`/`Result`) |
 | `?` | средняя | Десугар в `match` + `return`. Для `Result` |
-| `match` по числам и строкам | средняя | `match x { 0 => ..., 1 => ..., _ => ... }` |
+| `match` по числам и строкам | средняя | `match x { 0 => ..., 1 => ..., _ => ... }`. **сделано** (число, строка, `bool`) |
 | `match` guards | средняя | `match x { n if n > 0 => ... }` |
 | `or`-паттерны | средняя | `A \| B => ...` |
 | `loop { }` | очень низкая | `for (;;)`. Но `while true` уже работает |
