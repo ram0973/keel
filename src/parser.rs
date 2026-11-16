@@ -798,6 +798,7 @@ impl Parser {
             literal: None,
             guard: None,
             bind: None,
+            alts: Vec::new(),
             body,
             line,
         })
@@ -906,6 +907,7 @@ impl Parser {
                     literal: None,
                     guard: None,
                     bind: None,
+                    alts: Vec::new(),
                     body,
                     line,
                 },
@@ -933,6 +935,7 @@ impl Parser {
                     literal: None,
                     guard: None,
                     bind: None,
+                    alts: Vec::new(),
                     body,
                     line,
                 },
@@ -983,6 +986,20 @@ impl Parser {
                 let aline = self.line();
                 // Ветвь по значению: литерал (`0`, `"x"`, `true`) или `_`.
                 if let Some(literal) = self.try_parse_lit()? {
+                    // `1 | 2 => { ... }` — несколько значений в одной ветви.
+                    let mut alts = Vec::new();
+                    while self.at_punct("|") {
+                        self.bump();
+                        match self.try_parse_lit()? {
+                            Some(l) => alts.push(MatchAlt::Literal(l)),
+                            None => {
+                                return Err(format!(
+                                    "строка {}: после `|` ожидался литерал",
+                                    self.line()
+                                ))
+                            }
+                        }
+                    }
                     let guard = self.parse_guard()?;
                     self.expect_punct("=>")?;
                     let body = self.parse_block()?;
@@ -993,6 +1010,7 @@ impl Parser {
                         literal: Some(literal),
                         guard,
                         bind: None,
+                        alts,
                         body,
                         line: aline,
                     });
@@ -1009,6 +1027,7 @@ impl Parser {
                         literal: None,
                         guard: None,
                         bind: None,
+                        alts: Vec::new(),
                         body,
                         line: aline,
                     });
@@ -1029,6 +1048,7 @@ impl Parser {
                         literal: None,
                         guard,
                         bind: Some(first),
+                        alts: Vec::new(),
                         body,
                         line: aline,
                     });
@@ -1061,6 +1081,35 @@ impl Parser {
                     }
                     self.expect_punct(")")?;
                 }
+                // `A::X | A::Y => { ... }` — несколько вариантов в ветви.
+                let mut alts: Vec<MatchAlt> = Vec::new();
+                while self.at_punct("|") {
+                    self.bump();
+                    let alt_ty = self.ident()?;
+                    if !self.eat_punct("::") {
+                        return Err(format!(
+                            "строка {}: после `|` ожидался `Тип::Вариант`",
+                            self.line()
+                        ));
+                    }
+                    let alt_variant = self.ident()?;
+                    // Привязки данных у альтернативы — свои; опускаем:
+                    // они должны совпадать с основной ветвью.
+                    if self.at_punct("(") {
+                        self.bump();
+                        while !self.at_punct(")") {
+                            self.ident()?;
+                            if !self.eat_punct(",") {
+                                break;
+                            }
+                        }
+                        self.expect_punct(")")?;
+                    }
+                    alts.push(MatchAlt::Variant {
+                        ty: alt_ty,
+                        variant: alt_variant,
+                    });
+                }
                 let guard = self.parse_guard()?;
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
@@ -1071,6 +1120,7 @@ impl Parser {
                     literal: None,
                     guard,
                     bind: None,
+                    alts,
                     body,
                     line: aline,
                 });

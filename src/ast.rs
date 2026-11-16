@@ -551,8 +551,20 @@ pub struct MatchArm {
     /// Имя, которому привязывается субъект: `n if n > 0 => { ... }`.
     /// Только для `match` по значению.
     pub bind: Option<String>,
+    /// Дополнительные варианты ветви: `A | B => { ... }`.
+    pub alts: Vec<MatchAlt>,
     pub body: Block,
     pub line: usize,
+}
+
+/// Дополнительный вариант ветви `match`: `A | B => { ... }`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchAlt {
+    /// Вариант enum: тип и имя. Тип должен совпадать с типом
+    /// основного варианта ветви.
+    Variant { ty: String, variant: String },
+    /// Литерал того же типа, что и субъект.
+    Literal(MatchLit),
 }
 
 /// Литерал в ветви `match` по числу, строке или `bool`.

@@ -4773,3 +4773,146 @@ fn main() int {
 "#,
     );
 }
+
+// `or`-паттерны: `A | B => { ... }`.
+#[test]
+fn or_паттерны_по_enum_разбирают_несколько_вариантов() {
+    ok(
+        r#"
+enum Light { Red, Yellow, Green }
+fn name(l Light) string {
+    match l {
+        Light::Red | Light::Green => { return "тёплый"; }
+        Light::Yellow => { return "жёлтый"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn or_паттерны_по_литералам_разбирают_несколько_значений() {
+    ok(
+        r#"
+fn f(n int) string {
+    match n {
+        1 | 2 | 3 => { return "мало"; }
+        10 => { return "десять"; }
+        _ => { return "много"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn or_паттерны_ловит_несуществующий_вариант() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Yellow => { println("x"); }
+        Light::Green => { println("y"); }
+    }
+    return 0;
+}
+"#,
+        "нет варианта `Yellow`",
+    );
+}
+
+#[test]
+fn or_паттерны_ловит_повтор_варианта() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Green => { println("x"); }
+        Light::Green => { println("y"); }
+    }
+    return 0;
+}
+"#,
+        "разобран дважды",
+    );
+}
+
+#[test]
+fn or_паттерны_учитываются_в_исчерпывающем_разборе() {
+    // `Red | Green` не покрывает `Yellow` — разбор неполный.
+    fails(
+        r#"
+enum Light { Red, Yellow, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Green => { println("x"); }
+    }
+    return 0;
+}
+"#,
+        "не разобраны варианты `Light::Yellow`",
+    );
+}
+
+// Регрессия: после сработавшей guard-ветви разбор заканчивается.
+// Раньше ветви генерировались отдельными `if`, и следующая ветвь того
+// же варианта выполнялась вслед за ней.
+#[test]
+fn guard_останавливает_разбор_как_в_rust() {
+    let r = compile(
+        r#"
+fn f(o Option<int>) {
+    match o {
+        Some(x) if x > 10 => { println("guarded"); }
+        Some(_) => { println("plain"); }
+        None => { println("none"); }
+    }
+    println("done");
+}
+fn main() int {
+    f(Some(20));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // Флаг «ветвь уже выбрана» должен быть в сгенерированном C.
+    assert!(r.c_code.contains("__k_done"));
+}
+
+#[test]
+fn guard_в_match_по_значению_останавливает_разбор() {
+    let r = compile(
+        r#"
+fn f(n int) {
+    match n {
+        1 if n > 0 => { println("guarded"); }
+        1 => { println("plain"); }
+        _ => { println("other"); }
+    }
+    println("done");
+}
+fn main() int {
+    f(1);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("__k_done"));
+}

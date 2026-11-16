@@ -872,6 +872,36 @@ impl Checker {
                 }
             }
 
+            // Альтернативы-литералы: `1 | 2 => { ... }`.
+            for alt in &arm.alts {
+                if let MatchAlt::Literal(l) = alt {
+                    let alt_ty = match l {
+                        MatchLit::Int(_) => Type::Int,
+                        MatchLit::Str(_) => Type::Str,
+                        MatchLit::Bool(_) => Type::Bool,
+                    };
+                    if alt_ty != *subj_ty {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!("литерал не совпадает с типом `{}`", subj_ty.name()),
+                        ));
+                    } else {
+                        let akey = match l {
+                            MatchLit::Int(n) => format!("int:{}", n),
+                            MatchLit::Str(s) => format!("str:{}", s),
+                            MatchLit::Bool(b) => format!("bool:{}", b),
+                        };
+                        if arm.guard.is_none() && seen.contains(&akey) {
+                            self.diags.push(Diagnostic::new(
+                                arm.line,
+                                format!("значение разобрано дважды"),
+                            ));
+                        } else if arm.guard.is_none() {
+                            seen.push(akey);
+                        }
+                    }
+                }
+            }
             if let Some(lit) = &arm.literal {
                 // Тип литерала должен совпадать с типом субъекта.
                 let lit_ty = match lit {
@@ -997,6 +1027,28 @@ impl Checker {
         let mut seen: Vec<String> = Vec::new();
         for arm in arms {
             let variant = variants.iter().find(|(n, _)| n == &arm.variant).cloned();
+            // Альтернативы `A | B` — того же enum и существующие.
+            let mut alt_variants: Vec<String> = Vec::new();
+            for alt in &arm.alts {
+                if let MatchAlt::Variant { ty, variant: v } = alt {
+                    if ty != &arm.ty {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!(
+                                "вариант `{}::{}` не относится к enum `{}`",
+                                ty, v, arm.ty
+                            ),
+                        ));
+                    } else if !variants.iter().any(|(n, _)| n == v) {
+                        self.diags.push(Diagnostic::new(
+                            arm.line,
+                            format!("у enum `{}` нет варианта `{}`", arm.ty, v),
+                        ));
+                    } else {
+                        alt_variants.push(v.clone());
+                    }
+                }
+            }
             if arm.literal.is_none() && arm.variant == "_" {
                 // Заглушка `_` в `match` по enum не нужна: разбор и так
                 // исчерпывающий. Если её написали — значит, забыли вариант.
@@ -1028,6 +1080,18 @@ impl Checker {
                 ));
             } else if arm.guard.is_none() {
                 seen.push(arm.variant.clone());
+            }
+            // Альтернативы — тоже варианты: их надо разобрать и не
+            // разбирать дважды.
+            for v in &alt_variants {
+                if arm.guard.is_none() && seen.contains(v) {
+                    self.diags.push(Diagnostic::new(
+                        arm.line,
+                        format!("вариант `{}` разобран дважды", v),
+                    ));
+                } else if arm.guard.is_none() {
+                    seen.push(v.clone());
+                }
             }
 
             // Каждая ветвь стартует с одного состояния.

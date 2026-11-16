@@ -1373,6 +1373,12 @@ impl<'a> Codegen<'a> {
         let mut first = true;
         // Есть ли guard: тогда цепочка `else if` не годится.
         let match_has_guard = arms.iter().any(|a| a.guard.is_some());
+        // Флаг «ветвь уже выбрана». Нужен, когда guard'ы есть: ветви
+        // идут отдельными `if`, и без флага после сработавшей ветви
+        // выполнилась бы и следующая — а разбор должен закончиться.
+        if match_has_guard {
+            self.out.borrow_mut().push_str("  bool __k_done = false;\n");
+        }
         for arm in arms {
             let is_default = arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none();
             // Условие ветви: совпадение значения и, если есть, guard.
@@ -1388,6 +1394,26 @@ impl<'a> Codegen<'a> {
                 (None, _) => String::new(),
                 _ => "0".to_string(),
             };
+            // Альтернативы `1 | 2` — условие через `||`.
+            for alt in &arm.alts {
+                if let crate::ast::MatchAlt::Literal(l) = alt {
+                    let alt_cond = match (l, subj_ty) {
+                        (MatchLit::Int(n), _) => format!("__k_subj == {}", n),
+                        (MatchLit::Bool(b), _) => {
+                            format!("__k_subj == {}", if *b { 1 } else { 0 })
+                        }
+                        (MatchLit::Str(s), Type::Str) => {
+                            format!("strcmp(__k_subj, {}) == 0", c_string_lit(s))
+                        }
+                        _ => "0".to_string(),
+                    };
+                    if cond.is_empty() {
+                        cond = alt_cond;
+                    } else {
+                        cond.push_str(&format!(" || {}", alt_cond));
+                    }
+                }
+            }
             if let Some(g) = &arm.guard {
                 let gexpr = self.expr(g);
                 cond = if cond.is_empty() {
@@ -1397,10 +1423,14 @@ impl<'a> Codegen<'a> {
                 };
             }
             if is_default {
-                // Ветвь `_`: `else` без условия. Но `else` требует
-                // предшествующего `if` — если условных ветвей не было
-                // (или `_` стоит первой), нужен безусловный `if`.
-                if first {
+                // Ветвь `_`: закрывает разбор. Без guard'ов — это `else`
+                // (требует предшествующего `if`; если условных ветвей не
+                // было, нужен безусловный `if`). С guard'ами — отдельный
+                // `if`: `else` привязался бы к последней ветви и сработал
+                // бы даже после сработавшей guard-ветви.
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  if (!__k_done) {\n");
+                } else if first {
                     self.out.borrow_mut().push_str("  if (1) {\n");
                 } else {
                     self.out.borrow_mut().push_str("  else {\n");
@@ -1408,7 +1438,9 @@ impl<'a> Codegen<'a> {
                 first = false;
             } else if cond.is_empty() {
                 // Ветвь без условия (привязка без guard) закрывает разбор.
-                if first {
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  if (!__k_done) {\n");
+                } else if first {
                     self.out.borrow_mut().push_str("  if (1) {\n");
                 } else {
                     self.out.borrow_mut().push_str("  else {\n");
@@ -1418,16 +1450,26 @@ impl<'a> Codegen<'a> {
                 // Guard — часть условия, но `else if` цепочку портит:
                 // неудачный guard ушёл бы в конец цепочки, а не к
                 // следующей ветви. Поэтому при наличии guard каждая
-                // ветвь — отдельный `if`.
+                // ветвь — отдельный `if`, а флаг `__k_done` гарантирует,
+                // что после сработавшей ветви остальные не выполнятся.
+                let full = if match_has_guard {
+                    format!("!__k_done && ({})", cond)
+                } else {
+                    cond
+                };
                 self.out.borrow_mut().push_str(&format!(
                     "  {} ({}) {{\n",
                     if first && !match_has_guard { "if" } else { "if" },
-                    cond
+                    full
                 ));
                 first = false;
             }
             for s in &arm.body.stmts {
                 self.emit_stmt(s);
+            }
+            if match_has_guard && !is_default {
+                // Ветвь выбрана — следующие не выполнятся.
+                self.out.borrow_mut().push_str("    __k_done = true;\n");
             }
             self.out.borrow_mut().push_str("  }\n");
         }
@@ -1617,6 +1659,11 @@ impl<'a> Codegen<'a> {
                 let mut first = true;
                 // Есть ли guard: тогда цепочка `else if` не годится.
                 let match_has_guard = arms.iter().any(|a| a.guard.is_some());
+                // Флаг «ветвь уже выбрана» — иначе после сработавшей
+                // guard-ветви выполнилась бы и следующая.
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  bool __k_done = false;\n");
+                }
                 for arm in arms {
                     let case = if is_payload {
                         format!("{}_{}", cname, arm.variant)
@@ -1636,11 +1683,29 @@ impl<'a> Codegen<'a> {
                     // привязана к первой ветви, и неудачный guard ушёл бы
                     // в конец цепочки, а не к следующей ветви. Поэтому
                     // при наличии guard каждая ветвь — отдельный `if`.
+                    // Альтернативы `A::X | A::Y` — условие через `||`.
+                    let mut cond = format!("{} == {}", tag, case);
+                    for alt in &arm.alts {
+                        if let crate::ast::MatchAlt::Variant { variant, .. } = alt {
+                            let alt_case = if is_payload {
+                                format!("{}_{}", cname, variant)
+                            } else {
+                                format!("Keel_{}_{}", arm.ty, variant)
+                            };
+                            cond.push_str(&format!(" || {} == {}", tag, alt_case));
+                        }
+                    }
+                    // Флаг `__k_done` не даёт выполниться следующей
+                    // ветви после сработавшей.
+                    let full = if match_has_guard {
+                        format!("!__k_done && ({})", cond)
+                    } else {
+                        cond
+                    };
                     self.out.borrow_mut().push_str(&format!(
-                        "  {} ({} == {}) {{\n",
+                        "  {} ({}) {{\n",
                         if first && !match_has_guard { "if" } else { "if" },
-                        tag,
-                        case
+                        full
                     ));
                     first = false;
                     // Привязки данных: `Some(x)` → `int64_t x = ...`.
@@ -1674,10 +1739,18 @@ impl<'a> Codegen<'a> {
                         for s in &arm.body.stmts {
                             self.emit_stmt(s);
                         }
+                        if match_has_guard {
+                            // Guard прошёл — ветвь выбрана. Не прошёл —
+                            // разбор продолжается со следующей ветви.
+                            self.out.borrow_mut().push_str("      __k_done = true;\n");
+                        }
                         self.out.borrow_mut().push_str("    }\n");
                     } else {
                         for s in &arm.body.stmts {
                             self.emit_stmt(s);
+                        }
+                        if match_has_guard {
+                            self.out.borrow_mut().push_str("    __k_done = true;\n");
                         }
                     }
                     self.out.borrow_mut().push_str("  }\n");
