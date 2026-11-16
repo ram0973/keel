@@ -2611,13 +2611,24 @@ impl<'a> Codegen<'a> {
                     Type::Result(ok, err) => (*ok, *err),
                     other => (other, Type::Str),
                 };
+                // Тип субъекта — его `Result`: из него берётся значение.
                 let c = format!("Keel_Result_{}_{}", ok_ty.mangle(), err_ty.mangle());
+                // А возвращается ошибка **функции**: тип возврата может
+                // отличаться от типа субъекта (`Result<int,string>` внутри
+                // функции, возвращающей `Result<string,string>`).
+                let ret_c = match &self.cur_ret {
+                    Type::Result(rok, rerr) => {
+                        format!("Keel_Result_{}_{}", rok.mangle(), rerr.mangle())
+                    }
+                    _ => c.clone(),
+                };
                 let v = self.value_expr(inner);
                 let tmp = format!("__k_q{}", self.next_tmp_id());
                 // Последнее выражение statement-expression требует `;`.
                 format!(
-                    "({{ {c} {t} = {v}; if ({t}.tag == {c}_Err) return ({c}){{ .tag = {c}_Err, .data.Err = {{ ._0 = {t}.data.Err._0 }} }}; {t}.data.Ok._0; }})",
+                    "({{ {c} {t} = {v}; if ({t}.tag == {c}_Err) return ({r}){{ .tag = {r}_Err, .data.Err = {{ ._0 = {t}.data.Err._0 }} }}; {t}.data.Ok._0; }})",
                     c = c,
+                    r = ret_c,
                     t = tmp,
                     v = v
                 )

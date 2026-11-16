@@ -4727,3 +4727,49 @@ fn main() int {
         "условие ветви должно быть bool",
     );
 }
+
+// Регрессия: привязка guard'а (`n if n > 0`) должна быть видна в теле
+// ветви. Раньше сброс scope стирал её, и имя не находилось.
+#[test]
+fn привязка_guard_видна_в_теле_ветви() {
+    ok(
+        r#"
+fn main() int {
+    for i in 0..3 {
+        match i {
+            n if n % 2 == 0 => { println("чётное ", n); }
+            _ => { println("нечётное ", i); }
+        }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+// Регрессия: `?` возвращает ошибку **типа функции**, а не типа
+// субъекта: `Result<int,string>` внутри функции, возвращающей
+// `Result<string,string>`.
+#[test]
+fn оператор_вопрос_возвращает_ошибку_типа_функции() {
+    ok(
+        r#"
+fn get(x int) Result<int, string> {
+    if x < 0 { return Err("минус"); }
+    return Ok(x);
+}
+fn f(x int) Result<string, string> {
+    let v = get(x)?;
+    match v {
+        n if n > 10 => { return Ok("большое"); }
+        0 => { return Ok("ноль"); }
+        _ => { return Ok("маленькое"); }
+    }
+    return Ok("?");
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}

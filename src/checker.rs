@@ -811,7 +811,31 @@ impl Checker {
 
         for (idx, arm) in arms.iter().enumerate() {
             // Привязка субъекта к имени: `n if n > 0 => { ... }`.
+            // Вставляется ПОСЛЕ сброса scope ниже — иначе сброс её
+            // стирает и имя в теле ветви не найти.
             let mut saved_bind: Option<(String, Option<Local>)> = None;
+            if arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none() {
+                has_wildcard = true;
+                // `_` заглушка — только последняя: иначе ветви после неё
+                // недостижимы.
+                if idx + 1 != arms.len() {
+                    self.diags.push(
+                        Diagnostic::new(
+                            arm.line,
+                            "ветвь `_` должна быть последней".to_string(),
+                        )
+                        .code("E017")
+                        .hint("перенесите `_` в конец `match`"),
+                    );
+                }
+            }
+            // Каждая ветвь стартует с одного состояния.
+            ctx.scope = base_scope.clone();
+            self.refs = base_refs.clone();
+            ctx.diverged = false;
+
+            // Привязка субъекта: `n if n > 0` — имя `n` доступно в
+            // guard'е и в теле ветви.
             if let Some(name) = &arm.bind {
                 let prev = ctx.scope.get(name).cloned();
                 let uid = self.next_uid;
@@ -832,7 +856,9 @@ impl Checker {
                 );
                 saved_bind = Some((name.clone(), prev));
             }
-            // Guard: условие должно быть bool.
+
+            // Guard: условие должно быть bool. Проверяется после
+            // вставки привязки — guard может читать её (`n if n > 0`).
             if let Some(g) = &arm.guard {
                 let gt = self.type_of(g, ctx);
                 if gt != Type::Bool {
@@ -845,25 +871,6 @@ impl Checker {
                     ));
                 }
             }
-            if arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none() {
-                has_wildcard = true;
-                // `_` заглушка — только последняя: иначе ветви после неё
-                // недостижимы.
-                if idx + 1 != arms.len() {
-                    self.diags.push(
-                        Diagnostic::new(
-                            arm.line,
-                            "ветвь `_` должна быть последней".to_string(),
-                        )
-                        .code("E017")
-                        .hint("перенесите `_` в конец `match`"),
-                    );
-                }
-            }
-            // Каждая ветвь стартует с одного состояния.
-            ctx.scope = base_scope.clone();
-            self.refs = base_refs.clone();
-            ctx.diverged = false;
 
             if let Some(lit) = &arm.literal {
                 // Тип литерала должен совпадать с типом субъекта.
