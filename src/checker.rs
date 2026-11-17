@@ -239,43 +239,59 @@ impl Checker {
             match item {
                 Item::Struct(s) => {
                     if let Some(prev) = self.structs.get(&s.name) {
-                        self.diags.push(Diagnostic::new(
-                            s.line,
-                            format!(
-                                "структура `{}` объявлена дважды (первое объявление — строка {})",
-                                s.name, prev.line
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                s.line,
+                                format!(
+                                    "структура `{}` объявлена дважды (первое объявление — строка {})",
+                                    s.name, prev.line
+                                ),
+                            )
+                            .code("E019")
+                            .hint("уберите одно из объявлений или переименуйте структуру"),
+                        );
                     }
                     if let Some(prev) = self.enums.get(&s.name) {
-                        self.diags.push(Diagnostic::new(
-                            s.line,
-                            format!(
-                                "имя `{}` занято и enum, и структурой (enum — строка {})",
-                                s.name, prev.line
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                s.line,
+                                format!(
+                                    "имя `{}` занято и enum, и структурой (enum — строка {})",
+                                    s.name, prev.line
+                                ),
+                            )
+                            .code("E019")
+                            .hint("имя типа должно быть уникальным: переименуйте enum или структуру"),
+                        );
                     }
                     self.structs.insert(s.name.clone(), s.clone());
                 }
                 Item::Enum(e) => {
                     if let Some(prev) = self.enums.get(&e.name) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "enum `{}` объявлен дважды (первое объявление — строка {})",
-                                e.name, prev.line
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "enum `{}` объявлен дважды (первое объявление — строка {})",
+                                    e.name, prev.line
+                                ),
+                            )
+                            .code("E019")
+                            .hint("уберите одно из объявлений или переименуйте enum"),
+                        );
                     }
                     if let Some(prev) = self.structs.get(&e.name) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "имя `{}` занято и структурой, и enum (структура — строка {})",
-                                e.name, prev.line
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "имя `{}` занято и структурой, и enum (структура — строка {})",
+                                    e.name, prev.line
+                                ),
+                            )
+                            .code("E019")
+                            .hint("имя типа должно быть уникальным: переименуйте структуру или enum"),
+                        );
                     }
                     self.enums.insert(e.name.clone(), e.clone());
                 }
@@ -290,13 +306,17 @@ impl Checker {
                             // `x.name(...)`, поэтому ищем по типу получателя.
                             let key = (im.ty.clone(), f.name.clone());
                             if self.methods.contains_key(&key) {
-                                self.diags.push(Diagnostic::new(
-                                    f.line,
-                                    format!(
-                                        "метод `{}` у типа `{}` объявлен дважды",
-                                        f.name, im.ty
-                                    ),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        f.line,
+                                        format!(
+                                            "метод `{}` у типа `{}` объявлен дважды",
+                                            f.name, im.ty
+                                        ),
+                                    )
+                                    .code("E019")
+                                    .hint("оставьте один метод или переименуйте"),
+                                );
                             }
                             self.methods.insert(
                                 key,
@@ -364,15 +384,19 @@ impl Checker {
                     .copied()
                     .unwrap_or(0);
                 self.diags.file = self.func_files.get(f).cloned().unwrap_or_default();
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!(
-                        "имя `{}` занято и структурой, и функцией: вызов `{}(...)` \
-                         всегда означает конструктор структуры, поэтому функция \
-                         недостижима — переименуйте одно из двух",
-                        f, f
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!(
+                            "имя `{}` занято и структурой, и функцией: вызов `{}(...)` \
+                             всегда означает конструктор структуры, поэтому функция \
+                             недостижима — переименуйте одно из двух",
+                            f, f
+                        ),
+                    )
+                    .code("E019")
+                    .hint("переименуйте структуру или функцию: одно имя не может быть у обоих"),
+                );
             }
         }
 
@@ -385,16 +409,20 @@ impl Checker {
             for v in &e.variants {
                 for t in &v.payload {
                     if !self.payload_type_ok(t) {
-                        self.diags.push(Diagnostic::new(
-                            v.line,
-                            format!(
-                                "вариант `{}::{}`: тип `{}` в данных пока не поддерживается — \
-                                 допустимы int, bool, string и enum",
-                                e.name,
-                                v.name,
-                                t.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                v.line,
+                                format!(
+                                    "вариант `{}::{}`: тип `{}` в данных пока не поддерживается — \
+                                     допустимы int, bool, string и enum",
+                                    e.name,
+                                    v.name,
+                                    t.name()
+                                ),
+                            )
+                            .code("E021")
+                            .hint("в данных варианта оставьте только `int`, `bool`, `string` или `enum`"),
+                        );
                     }
                 }
             }
@@ -404,10 +432,14 @@ impl Checker {
             self.diags.file = e.file.clone();
             let mut visiting = Vec::new();
             if self.enum_has_cycle(&e.name, &mut visiting) {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("enum `{}` рекурсивен: вариант содержит сам себя", e.name),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("enum `{}` рекурсивен: вариант содержит сам себя", e.name),
+                    )
+                    .code("E021")
+                    .hint("вынесите данные варианта в отдельный тип без рекурсии"),
+                );
             }
         }
 
@@ -467,7 +499,11 @@ impl Checker {
                     key, prev
                 )
             };
-            self.diags.push(Diagnostic::new(f.line, what));
+            self.diags.push(
+                Diagnostic::new(f.line, what)
+                    .code("E019")
+                    .hint("оставьте одно объявление или переименуйте функцию"),
+            );
         }
         self.func_lines.insert(key.clone(), f.line);
         self.func_files.insert(key.clone(), f.file.clone());
@@ -486,13 +522,17 @@ impl Checker {
     /// Сообщает, что элемент объявлен без `pub` и потому не виден из
     /// другого файла.
     fn private(&mut self, line: usize, what: &str, name: &str, file: &str) {
-        self.diags.push(Diagnostic::new(
-            line,
-            format!(
-                "{} `{}` объявлен без `pub` в `{}` — из другого файла не виден",
-                what, name, file
-            ),
-        ));
+        self.diags.push(
+            Diagnostic::new(
+                line,
+                format!(
+                    "{} `{}` объявлен без `pub` в `{}` — из другого файла не виден",
+                    what, name, file
+                ),
+            )
+            .code("E026")
+            .hint("добавьте `pub` перед объявлением"),
+        );
     }
 
     /// Ключ функции для таблиц, где важен владелец: `Тип::имя` для метода
@@ -666,11 +706,15 @@ impl Checker {
         }
         for e in &f.post {
             if f.ret == Type::Void && mentions_ident(e, "result") {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    "`result` доступен только в post функции, возвращающей значение"
-                        .to_string(),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        "`result` доступен только в post функции, возвращающей значение"
+                            .to_string(),
+                    )
+                    .code("E029")
+                    .hint("`result` доступен только в `post` функции, которая возвращает значение"),
+                );
                 continue;
             }
             let t = self.type_of(e, &mut post_ctx);
@@ -917,13 +961,17 @@ impl Checker {
             if let Some(g) = &arm.guard {
                 let gt = self.type_of(g, ctx);
                 if gt != Type::Bool {
-                    self.diags.push(Diagnostic::new(
-                        g.line,
-                        format!(
-                            "условие ветви должно быть bool, получено `{}`",
-                            gt.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            g.line,
+                            format!(
+                                "условие ветви должно быть bool, получено `{}`",
+                                gt.name()
+                            ),
+                        )
+                        .code("E022")
+                        .hint("условие ветви должно быть выражением типа `bool`"),
+                    );
                 }
             }
 
@@ -936,10 +984,14 @@ impl Checker {
                         MatchLit::Bool(_) => Type::Bool,
                     };
                     if alt_ty != *subj_ty {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!("литерал не совпадает с типом `{}`", subj_ty.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                arm.line,
+                                format!("литерал не совпадает с типом `{}`", subj_ty.name()),
+                            )
+                            .code("E022")
+                            .hint("используйте литерал того же типа, что и субъект `match`"),
+                        );
                     } else {
                         let akey = match l {
                             MatchLit::Int(n) => format!("int:{}", n),
@@ -947,10 +999,14 @@ impl Checker {
                             MatchLit::Bool(b) => format!("bool:{}", b),
                         };
                         if arm.guard.is_none() && seen.contains(&akey) {
-                            self.diags.push(Diagnostic::new(
-                                arm.line,
-                                format!("значение разобрано дважды"),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    arm.line,
+                                    format!("значение разобрано дважды"),
+                                )
+                                .code("E022")
+                                .hint("уберите повторное значение: ветви не должны пересекаться"),
+                            );
                         } else if arm.guard.is_none() {
                             seen.push(akey);
                         }
@@ -965,18 +1021,22 @@ impl Checker {
                     MatchLit::Bool(_) => Type::Bool,
                 };
                 if lit_ty != *subj_ty {
-                    self.diags.push(Diagnostic::new(
-                        arm.line,
-                        format!(
-                            "литерал `{}` не совпадает с типом `{}`",
-                            match lit {
-                                MatchLit::Int(n) => n.to_string(),
-                                MatchLit::Str(s) => format!("\"{}\"", s),
-                                MatchLit::Bool(b) => b.to_string(),
-                            },
-                            subj_ty.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            arm.line,
+                            format!(
+                                "литерал `{}` не совпадает с типом `{}`",
+                                match lit {
+                                    MatchLit::Int(n) => n.to_string(),
+                                    MatchLit::Str(s) => format!("\"{}\"", s),
+                                    MatchLit::Bool(b) => b.to_string(),
+                                },
+                                subj_ty.name()
+                            ),
+                        )
+                        .code("E022")
+                        .hint("используйте литерал того же типа, что и субъект `match`"),
+                    );
                 } else {
                     let key = match lit {
                         MatchLit::Int(n) => format!("int:{}", n),
@@ -993,21 +1053,29 @@ impl Checker {
                                 MatchLit::Str(s) => format!("\"{}\"", s),
                                 MatchLit::Bool(b) => b.to_string(),
                             };
-                            self.diags.push(Diagnostic::new(
-                                arm.line,
-                                format!("значение `{}` разобрано дважды", shown),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    arm.line,
+                                    format!("значение `{}` разобрано дважды", shown),
+                                )
+                                .code("E022")
+                                .hint("уберите повторное значение: ветви не должны пересекаться"),
+                            );
                         } else {
                             seen.push(key);
                         }
                     }
                 }
             } else if arm.variant != "_" && arm.bind.is_none() {
-                self.diags.push(Diagnostic::new(
-                    arm.line,
-                    "ветвь `match` по значению должна быть литералом, привязкой или `_`"
-                        .to_string(),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        arm.line,
+                        "ветвь `match` по значению должна быть литералом, привязкой или `_`"
+                            .to_string(),
+                    )
+                    .code("E022")
+                    .hint("в ветви укажите литерал, привязку или `_`"),
+                );
             }
 
             let diverged = self.check_block_scoped(&arm.body, ctx);
@@ -1087,18 +1155,26 @@ impl Checker {
             for alt in &arm.alts {
                 if let MatchAlt::Variant { ty, variant: v } = alt {
                     if ty != &arm.ty {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!(
-                                "вариант `{}::{}` не относится к enum `{}`",
-                                ty, v, arm.ty
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                arm.line,
+                                format!(
+                                    "вариант `{}::{}` не относится к enum `{}`",
+                                    ty, v, arm.ty
+                                ),
+                            )
+                            .code("E022")
+                            .hint("разберите вариант того enum, который указан в `match`"),
+                        );
                     } else if !variants.iter().any(|(n, _)| n == v) {
-                        self.diags.push(Diagnostic::new(
-                            arm.line,
-                            format!("у enum `{}` нет варианта `{}`", arm.ty, v),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                arm.line,
+                                format!("у enum `{}` нет варианта `{}`", arm.ty, v),
+                            )
+                            .code("E018")
+                            .hint("проверьте имя варианта"),
+                        );
                     } else {
                         alt_variants.push(v.clone());
                     }
@@ -1116,23 +1192,35 @@ impl Checker {
                     .hint("уберите `_` и разберите каждый вариант enum"),
                 );
             } else if arm.ty != en {
-                self.diags.push(Diagnostic::new(
-                    arm.line,
-                    format!(
-                        "ветвь `{}::{}` не относится к enum `{}`",
-                        arm.ty, arm.variant, en
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        arm.line,
+                        format!(
+                            "ветвь `{}::{}` не относится к enum `{}`",
+                            arm.ty, arm.variant, en
+                        ),
+                    )
+                    .code("E022")
+                    .hint("разберите вариант того enum, который указан в `match`"),
+                );
             } else if variant.is_none() {
-                self.diags.push(Diagnostic::new(
-                    arm.line,
-                    format!("у enum `{}` нет варианта `{}`", en, arm.variant),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        arm.line,
+                        format!("у enum `{}` нет варианта `{}`", en, arm.variant),
+                    )
+                    .code("E018")
+                    .hint("проверьте имя варианта"),
+                );
             } else if arm.guard.is_none() && seen.contains(&arm.variant) {
-                self.diags.push(Diagnostic::new(
-                    arm.line,
-                    format!("вариант `{}` разобран дважды", arm.variant),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        arm.line,
+                        format!("вариант `{}` разобран дважды", arm.variant),
+                    )
+                    .code("E022")
+                    .hint("разберите каждый вариант только один раз"),
+                );
             } else if arm.guard.is_none() {
                 seen.push(arm.variant.clone());
             }
@@ -1140,10 +1228,14 @@ impl Checker {
             // разбирать дважды.
             for v in &alt_variants {
                 if arm.guard.is_none() && seen.contains(v) {
-                    self.diags.push(Diagnostic::new(
-                        arm.line,
-                        format!("вариант `{}` разобран дважды", v),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            arm.line,
+                            format!("вариант `{}` разобран дважды", v),
+                        )
+                        .code("E022")
+                        .hint("разберите каждый вариант только один раз"),
+                    );
                 } else if arm.guard.is_none() {
                     seen.push(v.clone());
                 }
@@ -1158,16 +1250,20 @@ impl Checker {
             let mut saved: Vec<(String, Option<Local>)> = Vec::new();
             if let Some((_, payload)) = &variant {
                 if payload.len() != arm.bindings.len() {
-                    self.diags.push(Diagnostic::new(
-                        arm.line,
-                        format!(
-                            "вариант `{}::{}` несёт {}, в ветви привязано {}",
-                            en,
-                            arm.variant,
-                            аргументов(payload.len()),
-                            arm.bindings.len()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            arm.line,
+                            format!(
+                                "вариант `{}::{}` несёт {}, в ветви привязано {}",
+                                en,
+                                arm.variant,
+                                аргументов(payload.len()),
+                                arm.bindings.len()
+                            ),
+                        )
+                        .code("E022")
+                        .hint("число привязок должно совпадать с числом данных варианта"),
+                    );
                 }
                 for (b, pt) in arm.bindings.iter().zip(payload.iter()) {
                     saved.push((b.clone(), ctx.scope.get(b).cloned()));
@@ -1194,13 +1290,17 @@ impl Checker {
             if let Some(g) = &arm.guard {
                 let gt = self.type_of(g, ctx);
                 if gt != Type::Bool {
-                    self.diags.push(Diagnostic::new(
-                        g.line,
-                        format!(
-                            "условие ветви должно быть bool, получено `{}`",
-                            gt.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            g.line,
+                            format!(
+                                "условие ветви должно быть bool, получено `{}`",
+                                gt.name()
+                            ),
+                        )
+                        .code("E022")
+                        .hint("условие ветви должно быть выражением типа `bool`"),
+                    );
                 }
             }
             let diverged = self.check_block_scoped(&arm.body, ctx);
@@ -1279,20 +1379,28 @@ impl Checker {
         match name {
             "push" => {
                 if args.len() != 1 {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`push` принимает один аргумент, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`push` принимает один аргумент, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `push` с одним аргументом"),
+                    );
                 }
                 let (path, root_kind) = self.resolve_place(obj, ctx);
                 self.check_mut_path(&path, &root_kind, ctx, e.line, "push");
                 if let Some(a) = args.first() {
                     let at = self.type_of_expected(a, Some(elem), ctx);
                     if !self.types_compatible(elem.clone(), &at) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!("`push` ждёт `{}`, получен `{}`", elem.name(), at.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!("`push` ждёт `{}`, получен `{}`", elem.name(), at.name()),
+                            )
+                            .code("E007")
+                            .hint("передайте значение того же типа, что у элементов `Vec`"),
+                        );
                     }
                     self.record_move(a, &at, ctx);
                 }
@@ -1302,27 +1410,39 @@ impl Checker {
             }
             "len" => {
                 if !args.is_empty() {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`len` не принимает аргументов, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`len` не принимает аргументов, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `len` без аргументов"),
+                    );
                 }
                 Type::Int
             }
             "get" => {
                 if args.len() != 1 {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`get` принимает один аргумент, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`get` принимает один аргумент, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `get` с одним аргументом — индексом"),
+                    );
                 }
                 if let Some(a) = args.first() {
                     let at = self.type_of(a, ctx);
                     if at.deref() != &Type::Int {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!("`get` ждёт индекс типа `int`, получен `{}`", at.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!("`get` ждёт индекс типа `int`, получен `{}`", at.name()),
+                            )
+                            .code("E007")
+                            .hint("индекс должен быть типа `int`"),
+                        );
                     }
                 }
                 let ty = Type::Option(Box::new(elem.clone()));
@@ -1331,10 +1451,14 @@ impl Checker {
             }
             "pop" => {
                 if !args.is_empty() {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`pop` не принимает аргументов, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`pop` не принимает аргументов, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `pop` без аргументов"),
+                    );
                 }
                 let (path, root_kind) = self.resolve_place(obj, ctx);
                 self.check_mut_path(&path, &root_kind, ctx, e.line, "pop");
@@ -1345,10 +1469,14 @@ impl Checker {
             }
             "free" => {
                 if !args.is_empty() {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`free` не принимает аргументов, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`free` не принимает аргументов, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `free` без аргументов"),
+                    );
                 }
                 let (path, root_kind) = self.resolve_place(obj, ctx);
                 self.check_mut_path(&path, &root_kind, ctx, e.line, "free");
@@ -1376,13 +1504,17 @@ impl Checker {
             "clear" | "reverse" | "sort" => {
                 self.expect_no_args(e.line, name, args);
                 if name == "sort" && !matches!(elem, Type::Int | Type::Float | Type::Str) {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!(
-                            "`sort` работает с `int`, `float` и `string`, у элемента тип `{}`",
-                            elem.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!(
+                                "`sort` работает с `int`, `float` и `string`, у элемента тип `{}`",
+                                elem.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("сортировать можно только `int`, `float` и `string`"),
+                    );
                 }
                 // Порядок элементов меняется — ссылки в элементы гаснут.
                 let (path, root_kind) = self.resolve_place(obj, ctx);
@@ -1392,40 +1524,56 @@ impl Checker {
             }
             "contains" => {
                 if args.len() != 1 {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`contains` принимает один аргумент, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`contains` принимает один аргумент, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `contains` с одним аргументом"),
+                    );
                 }
                 // Сравнение по значению есть только у этих типов; у
                 // структур в C сравнивать нечего (байты выравнивания).
                 if !matches!(elem, Type::Int | Type::Float | Type::Bool | Type::Str) {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!(
-                            "`contains` работает с `int`, `float`, `bool` и `string`, \
-                             у элемента тип `{}`",
-                            elem.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!(
+                                "`contains` работает с `int`, `float`, `bool` и `string`, \
+                                 у элемента тип `{}`",
+                                elem.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("`contains` работает с `int`, `float`, `bool` и `string`"),
+                    );
                 }
                 if let Some(a) = args.first() {
                     let at = self.type_of(a, ctx);
                     if !self.types_compatible(elem.clone(), &at) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!("`contains` ждёт `{}`, получен `{}`", elem.name(), at.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!("`contains` ждёт `{}`, получен `{}`", elem.name(), at.name()),
+                            )
+                            .code("E007")
+                            .hint("передайте значение того же типа, что у элементов `Vec`"),
+                        );
                     }
                     self.record_move(a, &at, ctx);
                 }
                 Type::Bool
             }
             _ => {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("у `Vec` нет метода `{}`", name),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("у `Vec` нет метода `{}`", name),
+                    )
+                    .code("E018")
+                    .hint("у `Vec` есть: push, len, get, pop, free, is_empty, contains, sort, reverse, first, last, clear"),
+                );
                 Type::Void
             }
         }
@@ -1434,10 +1582,14 @@ impl Checker {
     /// Проверка, что метод вызван без аргументов.
     fn expect_no_args(&mut self, line: usize, name: &str, args: &[Expr]) {
         if !args.is_empty() {
-            self.diags.push(Diagnostic::new(
-                line,
-                format!("`{}` не принимает аргументов, получено {}", name, args.len()),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!("`{}` не принимает аргументов, получено {}", name, args.len()),
+                )
+                .code("E020")
+                .hint("вызовите без аргументов"),
+            );
         }
     }
 
@@ -1461,28 +1613,40 @@ impl Checker {
             }
             "unwrap_or" => {
                 if args.len() != 1 {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `unwrap_or` с одним аргументом"),
+                    );
                 }
                 if let Some(a) = args.first() {
                     let at = self.type_of(a, ctx);
                     if !self.types_compatible(inner.clone(), &at) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!("`unwrap_or` ждёт `{}`, получен `{}`", inner.name(), at.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!("`unwrap_or` ждёт `{}`, получен `{}`", inner.name(), at.name()),
+                            )
+                            .code("E007")
+                            .hint("передайте значение того же типа, что внутри `Option`/`Result`"),
+                        );
                     }
                     self.record_move(a, &at, ctx);
                 }
                 inner.clone()
             }
             _ => {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("у `Option<{}>` нет метода `{}`", inner.name(), name),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("у `Option<{}>` нет метода `{}`", inner.name(), name),
+                    )
+                    .code("E018")
+                    .hint("у `Option` есть: unwrap, unwrap_or, is_some, is_none"),
+                );
                 Type::Void
             }
         }
@@ -1509,28 +1673,40 @@ impl Checker {
             }
             "unwrap_or" => {
                 if args.len() != 1 {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`unwrap_or` принимает один аргумент, получено {}", args.len()),
+                        )
+                        .code("E020")
+                        .hint("вызовите `unwrap_or` с одним аргументом"),
+                    );
                 }
                 if let Some(a) = args.first() {
                     let at = self.type_of(a, ctx);
                     if !self.types_compatible(ok.clone(), &at) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!("`unwrap_or` ждёт `{}`, получен `{}`", ok.name(), at.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!("`unwrap_or` ждёт `{}`, получен `{}`", ok.name(), at.name()),
+                            )
+                            .code("E007")
+                            .hint("передайте значение того же типа, что внутри `Option`/`Result`"),
+                        );
                     }
                     self.record_move(a, &at, ctx);
                 }
                 ok.clone()
             }
             _ => {
-                self.diags.push(Diagnostic::new(
-                    e.line,
-                    format!("у `Result<{}, {}>` нет метода `{}`", ok.name(), err.name(), name),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        e.line,
+                        format!("у `Result<{}, {}>` нет метода `{}`", ok.name(), err.name(), name),
+                    )
+                    .code("E018")
+                    .hint("у `Result` есть: unwrap, unwrap_or, is_ok, is_err"),
+                );
                 Type::Void
             }
         }
@@ -1573,14 +1749,18 @@ impl Checker {
             }
         };
         if !allowed {
-            self.diags.push(Diagnostic::new(
-                line,
-                format!(
-                    "`{}` меняет `{}`: получатель должен быть `mut`",
-                    method,
-                    self.render(path)
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!(
+                        "`{}` меняет `{}`: получатель должен быть `mut`",
+                        method,
+                        self.render(path)
+                    ),
+                )
+                .code("E005")
+                .hint("объявите получателя как `let mut`"),
+            );
         }
     }
 
@@ -1864,10 +2044,14 @@ impl Checker {
                     _ => None,
                 };
                 let Some(en) = enum_name else {
-                    self.diags.push(Diagnostic::new(
-                        *line,
-                        format!("`match` требует enum, получено `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            *line,
+                            format!("`match` требует enum, получено `{}`", t.name()),
+                        )
+                        .code("E021")
+                        .hint("используйте `match` по enum или по значению"),
+                    );
                     for arm in arms {
                         self.check_block(&arm.body, ctx);
                     }
@@ -1884,10 +2068,14 @@ impl Checker {
             Stmt::If { cond, then_block, else_block } => {
                 let ct = self.type_of(cond, ctx);
                 if ct != Type::Bool && ct != Type::Void {
-                    self.diags.push(Diagnostic::new(
-                        cond.line,
-                        format!("условие `if` должно быть bool, получено `{}`", ct.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            cond.line,
+                            format!("условие `if` должно быть bool, получено `{}`", ct.name()),
+                        )
+                        .code("E024")
+                        .hint("условие должно быть выражением типа `bool`"),
+                    );
                 }
                 let base_scope = ctx.scope.clone();
                 let base_refs = self.refs.clone();
@@ -1928,10 +2116,14 @@ impl Checker {
             Stmt::While { cond, body } => {
                 let ct = self.type_of(cond, ctx);
                 if ct != Type::Bool && ct != Type::Void {
-                    self.diags.push(Diagnostic::new(
-                        cond.line,
-                        format!("условие `while` должно быть bool, получено `{}`", ct.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            cond.line,
+                            format!("условие `while` должно быть bool, получено `{}`", ct.name()),
+                        )
+                        .code("E024")
+                        .hint("условие должно быть выражением типа `bool`"),
+                    );
                 }
                 // Тело проверяем дважды: второй проход стартует с состояния
                 // после первого, поэтому ловит использование ссылки,
@@ -1960,10 +2152,14 @@ impl Checker {
                 merge_loop_states(&mut ctx.scope, &mut self.refs, &cont);
                 let ct = self.type_of(cond, ctx);
                 if ct != Type::Bool && ct != Type::Void {
-                    self.diags.push(Diagnostic::new(
-                        cond.line,
-                        format!("условие `do-while` должно быть bool, получено `{}`", ct.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            cond.line,
+                            format!("условие `do-while` должно быть bool, получено `{}`", ct.name()),
+                        )
+                        .code("E024")
+                        .hint("условие должно быть выражением типа `bool`"),
+                    );
                 }
                 self.check_block_scoped(body, ctx);
                 let brk = ctx.loops.last().map(|l| l.breaks.clone()).unwrap_or_default();
@@ -2007,31 +2203,43 @@ impl Checker {
                 let et = self.type_of(end, ctx);
                 for (what, t) in [("начало", &st), ("конец", &et)] {
                     if *t != Type::Int {
-                        self.diags.push(Diagnostic::new(
-                            *line,
-                            format!(
-                                "граница диапазона ({}) должна быть int, получено `{}`",
-                                what,
-                                t.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                *line,
+                                format!(
+                                    "граница диапазона ({}) должна быть int, получено `{}`",
+                                    what,
+                                    t.name()
+                                ),
+                            )
+                            .code("E023")
+                            .hint("границы диапазона должны быть типа `int`"),
+                        );
                     }
                 }
                 if let Some(s) = step {
                     let stept = self.type_of(s, ctx);
                     if stept != Type::Int {
-                        self.diags.push(Diagnostic::new(
-                            s.line,
-                            format!("шаг (`step`) должен быть int, получено `{}`", stept.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                s.line,
+                                format!("шаг (`step`) должен быть int, получено `{}`", stept.name()),
+                            )
+                            .code("E023")
+                            .hint("шаг должен быть типа `int`"),
+                        );
                     }
                     // Шаг 0 — вечный цикл; ловим литерал, вычисляемый 0
                     // (свёртки констант нет).
                     if matches!(s.kind, ExprKind::Int(0)) {
-                        self.diags.push(Diagnostic::new(
-                            s.line,
-                            "шаг `step` не может быть 0 — цикл не завершится".to_string(),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                s.line,
+                                "шаг `step` не может быть 0 — цикл не завершится".to_string(),
+                            )
+                            .code("E023")
+                            .hint("задайте ненулевой шаг"),
+                        );
                     }
                 }
                 // Переменная цикла — обычная локальная переменная.
@@ -2055,13 +2263,17 @@ impl Checker {
                 let elem_ty = match &it {
                     Type::Array(elem, _) | Type::Vec(elem) | Type::Slice(elem) => (**elem).clone(),
                     other => {
-                        self.diags.push(Diagnostic::new(
-                            *line,
-                            format!(
-                                "`for ... in` работает по массиву, срезу или Vec, получено `{}`",
-                                other.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                *line,
+                                format!(
+                                    "`for ... in` работает по массиву, срезу или Vec, получено `{}`",
+                                    other.name()
+                                ),
+                            )
+                            .code("E021")
+                            .hint("обходите массив, срез или `Vec`"),
+                        );
                         Type::Int
                     }
                 };
@@ -2397,12 +2609,16 @@ impl Checker {
                 let inner = match expected {
                     Some(Type::Option(t)) => (**t).clone(),
                     _ => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            "не удалось вывести тип `None`: укажите тип, \
-                             например `let o Option<int> = None;`"
-                                .to_string(),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                "не удалось вывести тип `None`: укажите тип, \
+                                 например `let o Option<int> = None;`"
+                                    .to_string(),
+                            )
+                            .code("E009")
+                            .hint("укажите тип: `let o Option<int> = None;`"),
+                        );
                         Type::Int
                     }
                 };
@@ -2417,20 +2633,28 @@ impl Checker {
                 };
                 if name == "Vec::new" {
                     if !args.is_empty() {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("`Vec::new` не принимает аргументов, получено {}", args.len()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("`Vec::new` не принимает аргументов, получено {}", args.len()),
+                            )
+                            .code("E020")
+                            .hint("вызовите `Vec::new()` без аргументов"),
+                        );
                     }
                     let elem = match expected {
                         Some(Type::Vec(t)) => (**t).clone(),
                         _ => {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                "не удалось вывести тип `Vec::new`: укажите тип, \
-                                 например `let v Vec<int> = Vec::new();`"
-                                    .to_string(),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    "не удалось вывести тип `Vec::new`: укажите тип, \
+                                     например `let v Vec<int> = Vec::new();`"
+                                        .to_string(),
+                                )
+                                .code("E009")
+                                .hint("укажите тип: `let v Vec<int> = Vec::new();`"),
+                            );
                             Type::Int
                         }
                     };
@@ -2441,10 +2665,14 @@ impl Checker {
                 match name.as_str() {
                     "Some" => {
                         if args.len() != 1 {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("`Some` принимает один аргумент, получено {}", args.len()),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("`Some` принимает один аргумент, получено {}", args.len()),
+                                )
+                                .code("E020")
+                                .hint("вызовите `Some` с одним аргументом"),
+                            );
                         }
                         let inner_expected = match expected {
                             Some(Type::Option(t)) => Some((**t).clone()),
@@ -2461,10 +2689,14 @@ impl Checker {
                     }
                     "Ok" => {
                         if args.len() != 1 {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("`Ok` принимает один аргумент, получено {}", args.len()),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("`Ok` принимает один аргумент, получено {}", args.len()),
+                                )
+                                .code("E020")
+                                .hint("вызовите `Ok` с одним аргументом"),
+                            );
                         }
                         let (t_expected, e_expected) = match expected {
                             Some(Type::Result(t, e)) => {
@@ -2480,12 +2712,16 @@ impl Checker {
                         let et = match e_expected {
                             Some(t) => t,
                             None => {
-                                self.diags.push(Diagnostic::new(
-                                    e.line,
-                                    "не удалось вывести тип ошибки `Ok`: укажите тип, \
-                                     например `let r Result<int, string> = Ok(5);`"
-                                        .to_string(),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        "не удалось вывести тип ошибки `Ok`: укажите тип, \
+                                         например `let r Result<int, string> = Ok(5);`"
+                                            .to_string(),
+                                    )
+                                    .code("E009")
+                                    .hint("укажите тип: `let r Result<int, string> = Ok(5);`"),
+                                );
                                 Type::Str
                             }
                         };
@@ -2495,10 +2731,14 @@ impl Checker {
                     }
                     "Err" => {
                         if args.len() != 1 {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("`Err` принимает один аргумент, получено {}", args.len()),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("`Err` принимает один аргумент, получено {}", args.len()),
+                                )
+                                .code("E020")
+                                .hint("вызовите `Err` с одним аргументом"),
+                            );
                         }
                         let (t_expected, e_expected) = match expected {
                             Some(Type::Result(t, e)) => {
@@ -2514,12 +2754,16 @@ impl Checker {
                         let tt = match t_expected {
                             Some(t) => t,
                             None => {
-                                self.diags.push(Diagnostic::new(
-                                    e.line,
-                                    "не удалось вывести тип значения `Err`: укажите тип, \
-                                     например `let r Result<int, string> = Err(\"bad\");`"
-                                        .to_string(),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        "не удалось вывести тип значения `Err`: укажите тип, \
+                                         например `let r Result<int, string> = Err(\"bad\");`"
+                                            .to_string(),
+                                    )
+                                    .code("E009")
+                                    .hint("укажите тип: `let r Result<int, string> = Err(\"bad\");`"),
+                                );
                                 Type::Int
                             }
                         };
@@ -2616,15 +2860,19 @@ impl Checker {
     /// Допустим ли тип как данные `Option`/`Result`.
     fn check_payload_type(&mut self, line: usize, t: &Type, wrapper: &str) {
         if !self.payload_type_ok(t) {
-            self.diags.push(Diagnostic::new(
-                line,
-                format!(
-                    "тип `{}` нельзя хранить в `{}`: допустимы int, bool, string, \
-                     enum и Option/Result",
-                    t.name(),
-                    wrapper
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!(
+                        "тип `{}` нельзя хранить в `{}`: допустимы int, bool, string, \
+                         enum и Option/Result",
+                        t.name(),
+                        wrapper
+                    ),
+                )
+                .code("E021")
+                .hint("храните в `{}` только `int`, `bool`, `string`, `enum` или `Option`/`Result`"),
+            );
         }
     }
 
@@ -2713,28 +2961,40 @@ impl Checker {
                 Some(e) => match e.variants.iter().find(|v| v.name == *name) {
                     Some(v) if v.payload.is_empty() => Type::Named(ty.clone()),
                     Some(_) => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "вариант `{}::{}` несёт данные: нужен вызов `{}::{}(...)`",
-                                ty, name, ty, name
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "вариант `{}::{}` несёт данные: нужен вызов `{}::{}(...)`",
+                                    ty, name, ty, name
+                                ),
+                            )
+                            .code("E021")
+                            .hint("вызовите вариант с данными: `Тип::Вариант(значение)`"),
+                        );
                         Type::Named(ty.clone())
                     }
                     None => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("у enum `{}` нет варианта `{}`", ty, name),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("у enum `{}` нет варианта `{}`", ty, name),
+                            )
+                            .code("E018")
+                            .hint("проверьте имя варианта"),
+                        );
                         Type::Void
                     }
                 },
                 None => {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("неизвестный enum `{}`", ty),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("неизвестный enum `{}`", ty),
+                        )
+                        .code("E018")
+                        .hint("проверьте имя: enum не найден"),
+                    );
                     Type::Void
                 }
                 }
@@ -2750,48 +3010,68 @@ impl Checker {
                     return Type::Void;
                 }
                 let Some(s) = self.structs.get(name).cloned() else {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("неизвестная структура `{}`", name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("неизвестная структура `{}`", name),
+                        )
+                        .code("E018")
+                        .hint("проверьте имя: структура не найдена"),
+                    );
                     return Type::Void;
                 };
                 for f in &s.fields {
                     if !fields.iter().any(|(n, _)| n == &f.name) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("в конструкторе `{}` не задано поле `{}`", name, f.name),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("в конструкторе `{}` не задано поле `{}`", name, f.name),
+                            )
+                            .code("E025")
+                            .hint("задайте все поля структуры в конструкторе"),
+                        );
                     }
                 }
                 for (i, (n, _)) in fields.iter().enumerate() {
                     if fields[..i].iter().any(|(m, _)| m == n) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("поле `{}` задано дважды", n),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("поле `{}` задано дважды", n),
+                            )
+                            .code("E025")
+                            .hint("задайте поле один раз"),
+                        );
                     }
                 }
                 for (n, val) in fields {
                     let Some(f) = s.fields.iter().find(|f| &f.name == n) else {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("у структуры `{}` нет поля `{}`", name, n),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("у структуры `{}` нет поля `{}`", name, n),
+                            )
+                            .code("E018")
+                            .hint("проверьте имя поля"),
+                        );
                         self.type_of(val, ctx);
                         continue;
                     };
                     let vt = self.type_of(val, ctx);
                     if !self.types_compatible(f.ty.clone(), &vt) {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "поле `{}` ожидает `{}`, получено `{}`",
-                                n,
-                                f.ty.name(),
-                                vt.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "поле `{}` ожидает `{}`, получено `{}`",
+                                    n,
+                                    f.ty.name(),
+                                    vt.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите значение к типу поля"),
+                        );
                     }
                 }
                 Type::Named(name.clone())
@@ -2805,10 +3085,14 @@ impl Checker {
                         Some(s) => match s.fields.iter().find(|f| &f.name == name) {
                             Some(f) => f.ty.clone(),
                             None => {
-                                self.diags.push(Diagnostic::new(
-                                    e.line,
-                                    format!("у структуры `{}` нет поля `{}`", sn, name),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        format!("у структуры `{}` нет поля `{}`", sn, name),
+                                    )
+                                    .code("E018")
+                                    .hint("проверьте имя поля"),
+                                );
                                 Type::Void
                             }
                         },
@@ -2817,18 +3101,26 @@ impl Checker {
                     Type::Tuple(ts) => match name.parse::<usize>() {
                         Ok(i) if i < ts.len() => ts[i].clone(),
                         _ => {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("у кортежа `{}` нет элемента `{}`", base_name, name),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("у кортежа `{}` нет элемента `{}`", base_name, name),
+                                )
+                                .code("E018")
+                                .hint("у кортежа нет такого элемента"),
+                            );
                             Type::Void
                         }
                     },
                     _ => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("`{}` — не структура, поле недоступно", base_name),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("`{}` — не структура, поле недоступно", base_name),
+                            )
+                            .code("E021")
+                            .hint("поле доступно только у структур"),
+                        );
                         Type::Void
                     }
                 }
@@ -2847,10 +3139,14 @@ impl Checker {
                     return self.type_of_result_method(e, name, args, ok, err, ctx);
                 }
                 let Type::Named(tn) = obj_ty.clone() else {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("`{}` — не структура, метод недоступен", obj_ty.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("`{}` — не структура, метод недоступен", obj_ty.name()),
+                        )
+                        .code("E021")
+                        .hint("метод доступен только у структур и встроенных типов"),
+                    );
                     return Type::Void;
                 };
                 let bad = self
@@ -2863,10 +3159,14 @@ impl Checker {
                     return Type::Void;
                 }
                 let Some(fi) = self.methods.get(&(tn.clone(), name.clone())).cloned() else {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!("у типа `{}` нет метода `{}`", tn, name),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!("у типа `{}` нет метода `{}`", tn, name),
+                        )
+                        .code("E018")
+                        .hint("проверьте имя метода"),
+                    );
                     return Type::Void;
                 };
                 // Получатель передаётся первым аргументом. Если метод
@@ -2903,10 +3203,14 @@ impl Checker {
                     Type::Vec(elem) => *elem,
                     Type::Slice(elem) => *elem,
                     _ => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("`{}` не является массивом", base.name()),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("`{}` не является массивом", base.name()),
+                            )
+                            .code("E021")
+                            .hint("индексация доступна для массива, среза и `Vec`"),
+                        );
                         Type::Void
                     }
                 }
@@ -2925,14 +3229,18 @@ impl Checker {
                     if i == 0 {
                         elem = t.clone();
                     } else if !self.types_compatible(elem.clone(), &t) {
-                        self.diags.push(Diagnostic::new(
-                            it.line,
-                            format!(
-                                "несовпадение типов элементов массива: ожидался `{}`, получен `{}`",
-                                elem.name(),
-                                t.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                it.line,
+                                format!(
+                                    "несовпадение типов элементов массива: ожидался `{}`, получен `{}`",
+                                    elem.name(),
+                                    t.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите все элементы массива к одному типу"),
+                        );
                     }
                     self.record_move(it, &t, ctx);
                 }
@@ -2961,19 +3269,27 @@ impl Checker {
                 match op {
                     UnOp::Neg => {
                         if t != Type::Int {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("унарный минус требует int, получен `{}`", t.name()),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("унарный минус требует int, получен `{}`", t.name()),
+                                )
+                                .code("E007")
+                                .hint("применяйте унарный минус только к `int`"),
+                            );
                         }
                         Type::Int
                     }
                     UnOp::Not => {
                         if t != Type::Bool && t != Type::Void {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!("`!` требует bool, получен `{}`", t.name()),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!("`!` требует bool, получен `{}`", t.name()),
+                                )
+                                .code("E007")
+                                .hint("`!` применим только к `bool`"),
+                            );
                         }
                         Type::Bool
                     }
@@ -2993,19 +3309,27 @@ impl Checker {
                             .into_iter()
                             .any(|t| self.is_payload_enum_type(t));
                         if payload_cmp {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                "сравнение enum с данными не поддерживается — \
-                                 разберите значение через `match`"
-                                    .to_string(),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    "сравнение enum с данными не поддерживается — \
+                                     разберите значение через `match`"
+                                        .to_string(),
+                                )
+                                .code("E021")
+                                .hint("разберите значение через `match` и сравните варианты"),
+                            );
                         }
                         if [&lt, &rt].into_iter().any(|t| matches!(t, Type::Vec(_))) {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                "сравнение Vec не поддерживается — сравните длину и элементы"
-                                    .to_string(),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    "сравнение Vec не поддерживается — сравните длину и элементы"
+                                        .to_string(),
+                                )
+                                .code("E021")
+                                .hint("сравните длину и элементы по одному"),
+                            );
                         }
                         // Структура и массив в C не сравниваются, а массив
                         // сравнился бы по адресу — это молча неверный код.
@@ -3015,26 +3339,34 @@ impl Checker {
                             _ => false,
                         });
                         if compound {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                "сравнение структур, кортежей и массивов не поддерживается — \
-                                 сравните поля или элементы"
-                                    .to_string(),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    "сравнение структур, кортежей и массивов не поддерживается — \
+                                     сравните поля или элементы"
+                                        .to_string(),
+                                )
+                                .code("E021")
+                                .hint("сравните поля или элементы по одному"),
+                            );
                         }
                         Type::Bool
                     }
                     BinOp::And | BinOp::Or => {
                         for (t, side) in [(&lt, "левый"), (&rt, "правый")] {
                             if *t != Type::Bool && *t != Type::Void {
-                                self.diags.push(Diagnostic::new(
-                                    e.line,
-                                    format!(
-                                        "`&&`/`||`: {} операнд должен быть bool, получен `{}`",
-                                        side,
-                                        t.name()
-                                    ),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        e.line,
+                                        format!(
+                                            "`&&`/`||`: {} операнд должен быть bool, получен `{}`",
+                                            side,
+                                            t.name()
+                                        ),
+                                    )
+                                    .code("E007")
+                                    .hint("операнд логической операции должен быть типа `bool`"),
+                                );
                             }
                         }
                         Type::Bool
@@ -3046,14 +3378,18 @@ impl Checker {
                             return Type::Float;
                         }
                         if lt != Type::Int || rt != Type::Int {
-                            self.diags.push(Diagnostic::new(
-                                e.line,
-                                format!(
-                                    "арифметика требует int, получено `{}` и `{}`",
-                                    lt.name(),
-                                    rt.name()
-                                ),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    e.line,
+                                    format!(
+                                        "арифметика требует int, получено `{}` и `{}`",
+                                        lt.name(),
+                                        rt.name()
+                                    ),
+                                )
+                                .code("E007")
+                                .hint("арифметика в Keel работает только с `int`"),
+                            );
                         }
                         Type::Int
                     }
@@ -3063,10 +3399,14 @@ impl Checker {
                 let mut param_tys = Vec::new();
                 for p in params {
                     if p.ty == Type::Void {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!("у параметра `{}` замыкания должен быть указан тип", p.name),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!("у параметра `{}` замыкания должен быть указан тип", p.name),
+                            )
+                            .code("E027")
+                            .hint("укажите тип параметра замыкания"),
+                        );
                     }
                     param_tys.push(p.ty.clone());
                 }
@@ -3129,27 +3469,35 @@ impl Checker {
                             }
                             Some(re) => {
                                 if !self.types_compatible(re, &err) {
-                                    self.diags.push(Diagnostic::new(
-                                        e.line,
-                                        format!(
-                                            "`?`: ошибка `{}` не совпадает с ошибкой функции `{}`",
-                                            err.name(),
-                                            ret.name()
-                                        ),
-                                    ));
+                                    self.diags.push(
+                                        Diagnostic::new(
+                                            e.line,
+                                            format!(
+                                                "`?`: ошибка `{}` не совпадает с ошибкой функции `{}`",
+                                                err.name(),
+                                                ret.name()
+                                            ),
+                                        )
+                                        .code("E028")
+                                        .hint("приведите тип ошибки к типу ошибки функции"),
+                                    );
                                 }
                             }
                         }
                         *ok
                     }
                     other => {
-                        self.diags.push(Diagnostic::new(
-                            e.line,
-                            format!(
-                                "`?` требует `Result`, получено `{}`",
-                                other.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                e.line,
+                                format!(
+                                    "`?` требует `Result`, получено `{}`",
+                                    other.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("`?` применяется только к выражению типа `Result`"),
+                        );
                         Type::Int
                     }
                 }
@@ -3184,14 +3532,18 @@ impl Checker {
                 // `if` зависит от того, какая ветвь выполнилась, и тип
                 // выражения становится неопределённым.
                 if !self.types_compatible(tt.clone(), &et) {
-                    self.diags.push(Diagnostic::new(
-                        e.line,
-                        format!(
-                            "несовпадение типов в ветвях `if`: `{}` и `{}`",
-                            tt.name(),
-                            et.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            e.line,
+                            format!(
+                                "несовпадение типов в ветвях `if`: `{}` и `{}`",
+                                tt.name(),
+                                et.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("приведите обе ветви к одному типу"),
+                    );
                 }
                 // Ветвь забирает значение — значит, перемещение. Ветви
                 // обе: выполнится только одна, но после `if` обе
@@ -3209,7 +3561,11 @@ impl Checker {
 
     fn type_of_call(&mut self, callee: &Expr, args: &[Expr], ctx: &mut Ctx, line: usize) -> Type {
         let ExprKind::Ident(name) = &callee.kind else {
-            self.diags.push(Diagnostic::new(line, "вызов: поддерживается только имя функции".into()));
+            self.diags.push(
+                Diagnostic::new(line, "вызов: поддерживается только имя функции".into())
+                    .code("E021")
+                    .hint("вызывайте функцию по имени"),
+            );
             return Type::Void;
         };
 
@@ -3220,27 +3576,35 @@ impl Checker {
                 let param_tys = param_tys.clone();
                 let ret = (**ret).clone();
                 if args.len() != param_tys.len() {
-                    self.diags.push(Diagnostic::new(
-                        line,
-                        format!(
-                            "замыкание `{}` принимает {} аргументов, передано {}",
-                            name,
-                            param_tys.len(),
-                            args.len()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            line,
+                            format!(
+                                "замыкание `{}` принимает {} аргументов, передано {}",
+                                name,
+                                param_tys.len(),
+                                args.len()
+                            ),
+                        )
+                        .code("E020")
+                        .hint("передайте столько аргументов, сколько принимает замыкание"),
+                    );
                 }
                 for (a, pt) in args.iter().zip(&param_tys) {
                     let at = self.type_of(a, ctx);
                     if !self.types_compatible(pt.clone(), &at) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!(
-                                "аргумент замыкания: ожидался `{}`, получен `{}`",
-                                pt.name(),
-                                at.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!(
+                                    "аргумент замыкания: ожидался `{}`, получен `{}`",
+                                    pt.name(),
+                                    at.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите аргумент к типу параметра замыкания"),
+                        );
                     }
                 }
                 return ret;
@@ -3249,12 +3613,16 @@ impl Checker {
 
         // `Vec::new()` без ожидаемого типа: элемент не выводится.
         if name == "Vec::new" {
-            self.diags.push(Diagnostic::new(
-                line,
-                "не удалось вывести тип `Vec::new`: укажите тип, \
-                 например `let v Vec<int> = Vec::new();`"
-                    .to_string(),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    "не удалось вывести тип `Vec::new`: укажите тип, \
+                     например `let v Vec<int> = Vec::new();`"
+                        .to_string(),
+                )
+                .code("E009")
+                .hint("укажите тип: `let v Vec<int> = Vec::new();`"),
+            );
             let ty = Type::Vec(Box::new(Type::Int));
             self.record_vec_inst(&ty);
             return ty;
@@ -3265,10 +3633,14 @@ impl Checker {
         // не могут вывести второй параметр и сообщают об этом.
         if name == "Some" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`Some` принимает один аргумент, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`Some` принимает один аргумент, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `Some` с одним аргументом"),
+                );
             }
             let at = match args.first() {
                 Some(a) => self.type_of(a, ctx),
@@ -3281,10 +3653,14 @@ impl Checker {
         }
         if name == "Ok" || name == "Err" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите с одним аргументом"),
+                );
             }
             let at = match args.first() {
                 Some(a) => self.type_of(a, ctx),
@@ -3292,20 +3668,28 @@ impl Checker {
             };
             self.check_payload_type(line, &at, "Result");
             let ty = if name == "Ok" {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    "не удалось вывести тип ошибки `Ok`: укажите тип, \
-                     например `let r Result<int, string> = Ok(5);`"
-                        .to_string(),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        "не удалось вывести тип ошибки `Ok`: укажите тип, \
+                         например `let r Result<int, string> = Ok(5);`"
+                            .to_string(),
+                    )
+                    .code("E009")
+                    .hint("укажите тип: `let r Result<int, string> = Ok(5);`"),
+                );
                 Type::Result(Box::new(at), Box::new(Type::Str))
             } else {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    "не удалось вывести тип значения `Err`: укажите тип, \
-                     например `let r Result<int, string> = Err(\"bad\");`"
-                        .to_string(),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        "не удалось вывести тип значения `Err`: укажите тип, \
+                         например `let r Result<int, string> = Err(\"bad\");`"
+                            .to_string(),
+                    )
+                    .code("E009")
+                    .hint("укажите тип: `let r Result<int, string> = Err(\"bad\");`"),
+                );
                 Type::Result(Box::new(Type::Int), Box::new(at))
             };
             self.record_result_inst(&ty);
@@ -3327,39 +3711,51 @@ impl Checker {
                 match e.variants.iter().find(|v| v.name == variant).cloned() {
                     Some(v) => {
                         if args.len() != v.payload.len() {
-                            self.diags.push(Diagnostic::new(
-                                line,
-                                format!(
-                                    "вариант `{}::{}` ждёт {}, передан {}",
-                                    ty,
-                                    variant,
-                                    аргументов(v.payload.len()),
-                                    args.len()
-                                ),
-                            ));
+                            self.diags.push(
+                                Diagnostic::new(
+                                    line,
+                                    format!(
+                                        "вариант `{}::{}` ждёт {}, передан {}",
+                                        ty,
+                                        variant,
+                                        аргументов(v.payload.len()),
+                                        args.len()
+                                    ),
+                                )
+                                .code("E020")
+                                .hint("передайте столько значений, сколько данных у варианта"),
+                            );
                         }
                         for (a, pt) in args.iter().zip(v.payload.iter()) {
                             let at = self.type_of_expected(a, Some(pt), ctx);
                             if !self.types_compatible(pt.clone(), &at) {
-                                self.diags.push(Diagnostic::new(
-                                    a.line,
-                                    format!(
-                                        "аргумент варианта `{}::{}`: ожидался `{}`, получен `{}`",
-                                        ty,
-                                        variant,
-                                        pt.name(),
-                                        at.name()
-                                    ),
-                                ));
+                                self.diags.push(
+                                    Diagnostic::new(
+                                        a.line,
+                                        format!(
+                                            "аргумент варианта `{}::{}`: ожидался `{}`, получен `{}`",
+                                            ty,
+                                            variant,
+                                            pt.name(),
+                                            at.name()
+                                        ),
+                                    )
+                                    .code("E007")
+                                    .hint("приведите аргумент к типу данных варианта"),
+                                );
                             }
                         }
                         return Type::Named(ty.to_string());
                     }
                     None => {
-                        self.diags.push(Diagnostic::new(
-                            line,
-                            format!("у enum `{}` нет варианта `{}`", ty, variant),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                line,
+                                format!("у enum `{}` нет варианта `{}`", ty, variant),
+                            )
+                            .code("E018")
+                            .hint("проверьте имя варианта"),
+                        );
                         return Type::Named(ty.to_string());
                     }
                 }
@@ -3378,28 +3774,36 @@ impl Checker {
         }
         if let Some(s) = self.structs.get(name).cloned() {
             if args.len() != s.fields.len() {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!(
-                        "конструктор `{}` ждёт {}, передан {}",
-                        name,
-                        аргументов(s.fields.len()),
-                        args.len()
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!(
+                            "конструктор `{}` ждёт {}, передан {}",
+                            name,
+                            аргументов(s.fields.len()),
+                            args.len()
+                        ),
+                    )
+                    .code("E020")
+                    .hint("передайте столько значений, сколько полей у структуры"),
+                );
             }
             for (a, f) in args.iter().zip(s.fields.iter()) {
                 let at = self.type_of_expected(a, Some(&f.ty), ctx);
                 if !self.types_compatible(f.ty.clone(), &at) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!(
-                            "аргумент `{}`: ожидался `{}`, получен `{}`",
-                            f.name,
-                            f.ty.name(),
-                            at.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!(
+                                "аргумент `{}`: ожидался `{}`, получен `{}`",
+                                f.name,
+                                f.ty.name(),
+                                at.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("приведите аргумент к типу параметра"),
+                    );
                 }
                 self.record_move(a, &at, ctx);
             }
@@ -3426,11 +3830,15 @@ impl Checker {
                     );
                 }
                 if matches!(base, Type::Vec(_)) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        "печать Vec не поддерживается — обойдите элементы через `len` и `v[i]`"
-                            .to_string(),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            "печать Vec не поддерживается — обойдите элементы через `len` и `v[i]`"
+                                .to_string(),
+                        )
+                        .code("E021")
+                        .hint("обойдите элементы и напечатайте их по одному"),
+                    );
                 }
                 self.record_move(a, &at, ctx);
             }
@@ -3442,10 +3850,14 @@ impl Checker {
         // в рантайме через `strlen`.
         if name == "len" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`len` принимает один аргумент, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`len` принимает один аргумент, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `len` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx);
@@ -3454,13 +3866,17 @@ impl Checker {
                     other => other,
                 };
                 if !matches!(inner, Type::Str | Type::Array(..) | Type::Vec(_) | Type::Slice(_)) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!(
-                            "`len` работает со строкой, массивом или Vec, получен `{}`",
-                            t.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!(
+                                "`len` работает со строкой, массивом или Vec, получен `{}`",
+                                t.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("`len` работает со строкой, массивом и `Vec`"),
+                    );
                 }
             }
             return Type::Int;
@@ -3470,10 +3886,14 @@ impl Checker {
         // и не освобождается (см. волну 8).
         if name == "read_line" {
             if !args.is_empty() {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`read_line` не принимает аргументов, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`read_line` не принимает аргументов, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `read_line()` без аргументов"),
+                );
             }
             return Type::Str;
         }
@@ -3483,10 +3903,14 @@ impl Checker {
         // `scanf`), и `read_line` после него работает ожидаемо.
         if name == "read_int" {
             if !args.is_empty() {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`read_int` не принимает аргументов, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`read_int` не принимает аргументов, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `read_int()` без аргументов"),
+                );
             }
             return Type::Int;
         }
@@ -3494,21 +3918,29 @@ impl Checker {
         // `to_string(x)` — строка из числа, bool или строки.
         if name == "to_string" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`to_string` принимает один аргумент, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`to_string` принимает один аргумент, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `to_string` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx).deref().clone();
                 if !matches!(t, Type::Int | Type::Float | Type::Bool | Type::Str) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!(
-                            "`to_string` работает с int, float, bool и string, получен `{}`",
-                            t.name()
-                        ),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!(
+                                "`to_string` работает с int, float, bool и string, получен `{}`",
+                                t.name()
+                            ),
+                        )
+                        .code("E007")
+                        .hint("`to_string` работает с `int`, `float`, `bool` и `string`"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3519,18 +3951,26 @@ impl Checker {
         // как `atoi`/`atof` в C: ошибка ввода — забота программы.
         if name == "to_int" || name == "to_float" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx).deref().clone();
                 if t != Type::Str {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`{}` ждёт строку, получен `{}`", name, t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`{}` ждёт строку, получен `{}`", name, t.name()),
+                        )
+                        .code("E007")
+                        .hint("передайте строку"),
+                    );
                 }
             }
             return if name == "to_int" { Type::Int } else { Type::Float };
@@ -3539,29 +3979,41 @@ impl Checker {
         // `min(a, b)` / `max(a, b)` — оба аргумента одного типа, int или float.
         if name == "min" || name == "max" {
             if args.len() != 2 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`{}` принимает два аргумента, получено {}", name, args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`{}` принимает два аргумента, получено {}", name, args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите с двумя аргументами"),
+                );
             }
             let mut ty = Type::Int;
             if let Some(a) = args.first() {
                 ty = self.type_of(a, ctx).deref().clone();
                 if !matches!(ty, Type::Int | Type::Float) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`{}` работает с int и float, получен `{}`", name, ty.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`{}` работает с int и float, получен `{}`", name, ty.name()),
+                        )
+                        .code("E007")
+                        .hint("передайте `int` или `float`"),
+                    );
                     ty = Type::Int;
                 }
             }
             for a in args.iter().skip(1) {
                 let t = self.type_of(a, ctx).deref().clone();
                 if !self.types_compatible(ty.clone(), &t) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`{}` ждёт `{}`, получен `{}`", name, ty.name(), t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`{}` ждёт `{}`, получен `{}`", name, ty.name(), t.name()),
+                        )
+                        .code("E007")
+                        .hint("приведите аргумент к типу, который ждёт функция"),
+                    );
                 }
             }
             return ty;
@@ -3570,18 +4022,26 @@ impl Checker {
         // `abs(x)` — модуль числа.
         if name == "abs" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`abs` принимает один аргумент, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`abs` принимает один аргумент, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `abs` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx).deref().clone();
                 if !matches!(t, Type::Int | Type::Float) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`abs` работает с int и float, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`abs` работает с int и float, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("`abs` работает с `int` и `float`"),
+                    );
                     return Type::Int;
                 }
                 return t;
@@ -3592,27 +4052,39 @@ impl Checker {
         // `assert(cond, msg)` — проверка во время выполнения.
         if name == "assert" {
             if args.len() != 2 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`assert` принимает условие и сообщение, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`assert` принимает условие и сообщение, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `assert` с условием и строкой-сообщением"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx).deref().clone();
                 if t != Type::Bool {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`assert` ждёт условие типа `bool`, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`assert` ждёт условие типа `bool`, получен `{}`", t.name()),
+                        )
+                        .code("E024")
+                        .hint("условие `assert` должно быть типа `bool`"),
+                    );
                 }
             }
             if let Some(a) = args.get(1) {
                 let t = self.type_of(a, ctx).deref().clone();
                 if t != Type::Str {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`assert` ждёт сообщение-строку, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`assert` ждёт сообщение-строку, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("сообщение должно быть строкой"),
+                    );
                 }
             }
             return Type::Void;
@@ -3621,19 +4093,27 @@ impl Checker {
         // `panic(msg)` и `exit(code)` — аварийное и обычное завершение.
         if name == "panic" || name == "exit" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`{}` принимает один аргумент, получено {}", name, args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`{}` принимает один аргумент, получено {}", name, args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx).deref().clone();
                 let want = if name == "panic" { Type::Str } else { Type::Int };
                 if !self.types_compatible(want.clone(), &t) {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`{}` ждёт `{}`, получен `{}`", name, want.name(), t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`{}` ждёт `{}`, получен `{}`", name, want.name(), t.name()),
+                        )
+                        .code("E007")
+                        .hint("приведите аргумент к типу, который ждёт функция"),
+                    );
                 }
             }
             return Type::Void;
@@ -3643,10 +4123,14 @@ impl Checker {
         // имя самой программы (как в C).
         if name == "argc" {
             if !args.is_empty() {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`argc` не принимает аргументов, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`argc` не принимает аргументов, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `argc()` без аргументов"),
+                );
             }
             return Type::Int;
         }
@@ -3656,18 +4140,26 @@ impl Checker {
         // известен только в рантайме (в Rust это `args()` с `Option`).
         if name == "argv" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`argv` принимает один аргумент, получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`argv` принимает один аргумент, получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `argv(i)` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx);
                 if t != Type::Int {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`argv` ждёт номер аргумента типа `int`, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`argv` ждёт номер аргумента типа `int`, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("номер аргумента должен быть типа `int`"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3678,21 +4170,29 @@ impl Checker {
         // Режим — строка как в C: "r", "w", "a".
         if name == "open" {
             if args.len() != 2 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!(
-                        "`open` принимает два аргумента (путь и режим), получено {}",
-                        args.len()
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!(
+                            "`open` принимает два аргумента (путь и режим), получено {}",
+                            args.len()
+                        ),
+                    )
+                    .code("E020")
+                    .hint("вызовите `open` с путём и режимом"),
+                );
             }
             for a in args {
                 let t = self.type_of(a, ctx);
                 if t != Type::Str {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`open` ждёт строку, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`open` ждёт строку, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("путь и режим должны быть строками"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3702,18 +4202,26 @@ impl Checker {
         // `read(fd)` — читает файл целиком в строку.
         if name == "read" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`read` принимает один аргумент (fd), получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`read` принимает один аргумент (fd), получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `read(fd)` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx);
                 if t != Type::Int {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`read` ждёт fd типа `int`, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`read` ждёт fd типа `int`, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("дескриптор файла должен быть типа `int`"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3723,31 +4231,43 @@ impl Checker {
         // `write(fd, s)` — пишет строку в файл.
         if name == "write" {
             if args.len() != 2 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!(
-                        "`write` принимает два аргумента (fd и строку), получено {}",
-                        args.len()
-                    ),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!(
+                            "`write` принимает два аргумента (fd и строку), получено {}",
+                            args.len()
+                        ),
+                    )
+                    .code("E020")
+                    .hint("вызовите `write(fd, текст)` с двумя аргументами"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx);
                 if t != Type::Int {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`write` ждёт fd типа `int`, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`write` ждёт fd типа `int`, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("дескриптор файла должен быть типа `int`"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
             if let Some(a) = args.get(1) {
                 let t = self.type_of(a, ctx);
                 if t != Type::Str {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`write` ждёт строку, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`write` ждёт строку, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("передайте строку для записи"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3757,18 +4277,26 @@ impl Checker {
         // `close(fd)` — закрывает файл.
         if name == "close" {
             if args.len() != 1 {
-                self.diags.push(Diagnostic::new(
-                    line,
-                    format!("`close` принимает один аргумент (fd), получено {}", args.len()),
-                ));
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!("`close` принимает один аргумент (fd), получено {}", args.len()),
+                    )
+                    .code("E020")
+                    .hint("вызовите `close(fd)` с одним аргументом"),
+                );
             }
             if let Some(a) = args.first() {
                 let t = self.type_of(a, ctx);
                 if t != Type::Int {
-                    self.diags.push(Diagnostic::new(
-                        a.line,
-                        format!("`close` ждёт fd типа `int`, получен `{}`", t.name()),
-                    ));
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`close` ждёт fd типа `int`, получен `{}`", t.name()),
+                        )
+                        .code("E007")
+                        .hint("дескриптор файла должен быть типа `int`"),
+                    );
                 }
                 self.record_move(a, &t, ctx);
             }
@@ -3785,7 +4313,11 @@ impl Checker {
             return Type::Void;
         }
         let Some(fi) = self.funcs.get(name).cloned() else {
-            self.diags.push(Diagnostic::new(line, format!("неизвестная функция `{}`", name)));
+            self.diags.push(
+                Diagnostic::new(line, format!("неизвестная функция `{}`", name))
+                    .code("E018")
+                    .hint("проверьте имя: функция не найдена"),
+            );
             return Type::Void;
         };
 
@@ -3819,15 +4351,19 @@ impl Checker {
         recv_ty: Option<Type>,
     ) -> Type {
         if args.len() != fi.params.len() {
-            self.diags.push(Diagnostic::new(
-                line,
-                format!(
-                    "`{}` ждёт {}, передан {}",
-                    name,
-                    аргументов(fi.params.len()),
-                    args.len()
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    line,
+                    format!(
+                        "`{}` ждёт {}, передан {}",
+                        name,
+                        аргументов(fi.params.len()),
+                        args.len()
+                    ),
+                )
+                .code("E020")
+                .hint("передайте столько аргументов, сколько принимает функция"),
+            );
         }
 
         // Для каждого аргумента вычисляем его путь — он нужен, чтобы
@@ -3858,15 +4394,19 @@ impl Checker {
                     // значение, — ошибка. Без этой проверки она всплывала
                     // только в C-компиляторе, где причина не видна.
                     if !self.types_compatible(param.ty.clone(), &t) {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!(
-                                "параметр `{}` ожидает `{}`, получен `{}`",
-                                param.name,
-                                param.ty.name(),
-                                t.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!(
+                                    "параметр `{}` ожидает `{}`, получен `{}`",
+                                    param.name,
+                                    param.ty.name(),
+                                    t.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите аргумент к типу параметра"),
+                        );
                     }
                     // Передача владения — перемещение.
                     if !self.is_copy(&t) {
@@ -3879,14 +4419,18 @@ impl Checker {
                         continue;
                     }
                     if !t.is_ref() {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!(
-                                "параметр `{}` ожидает ссылку, получен `{}`",
-                                param.name,
-                                t.name()
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!(
+                                    "параметр `{}` ожидает ссылку, получен `{}`",
+                                    param.name,
+                                    t.name()
+                                ),
+                            )
+                            .code("E007")
+                            .hint("приведите аргумент к типу параметра"),
+                        );
                     }
                 }
             }
@@ -3974,15 +4518,19 @@ impl Checker {
                             }
                         }
                     } else {
-                        self.diags.push(Diagnostic::new(
-                            a.line,
-                            format!(
-                                "вызов `{}` сохраняет ссылку на локальную переменную `{}` в параметре `{}` — она перестанет существовать после возврата",
-                                name,
-                                self.render(&target),
-                                pname
-                            ),
-                        ));
+                        self.diags.push(
+                            Diagnostic::new(
+                                a.line,
+                                format!(
+                                    "вызов `{}` сохраняет ссылку на локальную переменную `{}` в параметре `{}` — она перестанет существовать после возврата",
+                                    name,
+                                    self.render(&target),
+                                    pname
+                                ),
+                            )
+                            .code("E010")
+                            .hint("не сохраняйте ссылку на локальную переменную в параметре вызова"),
+                        );
                     }
                 }
             }
@@ -4398,16 +4946,20 @@ impl Checker {
             } else {
                 format!("поле `{}` возвращаемого значения", self.render_segs(&segs))
             };
-            self.diags.push(Diagnostic::new(
-                e.line,
-                format!(
-                    "{} содержит ссылку на локальную переменную `{}` — \
-                     она перестанет существовать после возврата; \
-                     вернуть можно только ссылку на параметр",
-                    where_,
-                    self.render(&target)
-                ),
-            ));
+            self.diags.push(
+                Diagnostic::new(
+                    e.line,
+                    format!(
+                        "{} содержит ссылку на локальную переменную `{}` — \
+                         она перестанет существовать после возврата; \
+                         вернуть можно только ссылку на параметр",
+                        where_,
+                        self.render(&target)
+                    ),
+                )
+                .code("E010")
+                .hint("верните значение без ссылки или ссылку на параметр"),
+            );
         }
     }
 

@@ -4934,3 +4934,71 @@ fn main() int {
         "нулевой байт",
     );
 }
+
+// Каждая диагностика получает код ошибки и подсказку «что делать».
+// Код нужен, чтобы искать ошибку в документации, подсказка — чтобы было
+// видно, что делать. Проверяем на наборе разных ошибок сразу.
+#[test]
+fn каждая_ошибка_имеет_код_и_подсказку() {
+    let r = compile(
+        r#"
+struct Point { x int; }
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push("не int");
+    let p = Point { y: 1 };
+    let o Option<int> = Some(1);
+    println(o.unwrap_or(1, 2));
+    return missing();
+}
+"#,
+    )
+    .unwrap();
+    assert!(!r.diagnostics.is_empty(), "ожидались ошибки");
+    for d in &r.diagnostics {
+        assert!(!d.code.is_empty(), "нет кода ошибки: {}", d.msg);
+        assert!(d.hint.is_some(), "нет подсказки: {}", d.msg);
+        assert!(
+            d.hint.as_ref().map_or(true, |h| !h.trim().is_empty()),
+            "пустая подсказка: {}",
+            d.msg
+        );
+    }
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("[E020]"), "нет кода E020:\n{}", text);
+}
+
+// Инвариант на уровне исходника: новая диагностика не появится без кода
+// и подсказки. Проверяем все сообщения компилятора, а не только те, что
+// попали в пример: маркеры должны идти строго по очереди —
+// Diagnostic::new, .code, .hint.
+#[test]
+fn в_исходнике_у_каждой_диагностики_есть_код_и_подсказка() {
+    let src = include_str!("../src/checker.rs");
+    let mut rest = src;
+    let mut checked = 0usize;
+    while let Some(i) = rest.find("Diagnostic::new(") {
+        let after = &rest[i..];
+        // До следующей диагностики ждём ровно `.code(` и `.hint(`.
+        let segment_end = after[1..]
+            .find("Diagnostic::new(")
+            .map_or(after.len(), |j| j + 1);
+        let segment = &after[..segment_end];
+        let code = segment
+            .find(".code(")
+            .unwrap_or_else(|| panic!("диагностика без кода: {}", head(segment)));
+        let hint = segment
+            .find(".hint(")
+            .unwrap_or_else(|| panic!("диагностика без подсказки: {}", head(segment)));
+        assert!(code < hint, "код и подсказка переставлены: {}", head(segment));
+        checked += 1;
+        rest = &after[segment_end..];
+    }
+    assert!(checked > 100, "найдено слишком мало диагностик: {}", checked);
+}
+
+/// Короткое начало фрагмента — для сообщения об ошибке.
+fn head(s: &str) -> String {
+    s.chars().take(120).collect()
+}
+
