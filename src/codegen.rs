@@ -261,6 +261,21 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Операнд числовой встроенной функции (`min`, `max`, `abs`, побитовые).
+    ///
+    /// Ссылка на число разыменовывается: в Keel `min(&x, 3)` означает
+    /// `min(*&x, 3)`, а в C указатель в сравнении с числом — ошибка.
+    fn num_operand(&self, a: &Expr) -> String {
+        let v = self.expr(a);
+        match self.types.get(&a.id) {
+            Some(Type::Ref(inner)) => match inner.as_ref() {
+                Type::Int | Type::Float => format!("(*{})", v),
+                _ => v,
+            },
+            _ => v,
+        }
+    }
+
     /// Тип элемента для составного литерала C: `(T[]){...}`.
     ///
     /// Здесь размеры пишутся ПОСЛЕ типа, а не после имени — это другое
@@ -2390,6 +2405,33 @@ impl<'a> Codegen<'a> {
                     let v = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "\"\"".to_string());
                     return format!("strtod({}, NULL)", v);
                 }
+                // Побитовые операции — выражением, без функций рантайма.
+                // В C это те же операторы, поэтому код получается прямой.
+                // Операнды вычисляются по одному разу — как в C.
+                if matches!(
+                    name.as_str(),
+                    "band" | "bor" | "bxor" | "bshl" | "bshr" | "bnot"
+                ) {
+                    let a = args.first().map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    if name == "bnot" {
+                        return format!("((~({})))", a);
+                    }
+                    let b = args.get(1).map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    // Величина сдвига — по модулю 64: в Rust в release
+                    // сдвиг за разрядность тоже оборачивается, а в C это
+                    // неопределённое поведение.
+                    //
+                    // `bshr` — арифметический (знак расширяется), как в
+                    // Rust: `>>` для знакового в C определён реализацией,
+                    // gcc и clang делают именно арифметический.
+                    return match name.as_str() {
+                        "band" => format!("(({}) & ({}))", a, b),
+                        "bor" => format!("(({}) | ({}))", a, b),
+                        "bxor" => format!("(({}) ^ ({}))", a, b),
+                        "bshr" => format!("(({}) >> (({}) & 63))", a, b),
+                        _ => format!("((int64_t)((uint64_t)({}) << (({}) & 63)))", a, b),
+                    };
+                }
                 // `min`/`max`/`abs` — выражением, без функций рантайма.
                 // Аргументы вычисляются один раз: у макроса был бы двойной
                 // вызов при побочных эффектах.
@@ -2402,7 +2444,7 @@ impl<'a> Codegen<'a> {
                         .deref()
                         .clone();
                     let c = self.ty(&ty);
-                    let a = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
+                    let a = args.first().map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
                     if name == "abs" {
                         return format!(
                             "({{ {c} __k_v = {a}; __k_v < 0 ? -__k_v : __k_v; }})",
@@ -2410,7 +2452,7 @@ impl<'a> Codegen<'a> {
                             a = a
                         );
                     }
-                    let b = args.get(1).map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
+                    let b = args.get(1).map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
                     let op = if name == "min" { "<" } else { ">" };
                     return format!(
                         "({{ {c} __k_a = {a}; {c} __k_b = {b}; __k_a {op} __k_b ? __k_a : __k_b; }})",

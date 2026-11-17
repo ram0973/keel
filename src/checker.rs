@@ -4049,6 +4049,50 @@ impl Checker {
             return Type::Int;
         }
 
+        // Побитовые операции: `band`, `bor`, `bxor`, `bshl`, `bshr` — по
+        // два аргумента, `bnot` — один. Операторы `&` и `|` в Keel заняты
+        // ссылками и or-паттернами, поэтому операции живут как функции.
+        if matches!(
+            name.as_str(),
+            "band" | "bor" | "bxor" | "bshl" | "bshr" | "bnot"
+        ) {
+            let want = if name == "bnot" { 1 } else { 2 };
+            if args.len() != want {
+                self.diags.push(
+                    Diagnostic::new(
+                        line,
+                        format!(
+                            "`{}` принимает {}, получено {}",
+                            name,
+                            аргументов(want),
+                            args.len()
+                        ),
+                    )
+                    .code("E020")
+                    .hint(format!(
+                        "вызовите `{}` с {}",
+                        name,
+                        аргументов(want)
+                    )),
+                );
+            }
+            for a in args {
+                let t = self.type_of(a, ctx).deref().clone();
+                if t != Type::Int {
+                    self.diags.push(
+                        Diagnostic::new(
+                            a.line,
+                            format!("`{}` работает только с `int`, получен `{}`", name, t.name()),
+                        )
+                        .code("E007")
+                        .hint(format!("`{}` работает только с `int`", name)),
+                    );
+                }
+                self.record_move(a, &t, ctx);
+            }
+            return Type::Int;
+        }
+
         // `assert(cond, msg)` — проверка во время выполнения.
         if name == "assert" {
             if args.len() != 2 {
