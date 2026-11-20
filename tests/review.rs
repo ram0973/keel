@@ -871,3 +871,53 @@ fn main() int {
     assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
     assert!(r.c_code.contains("освобождение мусорного указателя"));
 }
+
+// ============================================================
+// Box<T>: кодогенерация
+// ============================================================
+
+#[test]
+fn box_генерирует_свою_структуру_и_выделение() {
+    let r = keelc::compile(
+        r#"
+struct Node { value int; }
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 1 });
+    println(b.value);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Своя C-структура для `Box<Node>`.
+    assert!(c.contains("struct Keel_Box_Node"));
+    // Выделение в куче — через рантайм, а не malloc.
+    assert!(c.contains("ke_alloc_copy"));
+    // Разыменование автоматическое: `b.value` → `b.ptr->value`.
+    assert!(c.contains(".ptr->value"));
+}
+
+#[test]
+fn box_рекурсивного_типа_освобождается_рекурсивно() {
+    // Содержимое блока само владеет боксами — их надо освободить
+    // до самого блока, иначе они утекут.
+    let r = keelc::compile(
+        r#"
+struct Node {
+    value int;
+    next Option<Box<Node>>;
+}
+fn main() int {
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Функция освобождения — отдельная, с рекурсивным вызовом.
+    assert!(c.contains("static void k_box_free_Node(void *p)"));
+    assert!(c.contains("k_box_free_Node(v->next.data.Some._0.ptr)"));
+}

@@ -25,12 +25,18 @@ pub struct Codegen<'a> {
     result_insts: &'a [(Type, Type)],
     /// Конкретные инстанциации встроенных `Vec<T>`.
     vec_insts: &'a [Type],
+    /// Конкретные инстанциации встроенных `Box<T>`.
+    box_insts: &'a [Type],
     /// Конкретные типы кортежей.
     tuple_insts: &'a [Type],
     /// Конкретные типы срезов.
     slice_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
     vec_drops: &'a HashMap<String, Vec<crate::checker::VecDrop>>,
+    /// `Box`-владения для автоматического освобождения.
+    box_drops: &'a HashMap<String, Vec<crate::checker::BoxDrop>>,
+    /// id субъекта `match` → флаги «связка заимствует payload».
+    match_bind_refs: &'a HashMap<u32, Vec<Vec<bool>>>,
     /// Тела замыканий — эмитятся после функций.
     closures: std::cell::RefCell<Vec<String>>,
     /// Сигнатуры замыканий — нужны forward-декларации: вложенное
@@ -99,6 +105,7 @@ enum DefKind {
     Option(Type),
     Result(Type, Type),
     Vec(Type),
+    Box(Type),
     Tuple(Vec<Type>),
     Slice(Type),
 }
@@ -129,9 +136,12 @@ impl<'a> Codegen<'a> {
             option_insts: &checker.option_insts,
             result_insts: &checker.result_insts,
             vec_insts: &checker.vec_insts,
+            box_insts: &checker.box_insts,
             tuple_insts: &checker.tuple_insts,
             slice_insts: &checker.slice_insts,
             vec_drops: &checker.vec_drops,
+            box_drops: &checker.box_drops,
+            match_bind_refs: &checker.match_bind_refs,
             closures: std::cell::RefCell::new(Vec::new()),
             closure_sigs: std::cell::RefCell::new(Vec::new()),
             pending_closures: std::cell::RefCell::new(Vec::new()),
@@ -248,6 +258,7 @@ impl<'a> Codegen<'a> {
                 format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())
             }
             Type::Vec(inner) => format!("Keel_Vec_{}", inner.mangle()),
+            Type::Box(inner) => format!("Keel_Box_{}", inner.mangle()),
             Type::Tuple(ts) => format!(
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
@@ -467,6 +478,8 @@ impl<'a> Codegen<'a> {
         // определять их в порядке зависимостей.
         self.emit_forward_decls();
         self.emit_type_defs();
+        // Освобождение `Box` — после типов: оно знает их раскладку.
+        self.emit_box_drops();
         self.out.borrow_mut().push('\n');
         // Конструкторы структур с массивами в полях.
         for item in &self.prog.items {
@@ -648,6 +661,14 @@ impl<'a> Codegen<'a> {
                 vec![(**inner).clone()],
             ));
         }
+        for t in self.box_insts {
+            let Type::Box(inner) = t else { continue };
+            defs.push((
+                format!("Keel_Box_{}", inner.mangle()),
+                DefKind::Box((**inner).clone()),
+                vec![(**inner).clone()],
+            ));
+        }
         for t in self.tuple_insts {
             let Type::Tuple(ts) = t else { continue };
             defs.push((
@@ -686,6 +707,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     DefKind::Option(inner) => self.emit_option_def(inner),
+                    DefKind::Box(inner) => self.emit_box_def(inner),
                     DefKind::Result(ok, err) => self.emit_result_def(ok, err),
                     DefKind::Vec(inner) => self.emit_vec_def(inner),
                     DefKind::Tuple(ts) => self.emit_tuple_def(ts),
@@ -735,6 +757,7 @@ impl<'a> Codegen<'a> {
             Type::Option(inner) => Some(format!("Keel_Option_{}", inner.mangle())),
             Type::Result(ok, err) => Some(format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())),
             Type::Vec(inner) => Some(format!("Keel_Vec_{}", inner.mangle())),
+            Type::Box(inner) => Some(format!("Keel_Box_{}", inner.mangle())),
             Type::Tuple(ts) => Some(format!(
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
@@ -778,6 +801,16 @@ impl<'a> Codegen<'a> {
         let elem = self.ty(inner);
         self.out.borrow_mut().push_str(&format!(
             "struct {} {{\n  {}* data;\n  int64_t len;\n  int64_t cap;\n}};\n\n",
+            cname, elem
+        ));
+    }
+
+    /// `Box<T>` — указатель на одно значение в куче.
+    fn emit_box_def(&mut self, inner: &Type) {
+        let cname = format!("Keel_Box_{}", inner.mangle());
+        let elem = self.ty(inner);
+        self.out.borrow_mut().push_str(&format!(
+            "struct {} {{\n  {}* ptr;\n}};\n\n",
             cname, elem
         ));
     }
@@ -916,6 +949,11 @@ impl<'a> Codegen<'a> {
         }
         for (ok, err) in self.result_insts {
             let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+            self.out.borrow_mut().push_str(&format!("typedef struct {} {};\n", cname, cname));
+        }
+        for t in self.box_insts {
+            let Type::Box(inner) = t else { continue };
+            let cname = format!("Keel_Box_{}", inner.mangle());
             self.out.borrow_mut().push_str(&format!("typedef struct {} {};\n", cname, cname));
         }
         for t in self.vec_insts {
@@ -1256,8 +1294,51 @@ impl<'a> Codegen<'a> {
                 (d, idx)
             })
             .collect();
+        // `Box`: освобождаем по той же схеме liveness — сразу после
+        // последнего использования. Присваивание — особый случай:
+        // старое значение надо освободить ДО присваивания, иначе оно
+        // утечёт (новое значение занимает ту же переменную).
+        let box_drops = self
+            .box_drops
+            .get(&crate::checker::Checker::func_key(f))
+            .cloned()
+            .unwrap_or_default();
+        let box_last_use: Vec<(crate::checker::BoxDrop, usize)> = box_drops
+            .into_iter()
+            .map(|d| {
+                let last = f
+                    .body
+                    .stmts
+                    .iter()
+                    .rposition(|s| {
+                        stmt_mentions(s, &d.name)
+                            || d.aliases.iter().any(|a| stmt_mentions(s, a))
+                    })
+                    .unwrap_or(usize::MAX);
+                // Если последнее упоминание — присваивание, то после
+                // него переменная владеет новым значением: старое
+                // освобождается перед присваиванием, а новое — в конце
+                // области видимости.
+                let idx = match last {
+                    usize::MAX => usize::MAX,
+                    i if assigns_to_drop(&f.body.stmts[i], &d.name, &d.field) => usize::MAX,
+                    i => i,
+                };
+                (d, idx)
+            })
+            .collect();
         for (i, stmt) in f.body.stmts.iter().enumerate() {
+            // `Box`: присваивание освобождает старое значение ДО
+            // присваивания — иначе оно утечёт.
+            for (d, idx) in &box_last_use {
+                if *idx == i && assigns_to_drop(stmt, &d.name, &d.field) {
+                    if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                        self.out.borrow_mut().push_str(&code);
+                    }
+                }
+            }
             self.emit_stmt(stmt);
+            // `Vec`: освобождение после последнего использования.
             for (d, idx) in &last_use {
                 if *idx == i {
                     if let Type::Vec(inner) = &d.ty {
@@ -1274,8 +1355,16 @@ impl<'a> Codegen<'a> {
                     }
                 }
             }
+            // `Box`: освобождение после последнего использования.
+            for (d, idx) in &box_last_use {
+                if *idx == i && !assigns_to_drop(stmt, &d.name, &d.field) {
+                    if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                        self.out.borrow_mut().push_str(&code);
+                    }
+                }
+            }
         }
-        // Vec, которые не упоминались нигде — освобождаем в конце.
+        // Vec и Box, которые не упоминались нигде — освобождаем в конце.
         for (d, idx) in &last_use {
             if *idx == usize::MAX {
                 if let Type::Vec(inner) = &d.ty {
@@ -1288,6 +1377,13 @@ impl<'a> Codegen<'a> {
                     self.out
                         .borrow_mut()
                         .push_str(&format!("  k_vec_{}_free(&{});\n", m, target));
+                }
+            }
+        }
+        for (d, idx) in &box_last_use {
+            if *idx == usize::MAX {
+                if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                    self.out.borrow_mut().push_str(&code);
                 }
             }
         }
@@ -1356,6 +1452,202 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Владеет ли тип кучей, которую надо освободить.
+    fn type_owns_box(&self, t: &Type) -> bool {
+        match t {
+            Type::Box(_) => true,
+            Type::Option(inner) => self.type_owns_box(inner),
+            Type::Result(ok, err) => self.type_owns_box(ok) || self.type_owns_box(err),
+            Type::Named(n) => self
+                .structs
+                .get(n)
+                .map(|s| s.fields.iter().any(|f| self.type_owns_box(&f.ty)))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Код освобождения вложенного владения.
+    ///
+    /// `expr` — выражение, дающее значение этого типа: сам блок для
+    /// `Box`, вариант с тегом для `Option`/`Result`, содержимое для
+    /// структуры.
+    fn free_owned_expr(&self, ty: &Type, expr: &str) -> String {
+        match ty {
+            Type::Box(inner) => {
+                format!("  k_box_free_{}({}.ptr);\n", inner.mangle(), expr)
+            }
+            Type::Option(inner) => {
+                // Внутри `Option` лежит `Box<T>` — функция освобождения
+                // называется по содержимому блока, а не по `Box`.
+                let Type::Box(pointee) = inner.as_ref() else {
+                    return String::new();
+                };
+                let c = format!("Keel_Option_{}", inner.mangle());
+                format!(
+                    "  if ({}.tag == {}_Some) k_box_free_{}({}.data.Some._0.ptr);\n",
+                    expr,
+                    c,
+                    pointee.mangle(),
+                    expr
+                )
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                let ok_pointee = match ok.as_ref() {
+                    Type::Box(t) => Some(t.mangle()),
+                    _ => None,
+                };
+                let err_pointee = match err.as_ref() {
+                    Type::Box(t) => Some(t.mangle()),
+                    _ => None,
+                };
+                match (ok_pointee, err_pointee) {
+                    (Some(okm), Some(errm)) => format!(
+                        "  if ({}.tag == {}_Ok) k_box_free_{}({}.data.Ok._0.ptr); else k_box_free_{}({}.data.Err._0.ptr);\n",
+                        expr, c, okm, expr, errm, expr
+                    ),
+                    (Some(okm), None) => format!(
+                        "  if ({}.tag == {}_Ok) k_box_free_{}({}.data.Ok._0.ptr);\n",
+                        expr, c, okm, expr
+                    ),
+                    (None, Some(errm)) => format!(
+                        "  if ({}.tag == {}_Err) k_box_free_{}({}.data.Err._0.ptr);\n",
+                        expr, c, errm, expr
+                    ),
+                    _ => String::new(),
+                }
+            }
+            Type::Named(n) => {
+                let Some(decl) = self.structs.get(n) else {
+                    return String::new();
+                };
+                let mut out = String::new();
+                for f in &decl.fields {
+                    if !self.type_owns_box(&f.ty) {
+                        continue;
+                    }
+                    out.push_str(&self.free_owned_expr(&f.ty, &format!("v->{}", f.name)));
+                }
+                out
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Функции освобождения `Box`: содержимое блока может само
+    /// владеть боксами — их надо освободить до самого блока.
+    fn emit_box_drops(&mut self) {
+        let need: Vec<Type> = self
+            .box_insts
+            .iter()
+            .filter(|t| match t {
+                Type::Box(inner) => self.type_owns_box(inner),
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        if need.is_empty() {
+            return;
+        }
+        // Вперёд объявления: типы могут ссылаться друг на друга.
+        for t in &need {
+            let Type::Box(inner) = t else { continue };
+            self.out.borrow_mut().push_str(&format!(
+                "static void k_box_free_{}(void *p);\n",
+                inner.mangle()
+            ));
+        }
+        self.out.borrow_mut().push_str("\n");
+        for t in &need {
+            let Type::Box(inner) = t else { continue };
+            let m = inner.mangle();
+            let inner_c = self.ty(inner);
+            let body = self.free_owned_expr(inner, "v");
+            self.out.borrow_mut().push_str(&format!(
+                "static void k_box_free_{m}(void *p) {{\n  {inner_c}* v = ({inner_c}*)p;\n{body}  ke_free(p);\n}}\n\n",
+                m = m,
+                inner_c = inner_c,
+                body = body
+            ));
+        }
+    }
+
+    /// Вызов освобождения блока: `Box<T>`, где содержимое само владеет
+    /// боксами, — через функцию освобождения, иначе через `ke_free`.
+    fn free_block(&self, inner: &Type, expr: &str) -> String {
+        if self.type_owns_box(inner) {
+            format!("k_box_free_{}({}.ptr)", inner.mangle(), expr)
+        } else {
+            format!("ke_free({}.ptr)", expr)
+        }
+    }
+
+    /// Код освобождения `Box`-владения.
+    ///
+    /// `Box<T>` — освобождаем сам блок. `Option<Box<T>>` и
+    /// `Result<Box<T>, E>` — только если вариант несёт `Box`: у
+    /// `None`/`Err` блока нет, освобождать нечего.
+    fn box_free_code(&self, name: &str, field: &Option<String>, ty: &Type) -> Option<String> {
+        let cname = self.var_name(name);
+        let target = match field {
+            Some(f) => format!("{}.{}", cname, f),
+            None => cname,
+        };
+        match ty {
+            Type::Box(inner) => Some(format!(
+                "  {};\n",
+                self.free_block(inner, &target)
+            )),
+            Type::Option(inner) => {
+                let c = format!("Keel_Option_{}", inner.mangle());
+                let Type::Box(pointee) = inner.as_ref() else {
+                    return None;
+                };
+                Some(format!(
+                    "  if ({}.tag == {}_Some) {};\n",
+                    target,
+                    c,
+                    self.free_block(pointee, &format!("{}.data.Some._0", target))
+                ))
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                let ok_pointee = match ok.as_ref() {
+                    Type::Box(t) => Some(t.clone()),
+                    _ => None,
+                };
+                let err_pointee = match err.as_ref() {
+                    Type::Box(t) => Some(t.clone()),
+                    _ => None,
+                };
+                match (ok_pointee, err_pointee) {
+                    (Some(okt), Some(ert)) => Some(format!(
+                        "  if ({}.tag == {}_Ok) {}; else {};\n",
+                        target,
+                        c,
+                        self.free_block(&okt, &format!("{}.data.Ok._0", target)),
+                        self.free_block(&ert, &format!("{}.data.Err._0", target))
+                    )),
+                    (Some(okt), None) => Some(format!(
+                        "  if ({}.tag == {}_Ok) {};\n",
+                        target,
+                        c,
+                        self.free_block(&okt, &format!("{}.data.Ok._0", target))
+                    )),
+                    (None, Some(ert)) => Some(format!(
+                        "  if ({}.tag == {}_Err) {};\n",
+                        target,
+                        c,
+                        self.free_block(&ert, &format!("{}.data.Err._0", target))
+                    )),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Нулевое значение типа — для возврата в конце функции, которая
     /// может закончиться без `return`.
     fn zero_value(&self, t: &Type) -> String {
@@ -1389,6 +1681,7 @@ impl<'a> Codegen<'a> {
                 format!("({}){{ .tag = {}_Ok }}", c, c)
             }
             Type::Vec(inner) => format!("(Keel_Vec_{}){{0}}", inner.mangle()),
+            Type::Box(inner) => format!("(Keel_Box_{}){{0}}", inner.mangle()),
             Type::Tuple(_) => format!("({}){{0}}", self.ty(t)),
             Type::Slice(_) => format!("({}){{0}}", self.ty(t)),
             Type::Fn(..) => "NULL".to_string(),
@@ -1734,7 +2027,7 @@ impl<'a> Codegen<'a> {
                 if match_has_guard {
                     self.out.borrow_mut().push_str("  bool __k_done = false;\n");
                 }
-                for arm in arms {
+                for (arm_index, arm) in arms.iter().enumerate() {
                     let case = if is_payload {
                         format!("{}_{}", cname, arm.variant)
                     } else {
@@ -1790,14 +2083,33 @@ impl<'a> Codegen<'a> {
                         .map(|b| (b.clone(), self.var_names.borrow().get(b).cloned()))
                         .collect();
                     if is_payload {
+                        // Связка, которая заимствует payload (субъект
+                        // был взят по ссылке), — это указатель: владения
+                        // у неё нет, и освобождать ей нечего.
+                        let arm_flags = self
+                            .match_bind_refs
+                            .get(&subject.id)
+                            .and_then(|v| v.get(arm_index))
+                            .cloned()
+                            .unwrap_or_default();
                         for (i, b) in arm.bindings.iter().enumerate() {
                             let cname = self.fresh_var_name(b);
                             let ty = payload.get(i).cloned().unwrap_or(Type::Int);
-                            let decl = self.decl(&ty, &cname);
-                            self.out.borrow_mut().push_str(&format!(
-                                "      {} = __k_subj.data.{}._{};\n",
-                                decl, arm.variant, i
-                            ));
+                            let borrowed = arm_flags.get(i).copied().unwrap_or(false);
+                            if borrowed {
+                                let bty = Type::Ref(Box::new(ty.clone()));
+                                let decl = self.decl(&bty, &cname);
+                                self.out.borrow_mut().push_str(&format!(
+                                    "      {} = &__k_subj.data.{}._{};\n",
+                                    decl, arm.variant, i
+                                ));
+                            } else {
+                                let decl = self.decl(&ty, &cname);
+                                self.out.borrow_mut().push_str(&format!(
+                                    "      {} = __k_subj.data.{}._{};\n",
+                                    decl, arm.variant, i
+                                ));
+                            }
                         }
                     }
                     if let Some(g) = &arm.guard {
@@ -2201,6 +2513,15 @@ impl<'a> Codegen<'a> {
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
+                // `Box<T>` — обёртка: поле лежит за указателем.
+                if let Some(Type::Box(_)) = base_ty {
+                    return format!("{}.ptr->{}", base, name);
+                }
+                if let Some(Type::Ref(inner)) = base_ty {
+                    if let Type::Box(_) = inner.as_ref() {
+                        return format!("{}->ptr->{}", base, name);
+                    }
+                }
                 // Если base — ссылка (указатель), используем ->.
                 match base_ty {
                     Some(Type::Tuple(_)) => format!("{}._{}", base, name),
@@ -2247,6 +2568,34 @@ impl<'a> Codegen<'a> {
                 if let Some(Type::Fn(..)) = self.types.get(&callee.id) {
                     let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
                     return format!("{}({})", self.var_name(name), a.join(", "));
+                }
+                // Встроенный `Box::new(x)`: выделяем в куче и копируем
+                // туда значение. `ke_alloc_copy` выделяет и копирует —
+                // так значение не остаётся в стеке.
+                if name == "Box::new" {
+                    let t = self
+                        .types
+                        .get(&e.id)
+                        .cloned()
+                        .unwrap_or(Type::Box(Box::new(Type::Int)));
+                    if let Type::Box(inner) = t {
+                        let c = format!("Keel_Box_{}", inner.mangle());
+                        let inner_c = self.ty(&inner);
+                        let v = args
+                            .first()
+                            .map(|a| self.expr(a))
+                            .unwrap_or_else(|| "0".to_string());
+                        // Значение кладём во временную переменную
+                        // нужного типа и копируем из неё: иначе
+                        // составной литерал вложился бы сам в себя.
+                        let tmp = self.decl(&inner, "__k_box_tmp");
+                        // Точка с запятой после составного литерала
+                        // обязательна: без неё gcc ждёт `;` перед `}`.
+                        return format!(
+                            "({{ {} = {}; ({}){{ .ptr = ({}*)ke_alloc_copy(sizeof({}), &__k_box_tmp) }}; }})",
+                            tmp, v, c, inner_c, inner_c
+                        );
+                    }
                 }
                 // Встроенный `Vec::new()`.
                 if name == "Vec::new" {
@@ -2801,6 +3150,23 @@ impl<'a> Codegen<'a> {
 }
 
 /// Упоминает ли оператор имя (для liveness `Vec`).
+/// Присваивает ли оператор переменной `name` (или её полю `field`).
+///
+/// Для `Box` это важно: при присваивании старое значение освобождается
+/// ДО присваивания, иначе оно утечёт.
+fn assigns_to_drop(s: &Stmt, name: &str, field: &Option<String>) -> bool {
+    match s {
+        Stmt::Assign { lhs, .. } => match (&lhs.kind, field) {
+            (ExprKind::Ident(n), None) => n == name,
+            (ExprKind::Field { obj, name: f }, Some(field)) => {
+                matches!(&obj.kind, ExprKind::Ident(n) if n == name) && f == field
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn stmt_mentions(s: &Stmt, name: &str) -> bool {
     match s {
         Stmt::Let { init, .. } => crate::checker::mentions_ident(init, name),

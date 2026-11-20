@@ -1,0 +1,59 @@
+// Дерево в куче.
+//
+// Узлы лежат в `Box`, ветви — `Option<Box<Node>>`. Дерево собрано
+// снизу вверх: сначала листья, потом корень. Так работает владение:
+// каждый узел принадлежит своему родителю, и при освобождении
+// родителя освобождаются и дети.
+//
+// Рекурсивный тип законен только потому, что ветвь — это `Box`:
+// `Box<Node>` занимает размер указателя, сколько бы узлов под ним
+// ни было.
+
+struct Node {
+    value int;
+    left Option<Box<Node>>;
+    right Option<Box<Node>>;
+}
+
+// Обход in-order: левое поддерево, узел, правое поддерево.
+fn inorder(n &Option<Box<Node>>) {
+    match n {
+        Some(node) => {
+            inorder(&node.left);
+            print(node.value, " ");
+            inorder(&node.right);
+        }
+        None => {
+            return;
+        }
+    }
+}
+
+// Сумма значений дерева.
+fn sum(n &Option<Box<Node>>) int {
+    match n {
+        Some(node) => {
+            return node.value + sum(&node.left) + sum(&node.right);
+        }
+        None => {
+            return 0;
+        }
+    }
+}
+
+fn main() int {
+    let leaf20 = Some(Box::new(Node { value: 20, left: None, right: None }));
+    let leaf40 = Some(Box::new(Node { value: 40, left: None, right: None }));
+
+    let left = Some(Box::new(Node { value: 30, left: leaf20, right: leaf40 }));
+    let leaf60 = Some(Box::new(Node { value: 60, left: None, right: None }));
+    let right = Some(Box::new(Node { value: 50, left: leaf60, right: None }));
+
+    let root = Some(Box::new(Node { value: 35, left: left, right: right }));
+
+    print("in-order: ");
+    inorder(&root);
+    println();
+    println("сумма:    ", sum(&root));
+    return 0;
+}

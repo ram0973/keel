@@ -745,6 +745,12 @@ impl Parser {
                 self.expect_punct(">")?;
                 Ok(Type::Vec(Box::new(inner)))
             }
+            "Box" => {
+                self.expect_punct("<")?;
+                let inner = self.parse_type()?;
+                self.expect_punct(">")?;
+                Ok(Type::Box(Box::new(inner)))
+            }
             _ => Ok(Type::Named(name)),
         }
     }

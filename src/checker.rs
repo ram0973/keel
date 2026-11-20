@@ -163,6 +163,8 @@ pub struct Checker {
     pub result_insts: Vec<(Type, Type)>,
     /// Конкретные инстанциации встроенных `Vec<T>`.
     pub vec_insts: Vec<Type>,
+    /// Конкретные инстанциации встроенного `Box<T>`.
+    pub box_insts: Vec<Type>,
     /// Конкретные типы кортежей — для кодогенератора.
     pub tuple_insts: Vec<Type>,
     /// Конкретные типы срезов — для кодогенератора.
@@ -171,6 +173,12 @@ pub struct Checker {
     /// функция → [(имя, тип)]. Не включает перемещённые и явно
     /// освобождённые (`v.free()`).
     pub vec_drops: HashMap<String, Vec<VecDrop>>,
+    /// `Box`-владения, которые надо освободить: локальные переменные
+    /// типа `Box<T>` и поля структур такого типа.
+    pub box_drops: HashMap<String, Vec<BoxDrop>>,
+    /// id субъекта `match` → по ветвям и связкам: заимствует ли связка
+    /// payload (субъект был взят по ссылке) или владеет им.
+    pub match_bind_refs: HashMap<u32, Vec<Vec<bool>>>,
     diags: Diags,
 }
 
@@ -183,6 +191,20 @@ struct FuncInfo {
     file: String,
     /// Видна ли функция из других файлов (`pub` или метод типа).
     public: bool,
+}
+
+/// `Box`, который нужно освободить в конце функции.
+///
+/// `field` — `None` для локальной переменной, `Some("next")` для
+/// `Box` внутри поля структуры: владение принадлежит структуре.
+#[derive(Clone, Debug)]
+pub struct BoxDrop {
+    pub name: String,
+    pub field: Option<String>,
+    pub ty: Type,
+    /// Псевдонимы: локальные ссылки, указывающие на этот `Box`.
+    /// Освобождать раньше их последнего использования нельзя.
+    pub aliases: Vec<String>,
 }
 
 /// `Vec`, который нужно освободить в конце функции.
@@ -217,9 +239,12 @@ impl Checker {
             option_insts: Vec::new(),
             result_insts: Vec::new(),
             vec_insts: Vec::new(),
+            box_insts: Vec::new(),
             tuple_insts: Vec::new(),
             slice_insts: Vec::new(),
             vec_drops: HashMap::new(),
+            box_drops: HashMap::new(),
+            match_bind_refs: HashMap::new(),
             diags: Diags::new(),
         }
     }
@@ -316,6 +341,38 @@ impl Checker {
                 // Импорты обрабатывает загрузчик модулей: до проверщика
                 // они не доходят.
                 Item::Import(_) => {}
+            }
+        }
+
+        // Структура не может содержать саму себя по значению: размер
+        // получился бы бесконечным, и в C такая структура просто не
+        // собирается. `Box` цикл разрывает — там хранится указатель.
+        //
+        // Проверка идёт отдельным проходом: структуры могут ссылаться
+        // друг на друга в любом порядке объявления.
+        let structs: Vec<StructDecl> = self.structs.values().cloned().collect();
+        for s in &structs {
+            self.diags.file = s.file.clone();
+            for f in &s.fields {
+                if self.type_contains_struct(&f.ty, &s.name, 0) {
+                    self.diags.push(
+                        Diagnostic::new(
+                            f.line,
+                            format!(
+                                "структура `{}` содержит саму себя: поле `{}` типа `{}` — \
+                                 бесконечный размер",
+                                s.name,
+                                f.name,
+                                f.ty.name()
+                            ),
+                        )
+                        .code("E018")
+                        .hint(format!(
+                            "оберните в `Box`: `{} Box<{}>` — там хранится указатель",
+                            f.name, s.name
+                        )),
+                    );
+                }
             }
         }
 
@@ -805,6 +862,98 @@ impl Checker {
         if !drops.is_empty() {
             self.vec_drops.insert(Self::func_key(f), drops);
         }
+
+        // `Box` — владение кучей: освобождаем и локальную переменную,
+        // и поле структуры. Владеет кучей не только `Box<T>`, но и
+        // `Option<Box<T>>` / `Result<Box<T>, E>` — там освобождение
+        // зависит от варианта.
+        let mut box_drops: Vec<BoxDrop> = Vec::new();
+        for (name, l) in &ctx.scope {
+            if l.moved {
+                continue;
+            }
+            if !Self::owns_heap(&l.ty) {
+                continue;
+            }
+            // Параметр-владелец (`fn f(b Box<int>)`) — владение перешло
+            // к callee, и освобождать его ему.
+            if f.params.iter().any(|p| &p.name == name) {
+                let owned = f
+                    .params
+                    .iter()
+                    .any(|p| &p.name == name && matches!(p.kind, ParamKind::Owned));
+                if !owned {
+                    continue;
+                }
+            }
+            // Псевдонимы: ссылки на сам `Box` живут дольше него.
+            let mut aliases = Vec::new();
+            for (an, al) in &ctx.scope {
+                if an == name {
+                    continue;
+                }
+                let targets: Vec<Path> = if let Some(uid) = al.ref_uid {
+                    self.refs
+                        .iter()
+                        .find(|r| r.uid == uid)
+                        .map(|r| r.targets.clone())
+                        .unwrap_or_default()
+                } else {
+                    al.ref_target.clone().into_iter().collect()
+                };
+                if targets.iter().any(|t| l.path.may_cover(t)) {
+                    aliases.push(an.clone());
+                }
+            }
+            box_drops.push(BoxDrop {
+                name: name.clone(),
+                field: None,
+                ty: l.ty.clone(),
+                aliases,
+            });
+        }
+        // `Box` внутри поля структуры: `Holder { next: b }`. Владение
+        // принадлежит структуре, её и освобождаем.
+        for (name, l) in &ctx.scope {
+            if l.moved {
+                continue;
+            }
+            let Type::Named(sname) = &l.ty else {
+                continue;
+            };
+            if f.params.iter().any(|p| &p.name == name) {
+                continue;
+            }
+            let Some(decl) = self.structs.get(sname) else {
+                continue;
+            };
+            for fld in &decl.fields {
+                if !Self::owns_heap(&fld.ty) {
+                    continue;
+                }
+                box_drops.push(BoxDrop {
+                    name: name.clone(),
+                    field: Some(fld.name.clone()),
+                    ty: fld.ty.clone(),
+                    aliases: Vec::new(),
+                });
+            }
+        }
+        if !box_drops.is_empty() {
+            self.box_drops.insert(Self::func_key(f), box_drops);
+        }
+    }
+
+    /// Владеет ли тип кучей, которую надо освободить.
+    fn owns_heap(t: &Type) -> bool {
+        match t {
+            Type::Box(_) => true,
+            Type::Option(inner) => matches!(inner.as_ref(), Type::Box(_)),
+            Type::Result(ok, err) => {
+                matches!(ok.as_ref(), Type::Box(_)) || matches!(err.as_ref(), Type::Box(_))
+            }
+            _ => false,
+        }
     }
 
     /// Тип элемента, на который указывает путь внутри сигнатуры.
@@ -1072,6 +1221,7 @@ impl Checker {
         en: &str,
         variants: &[(String, Vec<Type>)],
         ctx: &mut Ctx,
+        subj_id: u32,
     ) {
         let base_scope = ctx.scope.clone();
         let base_refs = self.refs.clone();
@@ -1080,6 +1230,7 @@ impl Checker {
         let mut merged_refs = base_refs.clone();
         let mut all_diverged = !arms.is_empty();
         let mut seen: Vec<String> = Vec::new();
+        let mut arm_flags_all: Vec<Vec<bool>> = Vec::new();
         for arm in arms {
             let variant = variants.iter().find(|(n, _)| n == &arm.variant).cloned();
             // Альтернативы `A | B` — того же enum и существующие.
@@ -1156,6 +1307,7 @@ impl Checker {
 
             // Привязки данных варианта: `Some(x)`.
             let mut saved: Vec<(String, Option<Local>)> = Vec::new();
+            let mut arm_flags: Vec<bool> = Vec::new();
             if let Some((_, payload)) = &variant {
                 if payload.len() != arm.bindings.len() {
                     self.diags.push(Diagnostic::new(
@@ -1171,6 +1323,16 @@ impl Checker {
                 }
                 for (b, pt) in arm.bindings.iter().zip(payload.iter()) {
                     saved.push((b.clone(), ctx.scope.get(b).cloned()));
+                    // Payload, который чем-то владеет, связка только
+                    // заимствует: владение остаётся у субъекта. Иначе
+                    // связка стала бы вторым владельцем одного блока.
+                    let borrowed = !self.is_copy(pt);
+                    arm_flags.push(borrowed);
+                    let bty = if borrowed {
+                        Type::Ref(Box::new(pt.clone()))
+                    } else {
+                        pt.clone()
+                    };
                     let uid = self.next_uid;
                     self.next_uid += 1;
                     self.names.insert(uid, b.clone());
@@ -1178,7 +1340,7 @@ impl Checker {
                         b.clone(),
                         Local {
                             uid,
-                            ty: pt.clone(),
+                            ty: bty,
                             path: Path::root(&uid.to_string()),
                             ref_target: None,
                             ref_uid: None,
@@ -1214,6 +1376,7 @@ impl Checker {
                     }
                 }
             }
+            arm_flags_all.push(arm_flags);
             // Сливаем состояние ветви: перемещено/утечка, если так
             // в любой ветви. Ветвь с `return`/`break`/`continue` не
             // вливается — её состояние уходит не сюда.
@@ -1264,6 +1427,7 @@ impl Checker {
                 .hint("разберите все варианты enum"),
             );
         }
+        self.match_bind_refs.insert(subj_id, arm_flags_all);
     }
 
     /// Методы встроенного `Vec<T>`: `push`, `len`, `get`, `pop`, `free`.
@@ -1838,7 +2002,13 @@ impl Checker {
                 }
             }
             Stmt::Match { line, subject, arms } => {
-                let t = self.type_of(subject, ctx).deref().clone();
+                let subj_ty = self.type_of(subject, ctx);
+                let subj_id = subject.id;
+                let t = subj_ty.deref().clone();
+                // Субъект `match` не перемещается: владение payload'ом
+                // остаётся у него, а связки ветвей только заимствуют.
+                // Иначе блок, разобранный в ветви, терял бы
+                // владельца и утекал.
                 if matches!(t, Type::Int | Type::Str | Type::Bool) {
                     self.check_match_literals(*line, arms, &t, ctx);
                     return;
@@ -1848,7 +2018,14 @@ impl Checker {
                         ("Some".to_string(), vec![(**inner).clone()]),
                         ("None".to_string(), Vec::new()),
                     ];
-                    self.check_match_variants(*line, arms, "Option", &variants, ctx);
+                    self.check_match_variants(
+                        *line,
+                        arms,
+                        "Option",
+                        &variants,
+                        ctx,
+                        subj_id,
+                    );
                     return;
                 }
                 if let Type::Result(ok, err) = &t {
@@ -1856,7 +2033,14 @@ impl Checker {
                         ("Ok".to_string(), vec![(**ok).clone()]),
                         ("Err".to_string(), vec![(**err).clone()]),
                     ];
-                    self.check_match_variants(*line, arms, "Result", &variants, ctx);
+                    self.check_match_variants(
+                        *line,
+                        arms,
+                        "Result",
+                        &variants,
+                        ctx,
+                        subj_id,
+                    );
                     return;
                 }
                 let enum_name = match &t {
@@ -1879,7 +2063,14 @@ impl Checker {
                     .iter()
                     .map(|v| (v.name.clone(), v.payload.clone()))
                     .collect();
-                self.check_match_variants(*line, arms, &en, &variants, ctx);
+                self.check_match_variants(
+                    *line,
+                    arms,
+                    &en,
+                    &variants,
+                    ctx,
+                    subj_id,
+                );
             }
             Stmt::If { cond, then_block, else_block } => {
                 let ct = self.type_of(cond, ctx);
@@ -2415,6 +2606,32 @@ impl Checker {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return self.type_of(e, ctx);
                 };
+                if name == "Box::new" {
+                    if args.len() != 1 {
+                        self.diags.push(Diagnostic::new(
+                            e.line,
+                            format!("`Box::new` принимает один аргумент, получено {}", args.len()),
+                        ));
+                    }
+                    let inner = match expected {
+                        Some(Type::Box(t)) => (**t).clone(),
+                        _ => match args.first() {
+                            Some(a) => self.type_of(a, ctx),
+                            None => {
+                                self.diags.push(Diagnostic::new(
+                                    e.line,
+                                    "не удалось вывести тип `Box::new`: укажите тип, \
+                                     например `let b Box<int> = Box::new(5);`"
+                                        .to_string(),
+                                ));
+                                Type::Int
+                            }
+                        },
+                    };
+                    let ty = Type::Box(Box::new(inner));
+                    self.record_box_inst(&ty);
+                    return ty;
+                }
                 if name == "Vec::new" {
                     if !args.is_empty() {
                         self.diags.push(Diagnostic::new(
@@ -2549,6 +2766,15 @@ impl Checker {
         }
     }
 
+    /// Запомнить инстанциацию `Box<T>` — для генерации C-структуры.
+    fn record_box_inst(&mut self, ty: &Type) {
+        if let Type::Box(_) = ty {
+            if !self.box_insts.contains(ty) {
+                self.box_insts.push(ty.clone());
+            }
+        }
+    }
+
     fn record_vec_inst(&mut self, ty: &Type) {
         if let Type::Vec(inner) = ty {
             if !self.vec_insts.contains(ty) {
@@ -2601,6 +2827,10 @@ impl Checker {
                 self.record_type_insts(inner);
                 self.record_vec_inst(t);
             }
+            Type::Box(inner) => {
+                self.record_type_insts(inner);
+                self.record_box_inst(t);
+            }
             Type::Ref(inner) => self.record_type_insts(inner),
             Type::Array(inner, _) => self.record_type_insts(inner),
             // Срез в параметре или поле — его C-структура должна быть
@@ -2615,7 +2845,7 @@ impl Checker {
 
     /// Допустим ли тип как данные `Option`/`Result`.
     fn check_payload_type(&mut self, line: usize, t: &Type, wrapper: &str) {
-        if !self.payload_type_ok(t) {
+        if !self.payload_type_ok_owned(t) {
             self.diags.push(Diagnostic::new(
                 line,
                 format!(
@@ -2781,7 +3011,9 @@ impl Checker {
                         self.type_of(val, ctx);
                         continue;
                     };
-                    let vt = self.type_of(val, ctx);
+                    // Ожидаемый тип поля известен — по нему выводится
+                    // и `None`, и `Vec::new()`, и прочее.
+                    let vt = self.type_of_expected(val, Some(&f.ty), ctx);
                     if !self.types_compatible(f.ty.clone(), &vt) {
                         self.diags.push(Diagnostic::new(
                             e.line,
@@ -2798,7 +3030,7 @@ impl Checker {
             },
             ExprKind::Field { obj, name } => {
                 let base = self.type_of(obj, ctx);
-                let base = base.deref().clone();
+                let base = self.peel_box(&base.deref().clone());
                 let base_name = base.name();
                 match base {
                     Type::Named(sn) => match self.structs.get(&sn) {
@@ -2836,7 +3068,8 @@ impl Checker {
             // `x.method(args)` — ищем метод по типу получателя и
             // проверяем как обычный вызов с `x` первым аргументом.
             ExprKind::MethodCall { obj, name, args } => {
-                let obj_ty = self.type_of(obj, ctx).deref().clone();
+                let obj_ty_raw = self.type_of(obj, ctx).deref().clone();
+                let obj_ty = self.peel_box(&obj_ty_raw);
                 if let Type::Vec(elem) = &obj_ty {
                     return self.type_of_vec_method(e, obj, name, args, elem, ctx);
                 }
@@ -3775,6 +4008,37 @@ impl Checker {
             return Type::Void;
         }
 
+        // `Box::new(x)` — тип выводится из аргумента: объявлять
+        // `Box<T>` явно не обязательно.
+        if name == "Box::new" {
+            if args.len() != 1 {
+                self.diags.push(Diagnostic::new(
+                    line,
+                    format!("`Box::new` принимает один аргумент, получено {}", args.len()),
+                ));
+            }
+            let inner = match args.first() {
+                Some(a) => {
+                    // Перемещение фиксирует `record_move` при разборе
+                    // выражения: иначе оно записалось бы дважды, и
+                    // второе срабатывание дало бы ложное «уже перемещён».
+                    self.type_of(a, ctx)
+                }
+                None => {
+                    self.diags.push(Diagnostic::new(
+                        line,
+                        "не удалось вывести тип `Box::new`: укажите тип, \
+                         например `let b Box<int> = Box::new(5);`"
+                            .to_string(),
+                    ));
+                    Type::Int
+                }
+            };
+            let ty = Type::Box(Box::new(inner));
+            self.record_box_inst(&ty);
+            return ty;
+        }
+
         let bad = self
             .funcs
             .get(name)
@@ -4354,6 +4618,7 @@ impl Checker {
             Type::Array(inner, _) | Type::Vec(inner) | Type::Option(inner) => {
                 self.type_contains_ref_depth(inner, depth + 1)
             }
+            Type::Box(inner) => self.type_contains_ref_depth(inner, depth + 1),
             Type::Result(ok, err) => {
                 self.type_contains_ref_depth(ok, depth + 1)
                     || self.type_contains_ref_depth(err, depth + 1)
@@ -4384,6 +4649,47 @@ impl Checker {
     /// Корень пути локальной переменной — её числовой uid; корень
     /// параметра — его имя. Это и различает случаи: вернуть ссылку
     /// на параметр можно, на локальную — нет.
+    /// Содержит ли тип структуру `name` по значению.
+    ///
+    /// `Box` цикл разрывает: `struct Node { next Box<Node> }` — законно,
+    /// размер структуры конечен. Остальные обёртки цикл не разрывают.
+    fn type_contains_struct(&self, t: &Type, name: &str, depth: usize) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        match t {
+            Type::Named(n) => {
+                if n == name {
+                    return true;
+                }
+                if let Some(s) = self.structs.get(n) {
+                    return s
+                        .fields
+                        .iter()
+                        .any(|f| self.type_contains_struct(&f.ty, name, depth + 1));
+                }
+                false
+            }
+            Type::Array(inner, _) | Type::Vec(inner) | Type::Slice(inner) | Type::Option(inner) => {
+                self.type_contains_struct(inner, name, depth + 1)
+            }
+            Type::Result(ok, err) => {
+                self.type_contains_struct(ok, name, depth + 1)
+                    || self.type_contains_struct(err, name, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    /// Снимает обёртку `Box<T>`: к полям и методам `Box` обращаются
+    /// как к полям и методам `T` — разыменование автоматическое.
+    fn peel_box(&self, t: &Type) -> Type {
+        match t {
+            Type::Box(inner) => (**inner).clone(),
+            t => t.clone(),
+        }
+    }
+
     fn path_is_local(&self, p: &Path, _ctx: &Ctx) -> bool {
         p.root.parse::<u32>().is_ok()
     }
@@ -4477,13 +4783,43 @@ impl Checker {
                     .hint("возьмите ссылку `&a[0]` или скопируйте поля по одному"),
                 );
             }
-            ExprKind::StructInit { fields, .. } => {
-                let vals: Vec<(Expr, Type)> = fields
-                    .iter()
-                    .map(|(_, v)| (v.clone(), self.type_of(v, ctx)))
-                    .collect();
-                for (v, vt) in vals {
-                    self.record_move(&v, &vt, ctx);
+            // Владение переходит внутрь обёртки: `Some(x)`,
+            // `Ok(x)`, `Box::new(x)`. Обычные вызовы функций
+            // разбираются отдельно — там перемещение определяется
+            // типом параметра.
+            ExprKind::Call { callee, args } => {
+                let takes = match &callee.kind {
+                    ExprKind::Ident(n) => {
+                        matches!(n.as_str(), "Some" | "Ok" | "Err" | "Box::new")
+                    }
+                    _ => false,
+                };
+                if takes {
+                    for v in args {
+                        // `None` владеть нечем, а пере-типизировать его
+                        // без ожидаемого типа — значит спросить вывод
+                        // типа у того, кто его не знает.
+                        if matches!(&v.kind, ExprKind::Ident(n) if n == "None") {
+                            continue;
+                        }
+                        let vt = self.type_of(v, ctx);
+                        self.record_move(v, &vt, ctx);
+                    }
+                }
+            }
+            ExprKind::StructInit { name, fields } => {
+                // Тип значения — объявленный тип поля: пере-типизировать
+                // не нужно, иначе `None` без ожидаемого типа даст
+                // ошибку вывода типа.
+                let Some(decl) = self.structs.get(name).cloned() else {
+                    return;
+                };
+                for (fname, v) in fields {
+                    let Some(f) = decl.fields.iter().find(|f| f.name == *fname) else {
+                        continue;
+                    };
+                    let ft = f.ty.clone();
+                    self.record_move(v, &ft, ctx);
                 }
             }
             ExprKind::Tuple(items) => {
@@ -4511,6 +4847,19 @@ impl Checker {
             Type::Option(inner) => self.payload_type_ok(inner),
             Type::Result(ok, err) => self.payload_type_ok(ok) && self.payload_type_ok(err),
             _ => false,
+        }
+    }
+
+    /// Допустим ли тип в данных `Option`/`Result`.
+    ///
+    /// В отличие от данных пользовательских enum'ов, здесь разрешён
+    /// `Box<T>`: он владеет кучей, и `Option<Box<T>>` — законный
+    /// способ выразить «узла нет». Вложенный `Option<Option<Box<T>>>`
+    /// запрещён: освобождение вложенного варианта слишком глубоко.
+    fn payload_type_ok_owned(&self, t: &Type) -> bool {
+        match t {
+            Type::Box(_) => true,
+            _ => self.payload_type_ok(t),
         }
     }
 
@@ -4590,6 +4939,7 @@ impl Checker {
                     && self.types_compatible((**x2).clone(), y2)
             }
             (Type::Vec(x), Type::Vec(y)) => self.types_compatible((**x).clone(), y),
+            (Type::Box(x), Type::Box(y)) => self.types_compatible((**x).clone(), y),
             (Type::Slice(x), Type::Slice(y)) => self.types_compatible((**x).clone(), y),
             (Type::Slice(x), Type::Array(y, _)) => self.types_compatible((**x).clone(), y),
             _ => a == *b,

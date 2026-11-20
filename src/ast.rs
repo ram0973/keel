@@ -22,6 +22,12 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     /// Встроенный `Vec<T>`: растущий массив в куче.
     Vec(Box<Type>),
+    /// Встроенный `Box<T>`: одно значение в куче, единственный владелец.
+    ///
+    /// В отличие от `Vec<T>`, `Box<T>` — ровно одно значение, и оно
+    /// всегда есть: пустой `Box` невозможен (в Keel нет null), для
+    /// отсутствующего значения — `Option<Box<T>>`.
+    Box(Box<Type>),
     /// Кортеж `(T, U)`.
     Tuple(Vec<Type>),
     /// Срез `[T]`: указатель на элементы + длина.
@@ -56,6 +62,7 @@ impl Type {
             Type::Option(t) => format!("Option<{}>", t.name()),
             Type::Result(t, e) => format!("Result<{}, {}>", t.name(), e.name()),
             Type::Vec(t) => format!("Vec<{}>", t.name()),
+            Type::Box(t) => format!("Box<{}>", t.name()),
             Type::Tuple(ts) => format!(
                 "({})",
                 ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
@@ -83,6 +90,7 @@ impl Type {
             Type::Option(t) => format!("Option_{}", t.mangle()),
             Type::Result(t, e) => format!("Result_{}_{}", t.mangle(), e.mangle()),
             Type::Vec(t) => format!("Vec_{}", t.mangle()),
+            Type::Box(t) => format!("Box_{}", t.mangle()),
             Type::Tuple(ts) => format!(
                 "Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")

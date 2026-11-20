@@ -91,6 +91,14 @@ void ke_free(void *p) {
     free(b);
 }
 
+/* Выделить блок и скопировать в него содержимое.
+ * Нужно для `Box::new(x)`: значение кладётся в кучу целиком. */
+void *ke_alloc_copy(size_t size, const void *src) {
+    void *p = ke_alloc(size);
+    memcpy(p, src, size);
+    return p;
+}
+
 /* Изменить размер блока, сохранив содержимое. */
 void *ke_realloc(void *p, size_t size) {
     if (p == NULL) {

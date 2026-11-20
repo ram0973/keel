@@ -1433,19 +1433,21 @@ fn main() int {
 #[test]
 fn методы_разных_типов_с_одинаковым_именем_не_сталкиваются() {
     // В C метод получает имя `k_Тип_метод`, поэтому `Point::get` и
-    // `Box::get` не конфликтуют.
+    // `Crate::get` не конфликтуют.
+    //
+    // Имя `Box` занято встроенным типом — как `Vec`, `Option`, `Result`.
     ok(r#"
 struct Point { x int; }
-struct Box { v int; }
+struct Crate { v int; }
 impl Point {
     fn get(self &Point) int { return self.x; }
 }
-impl Box {
-    fn get(self &Box) int { return self.v; }
+impl Crate {
+    fn get(self &Crate) int { return self.v; }
 }
 fn main() int {
     let p = Point(1);
-    let b = Box(2);
+    let b = Crate(2);
     println(p.get());
     println(b.get());
     return 0;
@@ -4933,4 +4935,127 @@ fn main() int {
 "#,
         "нулевой байт",
     );
+}
+
+// ============================================================
+// Box<T>: значение в куче, единственный владелец
+// ============================================================
+
+#[test]
+fn box_поле_читается_через_авторазыменование() {
+    ok(r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 7 });
+    println(b.value);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn box_в_option_разрешён() {
+    // `Option<Box<T>>` — законный способ выразить «узла нет».
+    ok(r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Option<Box<Node>> = None;
+    match b {
+        Some(n) => { println(n.value); }
+        None => { println("нет"); }
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn box_не_копируется() {
+    // Владение единственное: копии не бывает.
+    fails(
+        r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 1 });
+    let c Box<Node> = b;
+    println(b.value);
+    return 0;
+}
+"#,
+        "уже перемещён",
+    );
+}
+
+#[test]
+fn box_new_берёт_один_аргумент() {
+    fails(
+        r#"
+fn main() int {
+    let b Box<int> = Box::new(1, 2);
+    return 0;
+}
+"#,
+        "`Box::new` принимает один аргумент",
+    );
+}
+
+#[test]
+fn структура_не_содержит_саму_себя() {
+    // Бесконечный размер: `next Node` невозможно, нужен `Box`.
+    fails(
+        r#"
+struct Node {
+    value int;
+    next Node;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "содержит саму себя",
+    );
+}
+
+#[test]
+fn взаимная_рекурсия_тоже_ловится() {
+    fails(
+        r#"
+struct A {
+    b B;
+}
+
+struct B {
+    a A;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "содержит саму себя",
+    );
+}
+
+#[test]
+fn box_разрывает_рекурсию() {
+    ok(r#"
+struct Node {
+    value int;
+    next Box<Node>;
+}
+
+fn main() int {
+    return 0;
+}
+"#);
 }
