@@ -68,5 +68,17 @@ fn main() int {
         drained += x;
     }
     println("while let: ", drained);                      // 6
+
+    // Побитовые операции — функциями: `&` и `|` заняты ссылками и
+    // or-паттернами. Маска флага: бит 0 — запись, бит 1 — чтение.
+    let flags int = 10;                                   // 0b1010
+    println("band: ", band(flags, 8));                     // 8 — общий бит
+    println("bor: ", bor(flags, 1));                       // 11 — добавить бит
+    println("bxor: ", bxor(flags, 3));                     // 9 — переключить биты
+    println("bshl: ", bshl(1, 4));                         // 16
+    println("bshr: ", bshr(256, 4));                       // 16
+    println("bnot: ", bnot(0));                            // -1
+    assert(band(flags, 8) == 8, "общий бит");
+    assert(bnot(bnot(flags)) == flags, "двойная инверсия");
     return 0;
 }

@@ -5059,3 +5059,154 @@ fn main() int {
 }
 "#);
 }
+
+// Каждая диагностика получает код ошибки и подсказку «что делать».
+// Код нужен, чтобы искать ошибку в документации, подсказка — чтобы было
+// видно, что делать. Проверяем на наборе разных ошибок сразу.
+#[test]
+fn каждая_ошибка_имеет_код_и_подсказку() {
+    let r = compile(
+        r#"
+struct Point { x int; }
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push("не int");
+    let p = Point { y: 1 };
+    let o Option<int> = Some(1);
+    println(o.unwrap_or(1, 2));
+    return missing();
+}
+"#,
+    )
+    .unwrap();
+    assert!(!r.diagnostics.is_empty(), "ожидались ошибки");
+    for d in &r.diagnostics {
+        assert!(!d.code.is_empty(), "нет кода ошибки: {}", d.msg);
+        assert!(d.hint.is_some(), "нет подсказки: {}", d.msg);
+        assert!(
+            d.hint.as_ref().map_or(true, |h| !h.trim().is_empty()),
+            "пустая подсказка: {}",
+            d.msg
+        );
+    }
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("[E020]"), "нет кода E020:\n{}", text);
+}
+
+// Инвариант на уровне исходника: новая диагностика не появится без кода
+// и подсказки. Проверяем все сообщения компилятора, а не только те, что
+// попали в пример: маркеры должны идти строго по очереди —
+// Diagnostic::new, .code, .hint.
+#[test]
+fn в_исходнике_у_каждой_диагностики_есть_код_и_подсказка() {
+    let src = include_str!("../src/checker.rs");
+    let mut rest = src;
+    let mut checked = 0usize;
+    while let Some(i) = rest.find("Diagnostic::new(") {
+        let after = &rest[i..];
+        // До следующей диагностики ждём ровно `.code(` и `.hint(`.
+        let segment_end = after[1..]
+            .find("Diagnostic::new(")
+            .map_or(after.len(), |j| j + 1);
+        let segment = &after[..segment_end];
+        let code = segment
+            .find(".code(")
+            .unwrap_or_else(|| panic!("диагностика без кода: {}", head(segment)));
+        let hint = segment
+            .find(".hint(")
+            .unwrap_or_else(|| panic!("диагностика без подсказки: {}", head(segment)));
+        assert!(code < hint, "код и подсказка переставлены: {}", head(segment));
+        checked += 1;
+        rest = &after[segment_end..];
+    }
+    assert!(checked > 100, "найдено слишком мало диагностик: {}", checked);
+}
+
+/// Короткое начало фрагмента — для сообщения об ошибке.
+fn head(s: &str) -> String {
+    s.chars().take(120).collect()
+}
+
+// ============================================================
+// Битовая арифметика
+// ============================================================
+
+// Побитовые операции — функциями: `&` и `|` в Keel заняты ссылками и
+// or-паттернами, а `^`/`~`/`<<`/`>>` в лексере не знакомы.
+#[test]
+fn битовые_операции() {
+    ok(r#"
+fn main() int {
+    let a int = 12;
+    let b int = 10;
+    println(band(a, b));    // 8
+    println(bor(a, b));     // 14
+    println(bxor(a, b));    // 6
+    println(bshl(a, 2));    // 48
+    println(bshr(a, 2));    // 3
+    println(bnot(a));       // -13
+    return 0;
+}
+"#);
+}
+
+// Побитовая операция требует целые: строка или float — ошибка.
+#[test]
+fn битовые_операции_требуют_int() {
+    fails(
+        r#"
+fn main() int {
+    println(band(1, "два"));
+    return 0;
+}
+"#,
+        "работает только с `int`",
+    );
+}
+
+// Аргументов ровно два (для `bnot` — один).
+#[test]
+fn битовые_операции_арность() {
+    fails(
+        r#"
+fn main() int {
+    println(band(1));
+    return 0;
+}
+"#,
+        "принимает 2 аргумента",
+    );
+}
+
+// Сдвиг вправо — арифметический: знак расширяется, как в Rust.
+#[test]
+fn сдвиг_вправо_арифметический() {
+    ok(r#"
+fn main() int {
+    assert(bshr(-1, 63) == -1, "знак расширяется");
+    assert(bshr(-8, 1) == -4, "знак расширяется");
+    assert(bshr(1024, 4) == 64, "обычный сдвиг");
+    return 0;
+}
+"#);
+}
+
+// Числовая встроенная принимает ссылку на число: `min(&x, 3)` — это
+// `min(x, 3)`. Проверка разыменования: без неё C получал указатель
+// там, где ждалось число.
+#[test]
+fn числовая_встроенная_принимает_ссылку() {
+    ok(r#"
+fn f(x &int) int {
+    return min(x, 3);
+}
+
+fn main() int {
+    let a int = 5;
+    assert(f(&a) == 3, "min по ссылке");
+    assert(abs(&a) == 5, "abs по ссылке");
+    return 0;
+}
+"#);
+}
+

@@ -242,7 +242,7 @@ cargo run -- run examples/language-tour.keel
 | `examples/match-guards.keel` | Guards в `match`: условие на ветвь, привязка к субъекту |
 | `examples/match-patterns.keel` | `or`-паттерны: несколько вариантов или значений в одной ветви |
 | `examples/vec.keel` | `Vec<T>`: `push`, `get`, `pop`, обход, автоматическое освобождение |
-| `examples/conveniences.keel` | Прикладные мелочи: `for` по `Vec`/срезу, `step`/`..=`, методы `Option`/`Result` и `Vec`, `to_string`, `min`/`max`/`abs`, `assert` |
+| `examples/conveniences.keel` | Прикладные мелочи: `for` по `Vec`/срезу, `step`/`..=`, методы `Option`/`Result` и `Vec`, `to_string`, `min`/`max`/`abs`, побитовые `band`/`bor`/…, `assert` |
 | `examples/self-value.keel` | Зачем нужен `self` без `&`: единственный случай — положить объект в поле другой структуры |
 | `examples/modules.keel` | Модули: три файла, `import`, плоские имена. `registry.keel` сам подключает `user.keel` |
 | `experiments/clif/` | Эксперимент: та же функция, но собранная в IR Cranelift напрямую. Оценка перехода с C-бэкенда на собственный IR |
