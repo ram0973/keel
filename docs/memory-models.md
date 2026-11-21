@@ -29,8 +29,8 @@
 | Roc | refcount + FBIP | да | почти невозможны | нет | refcount-трафик |
 | Nim | ORC (ARC + циклы) | да | собирает | частично (`sink`/`lent`) | refcount + сборщик |
 | Valen | group borrowing | да | — | да (группы) | нулевая |
-| Mojo 1.0 | interior origins (вариант group borrowing) | да | — | да (регионы) | нулевая |
-| Carbon | group borrowing (в работе) | да | — | да (регионы) | нулевая |
+| Mojo 1.0 | interior origins (эксп. вариант group borrowing) | да | — | да (регионы) | нулевая |
+| Carbon | group borrowing (в разработке) | да | — | в процессе | нулевая |
 | Koka | Perceus refcount | да | cycle collector | нет | refcount |
 | Hylo | value semantics | да | — | нет (exclusivity) | нулевая |
 | ECS/SlotMap | generational keys | да | — | нет (ключи) | индирекция |
@@ -531,8 +531,8 @@ borrow checker нет: висячие `ptr`, use-after-free через `cast`/`a
 | Roc | refcount + FBIP | да | почти невозможны | нет | refcount-трафик |
 | Nim | ORC (ARC + циклы) | да | собирает | частично (`sink`/`lent`) | refcount + сборщик |
 | Valen | group borrowing | да | — | да (группы) | нулевая |
-| Mojo 1.0 | interior origins (вариант group borrowing) | да | — | да (регионы) | нулевая |
-| Carbon | group borrowing (в работе) | да | — | да (регионы) | нулевая |
+| Mojo 1.0 | interior origins (эксп. вариант group borrowing) | да | — | да (регионы) | нулевая |
+| Carbon | group borrowing (в разработке) | да | — | в процессе | нулевая |
 | Koka | Perceus refcount | да | cycle collector | нет | refcount |
 | Hylo | value semantics | да | — | нет (exclusivity) | нулевая |
 | ECS/SlotMap | generational keys | да | — | нет (ключи) | индирекция |
@@ -578,10 +578,13 @@ Keel выбрал **путь Rust** — статическая проверка 
    ссылки `List` привязаны к внутреннему региону контейнера, `append`/`pop`
    их инвалидируют, а lifetime checker отклоняет использование ссылки после
    мутации. Это та же семантика, что у Keel: `invalidate_inside` гасит ссылки
-   внутрь `Vec` при `push`/`pop`. Carbon использует предложение как отправную
-   точку (по ссылке из gist; само обсуждение в репозитории Carbon анонимно
-   недоступно). Значит, направление выбрано верно не только по соображениям,
-   но и потому, что его независимо взяли в язык, который дошёл до 1.0.
+   внутрь `Vec` при `push`/`pop`. Carbon Copy №9 (19.11.2025) подтверждает: Carbon
+   сначала рассматривал Rust-подобную модель типовых возможностей с shared
+   mutability (по образцу Ante), а теперь исследует подход с аннотацией
+   функций эффектами — вдохновлённый этими работами; работа разбита на
+   «safety units». Значит, направление выбрано верно не только по
+   соображениям, но и потому, что его независимо взяли и в язык, который
+   дошёл до 1.0 (Mojo), и в проект с большой базой C++-кода (Carbon).
    Не взят при этом один элемент: в оригинальной модели lifetime — это
    **регион** (множество переменных), и проверяется дизъюнктность
    регионов-параметров; у Keel только пути, и потребовать «эти два
