@@ -11,5 +11,13 @@ path = "src/lib.rs"
 name = "keelc"
 path = "src/main.rs"
 
+[dependencies]
+cranelift-codegen = "0.137.1"
+cranelift-frontend = "0.137.1"
+cranelift-module = "0.137.1"
+cranelift-native = "0.137.1"
+cranelift-object = "0.137.1"
+target-lexicon = "0.13"
+
 [profile.dev]
 debug = 1
