@@ -29,6 +29,8 @@
 | Roc | refcount + FBIP | да | почти невозможны | нет | refcount-трафик |
 | Nim | ORC (ARC + циклы) | да | собирает | частично (`sink`/`lent`) | refcount + сборщик |
 | Valen | group borrowing | да | — | да (группы) | нулевая |
+| Mojo 1.0 | interior origins (вариант group borrowing) | да | — | да (регионы) | нулевая |
+| Carbon | group borrowing (в работе) | да | — | да (регионы) | нулевая |
 | Koka | Perceus refcount | да | cycle collector | нет | refcount |
 | Hylo | value semantics | да | — | нет (exclusivity) | нулевая |
 | ECS/SlotMap | generational keys | да | — | нет (ключи) | индирекция |
@@ -529,6 +531,8 @@ borrow checker нет: висячие `ptr`, use-after-free через `cast`/`a
 | Roc | refcount + FBIP | да | почти невозможны | нет | refcount-трафик |
 | Nim | ORC (ARC + циклы) | да | собирает | частично (`sink`/`lent`) | refcount + сборщик |
 | Valen | group borrowing | да | — | да (группы) | нулевая |
+| Mojo 1.0 | interior origins (вариант group borrowing) | да | — | да (регионы) | нулевая |
+| Carbon | group borrowing (в работе) | да | — | да (регионы) | нулевая |
 | Koka | Perceus refcount | да | cycle collector | нет | refcount |
 | Hylo | value semantics | да | — | нет (exclusivity) | нулевая |
 | ECS/SlotMap | generational keys | да | — | нет (ключи) | индирекция |
@@ -568,6 +572,20 @@ Keel выбрал **путь Rust** — статическая проверка 
    `keel-risks.md`: расходы Keel предсказуемы и малы, но не нулевые —
    bounds-check, рантайм-проверка generational references, память на пути
    для диагностики.
+
+7. **Модель Н. Смита перестала быть черновиком — и это меняет нашу оценку
+   риска.** Mojo 1.0 (11.08.2026) включил «interior origins»: элементные
+   ссылки `List` привязаны к внутреннему региону контейнера, `append`/`pop`
+   их инвалидируют, а lifetime checker отклоняет использование ссылки после
+   мутации. Это та же семантика, что у Keel: `invalidate_inside` гасит ссылки
+   внутрь `Vec` при `push`/`pop`. Carbon использует предложение как отправную
+   точку (по ссылке из gist; само обсуждение в репозитории Carbon анонимно
+   недоступно). Значит, направление выбрано верно не только по соображениям,
+   но и потому, что его независимо взяли в язык, который дошёл до 1.0.
+   Не взят при этом один элемент: в оригинальной модели lifetime — это
+   **регион** (множество переменных), и проверяется дизъюнктность
+   регионов-параметров; у Keel только пути, и потребовать «эти два
+   аргумента — разные объекты» нельзя (долг в `lang-design.md` §7.1).
 
 **Итог.** Пространство решений не имеет «лучшего» ответа. Rust — «докажи
 безопасность, заплати сложностью»; Swift — «ARC + значимые типы + опциональный
