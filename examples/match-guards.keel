@@ -1,0 +1,39 @@
+// match с guard — условием на ветвь.
+//
+// «Подходит ли этот вариант — и если да, выполняется ли условие».
+// Если условие ложно, ветвь не подходит и разбор идёт к следующей.
+//
+// Два вида:
+//   - привязка: `n if n > 0` — имя связывается со значением субъекта;
+//   - условие на варианте: `Some(x) if x > 10` — читает привязку.
+//
+// Ветвь с условием — отдельная ветвь: `Some(x) if x > 10` и `Some(_)`
+// не считаются повтором.
+
+fn classify(n int) string {
+    match n {
+        n if n < 0 => { return "отрицательное"; }
+        0 => { return "ноль"; }
+        _ => { return "положительное"; }
+    }
+    return "?";
+}
+
+fn kind(o Option<int>) string {
+    match o {
+        Some(x) if x > 10 => { return "большое"; }
+        Some(_) => { return "маленькое"; }
+        None => { return "нет"; }
+    }
+    return "?";
+}
+
+fn main() {
+    println(classify(-5));
+    println(classify(0));
+    println(classify(7));
+
+    println(kind(Some(20)));
+    println(kind(Some(5)));
+    println(kind(None));
+}

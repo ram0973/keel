@@ -1,0 +1,84 @@
+// Прикладные мелочи: обход `Vec` и среза, шаг и `..=`, методы
+// `Option`/`Result` и `Vec`, дешёвые встроенные функции.
+
+fn sum_vec(items &Vec<int>) int {
+    let mut total int = 0;
+    for x in items {
+        total += x;
+    }
+    return total;
+}
+
+fn sum_slice(xs [int]) int {
+    let mut total int = 0;
+    for x in xs {
+        total += x;
+    }
+    return total;
+}
+
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(30); v.push(10); v.push(20);
+    println("сумма: ", sum_vec(&v));                      // 60
+    println("пусто: ", v.is_empty());                     // false
+    println("есть 10: ", v.contains(10));                 // true
+    println("первый: ", v.first().unwrap());              // 30
+    println("последний: ", v.last().unwrap());            // 20
+    v.sort();
+    println("после sort: ", v[0], " ", v[1], " ", v[2]);  // 10 20 30
+    v.reverse();
+    println("после reverse: ", v[0], " ", v[1], " ", v[2]); // 30 20 10
+
+    let a [int; 3] = [1, 2, 3];
+    let s [int] = a;
+    println("срез: ", sum_slice(s));                      // 6
+    for x in &a { print(x, " "); }                        // 1 2 3
+    println();
+
+    for i in 0..10 step 3 { print(i, " "); }              // 0 3 6 9
+    println();
+    for i in 2..=0 step -1 { print(i, " "); }             // 2 1 0
+    println();
+
+    let missing Option<int> = None;
+    println("unwrap_or: ", missing.unwrap_or(-1));        // -1
+    let bad Result<int, string> = Err("нет данных");
+    println("is_err: ", bad.is_err());                    // true
+    if let Some(x) = v.first() {
+        println("первый через if let: ", x);              // 30
+    }
+    if let Err(e) = bad {
+        println("ошибка: ", e);                           // нет данных
+    } else {
+        println("без ошибки");
+    }
+
+    println("min/max/abs: ", min(3, 7), " ", max(3, 7), " ", abs(-5)); // 3 7 5
+    println("to_string: ", to_string(2.5), " ", to_string(true));      // 2.5 true
+    println("to_int: ", to_int("41") + 1);                // 42
+    assert(len(to_string(7)) == 1, "одна цифра");
+    v.clear();
+    println("после clear: ", v.len(), " ", v.is_empty()); // 0 true
+
+    let mut stack Vec<int> = Vec::new();
+    stack.push(1); stack.push(2); stack.push(3);
+    let mut drained = 0;
+    while let Some(x) = stack.pop() {
+        drained += x;
+    }
+    println("while let: ", drained);                      // 6
+
+    // Побитовые операции — функциями: `&` и `|` заняты ссылками и
+    // or-паттернами. Маска флага: бит 0 — запись, бит 1 — чтение.
+    let flags int = 10;                                   // 0b1010
+    println("band: ", band(flags, 8));                     // 8 — общий бит
+    println("bor: ", bor(flags, 1));                       // 11 — добавить бит
+    println("bxor: ", bxor(flags, 3));                     // 9 — переключить биты
+    println("bshl: ", bshl(1, 4));                         // 16
+    println("bshr: ", bshr(256, 4));                       // 16
+    println("bnot: ", bnot(0));                            // -1
+    assert(band(flags, 8) == 8, "общий бит");
+    assert(bnot(bnot(flags)) == flags, "двойная инверсия");
+    return 0;
+}

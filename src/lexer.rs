@@ -20,7 +20,8 @@ const TWO_CHAR: &[&str] = &[
     "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=", "%=", "..", "::", "=>", "->",
 ];
 const ONE_CHAR: &[&str] = &[
-    "+", "-", "*", "/", "%", "=", "<", ">", "!", "&", ".", ",", ";", ":", "(", ")", "[", "]", "{", "}", "|", "?",
+    "+", "-", "*", "/", "%", "=", "<", ">", "!", "&", ".", ",", ";", ":", "(", ")", "[", "]", "{", "}", "|",
+    "?",
 ];
 
 pub fn lex(src: &str) -> Result<Vec<Token>, String> {
@@ -107,11 +108,21 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
             while i < chars.len() && chars[i] != '"' {
                 if chars[i] == '\\' && i + 1 < chars.len() {
                     i += 1;
+                    // Нулевой байт внутри строки невозможен: строка в
+                    // Keel — это C-строка, она заканчивается на первом
+                    // `\0`. Иначе длина и сравнение молча обрезали бы
+                    // строку, а в сгенерированный C попал бы сырой
+                    // нулевой байт.
+                    if chars[i] == '0' {
+                        return Err(format!(
+                            "line {}: строковый литерал не может содержать нулевой байт",
+                            line
+                        ));
+                    }
                     s.push(match chars[i] {
                         'n' => '\n',
                         't' => '\t',
                         'r' => '\r',
-                        '0' => '\0',
                         '\\' => '\\',
                         '"' => '"',
                         other => other,
@@ -133,12 +144,6 @@ pub fn lex(src: &str) -> Result<Vec<Token>, String> {
         }
 
         // Операторы
-        let three: String = chars[i..(i + 3).min(chars.len())].iter().collect();
-        if three == "..=" {
-            out.push(Token { tok: Tok::Punct(three), line });
-            i += 3;
-            continue;
-        }
         let two: String = chars[i..(i + 2).min(chars.len())].iter().collect();
         if TWO_CHAR.contains(&two.as_str()) {
             out.push(Token { tok: Tok::Punct(two), line });

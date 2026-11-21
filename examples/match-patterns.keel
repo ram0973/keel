@@ -1,0 +1,39 @@
+// or-паттерны: несколько вариантов в одной ветви.
+//
+// Через `|` перечисляем варианты enum'а или значения.
+//
+// Правила:
+//   - все варианты одного enum'а (или одного типа);
+//   - вариант должен существовать;
+//   - повтор запрещён;
+//   - альтернативы участвуют в исчерпывающем разборе.
+
+enum Light { Red, Yellow, Green }
+
+fn name(l Light) string {
+    match l {
+        Light::Red | Light::Green => { return "тёплый"; }
+        Light::Yellow => { return "жёлтый"; }
+    }
+    return "?";
+}
+
+fn size(n int) string {
+    match n {
+        1 | 2 | 3 => { return "мало"; }
+        10 => { return "десять"; }
+        _ => { return "много"; }
+    }
+    return "?";
+}
+
+fn main() {
+    println(name(Light::Red));
+    println(name(Light::Yellow));
+    println(name(Light::Green));
+
+    println(size(1));
+    println(size(3));
+    println(size(10));
+    println(size(99));
+}

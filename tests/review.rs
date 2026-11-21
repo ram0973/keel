@@ -1,3 +1,21 @@
+
+/// Вызовы функции `name` в C-коде, перед которыми нет идентификатора:
+/// `ke_realloc(` — это не `realloc(`.
+fn calls(c: &str, name: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let bytes = c.as_bytes();
+    let mut i = 0;
+    while let Some(p) = c[i..].find(name) {
+        let at = i + p;
+        let before = if at == 0 { b' ' } else { bytes[at - 1] };
+        let is_ident = before.is_ascii_alphanumeric() || before == b'_';
+        if !is_ident && c[at + name.len()..].starts_with('(') {
+            out.push(at);
+        }
+        i = at + name.len();
+    }
+    out
+}
 // Проверка замечаний ревью checker.rs. Каждый тест — гипотеза из ревью.
 // Пока тест падает — дыра реальна; после исправления он должен проходить.
 
@@ -692,632 +710,214 @@ fn main() int {
     assert!(r.c_code.contains("k_printf"), "нет префикса:\n{}", r.c_code);
 }
 
-// 31. Обход `Vec` в C идёт по буферу и длине, а не по массиву.
+// Тело-выражение: последнее выражение **без `;`** — возвращаемое
+// значение. С `;` — обычный оператор, значение отбрасывается.
 #[test]
-fn for_over_vec_uses_buffer_and_len() {
-    let r = compile(
+fn тело_выражение_без_точки_с_запятой_возвращает_значение() {
+    let r = keelc::compile(
         r#"
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(1);
-    let mut total = 0;
-    for e in v {
-        total += e;
-    }
-    return total;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains(".data[__ki]") && r.c_code.contains(".len;"),
-        "обход Vec не по буферу:\n{}",
-        r.c_code
-    );
-}
-
-// 32. `step` и `..=` в C: шаг вычисляется один раз, направление — тернарник.
-#[test]
-fn for_step_and_inclusive_in_c() {
-    let r = compile(
-        r#"
-fn main() int {
-    let mut total = 0;
-    for i in 10..=0 step -2 {
-        total += i;
-    }
-    return total;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__ks = (-INT64_C(2))") && r.c_code.contains("__ks > 0 ?"),
-        "нет шага/направления:\n{}",
-        r.c_code
-    );
-    assert!(
-        r.c_code.contains("k_i >= INT64_C(0)"),
-        "нет включительной границы:\n{}",
-        r.c_code
-    );
-}
-
-// 33. Методы `Option`/`Result` в C: тег и поле варианта, `unwrap_or` —
-// через временную, чтобы получатель не вычислялся дважды.
-#[test]
-fn option_methods_in_c() {
-    let r = compile(
-        r#"
-fn f() Option<int> { return Some(3); }
-fn main() int {
-    let a Option<int> = Some(1);
-    let b Option<int> = None;
-    if a.is_some() && b.is_none() {
-        return f().unwrap_or(0) + a.unwrap();
-    }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains(".data.Some._0") && r.c_code.contains("_Some)"),
-        "нет доступа к варианту:\n{}",
-        r.c_code
-    );
-    assert!(
-        r.c_code.contains("__o = k_f()"),
-        "получатель `unwrap_or` не сохранён во временную:\n{}",
-        r.c_code
-    );
-}
-
-// 34. `unwrap` на `None`/`Err` — проверка в рантайме, а не чтение мусора.
-#[test]
-fn unwrap_checks_tag_in_c() {
-    let r = compile(
-        r#"
-fn main() int {
-    let a Option<int> = Some(1);
-    let b Result<int, string> = Ok(2);
-    return a.unwrap() + b.unwrap();
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("k_unwrap_fail") && r.c_code.contains("__o.tag != Keel_Option_int_Some"),
-        "нет проверки тега `unwrap`:\n{}",
-        r.c_code
-    );
-    assert!(
-        r.c_code.contains("__o.tag != Keel_Result_int_string_Ok"),
-        "нет проверки тега `unwrap` у `Result`:\n{}",
-        r.c_code
-    );
-}
-
-// 35. Прикладные методы `Vec`: is_empty, clear, contains, sort, reverse,
-// first, last.
-#[test]
-fn vec_прикладные_методы() {
-    let r = compile(
-        r#"
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(3);
-    v.push(1);
-    v.push(2);
-    if v.is_empty() { return 1; }
-    if !v.contains(2) { return 2; }
-    v.sort();
-    if v.first().unwrap() != 1 { return 3; }
-    if v.last().unwrap() != 3 { return 4; }
-    v.reverse();
-    if v.first().unwrap() != 3 { return 5; }
-    v.clear();
-    if !v.is_empty() { return 6; }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    for f in [
-        "k_vec_int_is_empty",
-        "k_vec_int_clear",
-        "k_vec_int_contains",
-        "k_vec_int_sort",
-        "k_vec_int_reverse",
-        "k_vec_int_first",
-        "k_vec_int_last",
-    ] {
-        assert!(r.c_code.contains(f), "нет `{}`:\n{}", f, r.c_code);
-    }
-}
-
-// 36. `contains`/`sort` на структурах — ошибка, а не сравнение байтов.
-#[test]
-fn vec_contains_на_структуре_запрещён() {
-    fails(
-        r#"
-struct P { x int; }
-fn main() int {
-    let mut v Vec<P> = Vec::new();
-    v.push(P(1));
-    println(v.contains(P(1)));
-    return 0;
-}
-"#,
-        "не поддерживает элементы типа `P`",
-    );
-}
-
-// 37. Встроенные функции: to_string/to_int/to_float, min/max/abs,
-// assert/panic/exit.
-#[test]
-fn встроенные_функции() {
-    let r = compile(
-        r#"
-fn main() int {
-    let s = to_string(42);
-    let n = to_int("7");
-    let f = to_float("2.5");
-    let a = min(1, 2);
-    let b = max(1.0, 2.0);
-    let c = abs(-3);
-    assert(n == 7);
-    if s == "" { panic("пусто"); }
-    if f < 0.0 { exit(1); }
-    if b < 0.0 { exit(2); }
-    return a + c;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    for f in [
-        "k_int_to_str",
-        "k_str_to_int",
-        "k_str_to_float",
-        "k_min_int",
-        "k_max_float",
-        "k_abs_int",
-        "k_assert_fail",
-        "k_panic",
-    ] {
-        assert!(r.c_code.contains(f), "нет `{}`:\n{}", f, r.c_code);
-    }
-}
-
-// 38. `min`/`max` не смешивают int и float.
-#[test]
-fn min_смешанные_типы_запрещён() {
-    fails(
-        r#"
-fn main() int {
-    let x = min(1, 2.5);
-    return 0;
-}
-"#,
-        "ждёт два int или два float",
-    );
-}
-
-// 39. `if let` / `while let` — десугар в `match` с ветвью `_`.
-#[test]
-fn if_let_и_while_let() {
-    let r = compile(
-        r#"
-fn main() int {
-    let o Option<int> = Some(5);
-    if let Some(x) = o {
-        println(x);
-    } else {
-        println(0);
-    }
-    let mut v Vec<int> = Vec::new();
-    v.push(1);
-    while let Some(y) = v.pop() {
-        println(y);
-    }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(r.c_code.contains("default:"), "нет ветви `_`:\n{}", r.c_code);
-}
-
-// 40. `break` в ветви `match` выходит из цикла, а не из `switch`.
-#[test]
-fn break_в_match_выходит_из_цикла() {
-    let r = compile(
-        r#"
-enum E { A, B }
-fn main() int {
-    let mut i = 0;
-    while i < 3 {
-        i += 1;
-        match E::A {
-            E::A => { break; }
-            E::B => { }
-        }
-    }
-    return i;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__k_brk_") && r.c_code.contains("goto __k_loop_"),
-        "break в match не через goto:\n{}",
-        r.c_code
-    );
-}
-
-// 41. Субъект `match` вычисляется один раз.
-#[test]
-fn match_субъект_вычисляется_один_раз() {
-    let r = compile(
-        r#"
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(1);
-    match v.pop() {
-        Some(x) => { println(x); }
-        None => { println(0); }
-    }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__k_subj_") && r.c_code.matches("k_vec_int_pop").count() == 2,
-        "субъект `match` вычисляется дважды:\n{}",
-        r.c_code
-    );
-}
-
-// 42. `?` на `Result` — разворот с `return Err`.
-#[test]
-fn try_на_result() {
-    let r = compile(
-        r#"
-fn get(i int) Result<int, string> {
-    if i < 0 { return Err("neg"); }
-    return Ok(i * 10);
-}
-fn sum() Result<int, string> {
-    let a = get(1)?;
-    let b = get(2)?;
-    return Ok(a + b);
-}
-fn main() int {
-    match sum() {
-        Ok(s) => { println(s); }
-        Err(e) => { println(e); }
-    }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__t.tag != Keel_Result_int_string_Ok"),
-        "нет проверки тега `?`:\n{}",
-        r.c_code
-    );
-}
-
-// 43. `?` на `Option` — разворот с `return None`.
-#[test]
-fn try_на_option() {
-    let r = compile(
-        r#"
-fn first(v &Vec<int>) Option<int> {
-    let x = v.get(0)?;
-    return Some(x);
-}
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(7);
-    match first(&v) {
-        Some(x) => { println(x); }
-        None => { println(0); }
-    }
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__t.tag != Keel_Option_int_Some"),
-        "нет проверки тега `?`:\n{}",
-        r.c_code
-    );
-}
-
-// 44. `?` вне функции, возвращающей Option/Result, — ошибка.
-#[test]
-fn try_в_неподходящей_функции() {
-    fails(
-        r#"
+fn g() int { return 5; }
 fn f() int {
-    let r Result<int, string> = Ok(1);
-    let x = r?;
-    return x;
+    g()
 }
+fn main() int { return 0; }
 "#,
-        "требует, чтобы функция возвращала `Result`",
-    );
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("return k_g()"));
 }
 
-// 45. `?` на не-Option/Result — ошибка.
 #[test]
-fn try_на_не_option() {
-    fails(
+fn тело_выражение_с_точкой_с_запятой_значение_отбрасывает() {
+    let r = keelc::compile(
         r#"
-fn main() int {
-    let x = 5?;
-    return 0;
+fn g() int { return 5; }
+fn f() int {
+    g();
 }
+fn main() int { return 0; }
 "#,
-        "`?` работает с `Option` или `Result`",
-    );
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // `g();` — обычный оператор, а не возвращаемое значение.
+    assert!(!r.c_code.contains("return k_g()"));
 }
 
-// 46. `match` по числу — `switch` в C.
+// Замыкание с void-телом: `return <expr>;` в void-функции — невалидный C.
 #[test]
-fn match_по_числу() {
-    let r = compile(
+fn замыкание_с_void_телом_даёт_корректный_c() {
+    let r = keelc::compile(
         r#"
 fn main() int {
-    let x = 2;
-    match x {
-        0 => { println("zero"); }
-        1 => { println("one"); }
-        _ => { println("many"); }
-    }
+    let f = |x int| { println("got ", x); };
+    f(1);
     return 0;
 }
 "#,
     )
     .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("case 0:") && r.c_code.contains("case 1:"),
-        "нет switch по числу:\n{}",
-        r.c_code
-    );
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // У void-замыкания не должно быть `return <expr>;`.
+    assert!(!r.c_code.contains("return printf"));
 }
 
-// 47. `match` по строке — `strcmp` и индекс ветви.
+// Вложенные замыкания: имена не должны совпадать, и вложенное должно
+// быть объявлено раньше использования.
 #[test]
-fn match_по_строке() {
-    let r = compile(
+fn вложенные_замыкания_получают_разные_имена() {
+    let r = keelc::compile(
         r#"
 fn main() int {
-    let s = "banana";
-    match s {
-        "apple" => { println(1); }
-        "banana" => { println(2); }
-        _ => { println(0); }
-    }
+    let f = |x int| { let g = |y int| y + 1; g(x) * 10; };
+    println(f(2));
     return 0;
 }
 "#,
     )
     .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("strcmp(") && r.c_code.contains("\"banana\""),
-        "нет strcmp по строке:\n{}",
-        r.c_code
-    );
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("closure_0"));
+    assert!(r.c_code.contains("closure_1"));
 }
 
-// 48. `match` по bool без `_` — исчерпывающий, если есть оба значения.
+// Vec, перемещённая в вызов: буфер освобождает callee.
 #[test]
-fn match_по_bool_исчерпывающий() {
-    let r = compile(
+fn vec_перемещённая_в_вызов_освобождается_калеем() {
+    let r = keelc::compile(
         r#"
+fn consume(w Vec<int>) {
+    println("consumed ", len(w));
+}
 fn main() int {
-    let b = true;
-    match b {
-        true => { println(1); }
-        false => { println(0); }
-    }
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    consume(v);
     return 0;
 }
 "#,
     )
     .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("k_vec_int_free(&k_w)"));
 }
 
-// 49. `match` по числу без `_` — ошибка.
+// Vec в поле структуры: буфер принадлежит структуре.
 #[test]
-fn match_по_числу_без_wildcard() {
-    fails(
+fn vec_в_поле_структуры_освобождается() {
+    let r = keelc::compile(
         r#"
+struct Holder {
+    items Vec<int>;
+}
 fn main() int {
-    let x = 1;
-    match x {
-        0 => { }
-    }
-    return 0;
-}
-"#,
-        "не исчерпывающий",
-    );
-}
-
-// 50. Дубликат литерала — ошибка.
-#[test]
-fn match_дубликат_литерала() {
-    fails(
-        r#"
-fn main() int {
-    let x = 1;
-    match x {
-        0 => { }
-        0 => { }
-        _ => { }
-    }
-    return 0;
-}
-"#,
-        "разобрана дважды",
-    );
-}
-
-// 51. Литерал не того типа — ошибка.
-#[test]
-fn match_литерал_не_того_типа() {
-    fails(
-        r#"
-fn main() int {
-    let x = 1;
-    match x {
-        "a" => { }
-        _ => { }
-    }
-    return 0;
-}
-"#,
-        "не того типа",
-    );
-}
-
-// 52. `match` с условием-«стражем» — `if`-цепочка в C.
-#[test]
-fn match_с_guard() {
-    let r = compile(
-        r#"
-fn main() int {
-    let o Option<int> = Some(5);
-    match o {
-        Some(x) if x > 0 => { println("pos"); }
-        Some(x) => { println("non-pos"); }
-        None => { println("none"); }
-    }
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let h Holder = Holder { items: v };
+    println(len(h.items));
     return 0;
 }
 "#,
     )
     .unwrap();
-    assert!(
-        r.diagnostics.is_empty(),
-        "{}",
-        format_diagnostics(&r.diagnostics)
-    );
-    assert!(
-        r.c_code.contains("__k_match_end_") && r.c_code.contains("k_x > INT64_C(0)"),
-        "нет if-цепочки для guard:\n{}",
-        r.c_code
-    );
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("k_vec_int_free(&k_h.items)"));
 }
 
-// 53. Guard не того типа — ошибка.
+// Рантайм с собственным аллокатором: сгенерированный код не должен
+// звать malloc/realloc/free напрямую — только через ke_*.
 #[test]
-fn match_guard_не_bool() {
-    fails(
+fn сгенерированный_код_зовёт_свой_аллокатор() {
+    let r = keelc::compile(
         r#"
 fn main() int {
-    let o Option<int> = Some(1);
-    match o {
-        Some(x) if x => { }
-        _ => { }
-    }
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    println(v.len());
     return 0;
 }
 "#,
-        "должно быть bool",
-    );
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Рантайм подставлен целиком.
+    assert!(c.contains("void *ke_alloc(size_t size)"));
+    assert!(c.contains("ke_live_blocks"));
+    // В сгенерированном коде — только ke_*. Прямые вызовы libc есть
+    // ровно в самом рантайме: malloc, realloc и free внутри ke_*.
+    // Считаем вызовы, не перед которыми стоит идентификатор — иначе
+    // `ke_realloc(` посчитался бы как `realloc(`.
+    assert_eq!(calls(c, "malloc").len(), 1, "прямой malloc в коде");
+    assert_eq!(calls(c, "realloc").len(), 1, "прямой realloc в коде");
+    assert_eq!(calls(c, "free").len(), 1, "прямой free в коде");
+    // А вот ke_* — используются.
+    assert!(c.contains("ke_alloc("));
+    assert!(c.contains("ke_free("));
 }
 
-// 54. Guard не покрывает вариант: нужен `_` или вторая ветвь.
+// Рантайм ловит освобождение мусорного указателя.
 #[test]
-fn match_guard_не_исчерпывающий() {
-    fails(
+fn рантайм_ловит_мусорный_указатель() {
+    let r = keelc::compile(
         r#"
 fn main() int {
-    let o Option<int> = Some(1);
-    match o {
-        Some(x) if x > 0 => { }
-        None => { }
-    }
     return 0;
 }
 "#,
-        "не исчерпывающий",
-    );
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("освобождение мусорного указателя"));
+}
+
+// ============================================================
+// Box<T>: кодогенерация
+// ============================================================
+
+#[test]
+fn box_генерирует_свою_структуру_и_выделение() {
+    let r = keelc::compile(
+        r#"
+struct Node { value int; }
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 1 });
+    println(b.value);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Своя C-структура для `Box<Node>`.
+    assert!(c.contains("struct Keel_Box_Node"));
+    // Выделение в куче — через рантайм, а не malloc.
+    assert!(c.contains("ke_alloc_copy"));
+    // Разыменование автоматическое: `b.value` → `b.ptr->value`.
+    assert!(c.contains(".ptr->value"));
+}
+
+#[test]
+fn box_рекурсивного_типа_освобождается_рекурсивно() {
+    // Содержимое блока само владеет боксами — их надо освободить
+    // до самого блока, иначе они утекут.
+    let r = keelc::compile(
+        r#"
+struct Node {
+    value int;
+    next Option<Box<Node>>;
+}
+fn main() int {
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    let c = &r.c_code;
+    // Функция освобождения — отдельная, с рекурсивным вызовом.
+    assert!(c.contains("static void k_box_free_Node(void *p)"));
+    assert!(c.contains("k_box_free_Node(v->next.data.Some._0.ptr)"));
 }

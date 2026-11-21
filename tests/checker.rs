@@ -748,110 +748,6 @@ fn main() int {
 }
 
 #[test]
-fn for_по_vec_работает() {
-    ok(r#"
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(1);
-    v.push(2);
-    let mut total = 0;
-    for e in v {
-        total += e;
-    }
-    return total + v.len();
-}
-"#);
-}
-
-#[test]
-fn for_по_срезу_работает() {
-    ok(r#"
-fn sum(s [int]) int {
-    let mut total = 0;
-    for e in s {
-        total += e;
-    }
-    return total;
-}
-fn main() int {
-    let a [int; 3] = [1, 2, 3];
-    return sum(a);
-}
-"#);
-}
-
-#[test]
-fn for_по_vec_менять_нельзя() {
-    fails(
-        r#"
-fn main() int {
-    let mut v Vec<int> = Vec::new();
-    v.push(1);
-    for e in v {
-        v.push(e);
-    }
-    return 0;
-}
-"#,
-        "обходится в `for`",
-    );
-}
-
-#[test]
-fn for_с_шагом_работает() {
-    ok(r#"
-fn main() int {
-    let mut total = 0;
-    for i in 0..10 step 2 {
-        total += i;
-    }
-    return total;
-}
-"#);
-}
-
-#[test]
-fn for_обратный_работает() {
-    ok(r#"
-fn main() int {
-    let mut total = 0;
-    for i in 10..0 step -1 {
-        total += i;
-    }
-    return total;
-}
-"#);
-}
-
-#[test]
-fn for_включительная_граница_работает() {
-    ok(r#"
-fn main() int {
-    let mut total = 0;
-    for i in 0..=5 {
-        total += i;
-    }
-    return total;
-}
-"#);
-}
-
-#[test]
-fn for_шаг_ноль_ошибка() {
-    fails(
-        r#"
-fn main() int {
-    for i in 0..10 step 0 {
-        println(i);
-    }
-    return 0;
-}
-"#,
-        "не может быть нулём",
-    );
-}
-
-#[test]
 fn границы_диапазона_должны_быть_int() {
     fails(
         r#"
@@ -1537,19 +1433,21 @@ fn main() int {
 #[test]
 fn методы_разных_типов_с_одинаковым_именем_не_сталкиваются() {
     // В C метод получает имя `k_Тип_метод`, поэтому `Point::get` и
-    // `Box::get` не конфликтуют.
+    // `Crate::get` не конфликтуют.
+    //
+    // Имя `Box` занято встроенным типом — как `Vec`, `Option`, `Result`.
     ok(r#"
 struct Point { x int; }
-struct Box { v int; }
+struct Crate { v int; }
 impl Point {
     fn get(self &Point) int { return self.x; }
 }
-impl Box {
-    fn get(self &Box) int { return self.v; }
+impl Crate {
+    fn get(self &Crate) int { return self.v; }
 }
 fn main() int {
     let p = Point(1);
-    let b = Box(2);
+    let b = Crate(2);
     println(p.get());
     println(b.get());
     return 0;
@@ -3035,15 +2933,17 @@ fn main() int {
 
 #[test]
 fn match_требует_enum() {
+    // `float` не разбирается ни по варианту enum, ни по значению —
+    // `match` для него запрещён.
     fails(
         r#"
 fn main() int {
-    let x = 1;
+    let x = 1.5;
     match x { A::B => { } }
     return 0;
 }
 "#,
-        "ветвь `match` по значению должна быть литералом или `_`",
+        "`match` требует enum",
     );
 }
 
@@ -3120,7 +3020,9 @@ fn main() int {
     assert!(r.diagnostics.is_empty());
     assert!(r.c_code.contains("typedef enum"));
     assert!(r.c_code.contains("Keel_Color_Red"));
-    assert!(r.c_code.contains("switch"));
+    // Ветви — цепочка if/else по тегу, чтобы `break` в ветви относился
+    // к объемлющему циклу, а не к `switch`.
+    assert!(r.c_code.contains("__k_subj == Keel_Color_Red"));
 }
 
 // ============================================================
@@ -3492,52 +3394,6 @@ fn main() int {
     return 0;
 }
 "#,
-    );
-}
-
-#[test]
-fn option_методы_работают() {
-    ok(
-        r#"
-fn main() int {
-    let a Option<int> = Some(42);
-    let b Option<int> = None;
-    let mut total = a.unwrap() + b.unwrap_or(7);
-    if a.is_some() { total += 1; }
-    if b.is_none() { total += 1; }
-    return total;
-}
-"#,
-    );
-}
-
-#[test]
-fn result_методы_работают() {
-    ok(
-        r#"
-fn main() int {
-    let c Result<int, string> = Ok(5);
-    let d Result<int, string> = Err("bad");
-    let mut total = c.unwrap() + d.unwrap_or(9);
-    if c.is_ok() { total += 1; }
-    if d.is_err() { total += 1; }
-    return total;
-}
-"#,
-    );
-}
-
-#[test]
-fn unwrap_or_тип_проверяется() {
-    fails(
-        r#"
-fn main() int {
-    let a Option<int> = Some(1);
-    println(a.unwrap_or("x"));
-    return 0;
-}
-"#,
-        "`unwrap_or` ждёт `int`",
     );
 }
 
@@ -4170,6 +4026,1186 @@ fn main() int {
         total += s.x;
     }
     return total + len(r.items);
+}
+"#);
+}
+
+// `for` обходит и `Vec`, и срез: элемент копируется, коллекция остаётся.
+#[test]
+fn for_по_vec_и_срезу_компилируется() {
+    ok(r#"
+fn sum_vec(items &Vec<int>) int {
+    let mut total = 0;
+    for x in items { total += x; }
+    return total;
+}
+fn sum_slice(xs [int]) int {
+    let mut total = 0;
+    for x in xs { total += x; }
+    return total;
+}
+fn main() int {
+    let a [int; 3] = [1, 2, 3];
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    return sum_vec(&v) + sum_slice(a);
+}
+"#);
+}
+
+// Шаг диапазона — только int.
+#[test]
+fn for_step_должен_быть_int() {
+    fails(
+        r#"
+fn main() int {
+    for i in 0..10 step "два" { println(i); }
+    return 0;
+}
+"#,
+        "шаг (`step`)",
+    );
+}
+
+// `..=` включает правую границу, разбор не путает его с `..`.
+#[test]
+fn for_включительный_диапазон_компилируется() {
+    ok(r#"
+fn main() int {
+    let mut n = 0;
+    for i in 0..=2 { n += i; }
+    for i in 3..=1 step -1 { n += i; }
+    return n;
+}
+"#);
+}
+
+// Методы `Option`/`Result` без `match`.
+#[test]
+fn option_и_result_методы_компилируются() {
+    ok(r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    let n Option<int> = None;
+    let r Result<int, string> = Ok(5);
+    let e Result<int, string> = Err("нет");
+    let mut total = 0;
+    if o.is_some() { total += o.unwrap(); }
+    if n.is_none() { total += n.unwrap_or(1); }
+    if r.is_ok() { total += r.unwrap_or(0); }
+    if e.is_err() { total += e.unwrap_or(2); }
+    return total;
+}
+"#);
+}
+
+#[test]
+fn unwrap_or_чужой_тип_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    return o.unwrap_or("нет");
+}
+"#,
+        "`unwrap_or` ждёт `int`",
+    );
+}
+
+#[test]
+fn option_неизвестный_метод_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    let o Option<int> = Some(3);
+    return o.value();
+}
+"#,
+        "у `Option<int>` нет метода `value`",
+    );
+}
+
+// Методы `Vec`: запросы и перестановки.
+#[test]
+fn vec_методы_компилируются() {
+    ok(r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(2); v.push(1);
+    let mut n = 0;
+    if v.is_empty() { n += 1; }
+    if v.contains(1) { n += 1; }
+    v.sort();
+    v.reverse();
+    n += v.first().unwrap_or(0) + v.last().unwrap_or(0);
+    v.clear();
+    return n;
+}
+"#);
+}
+
+// `sort` — только для типов с порядком.
+#[test]
+fn vec_sort_по_структуре_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let mut v Vec<S> = Vec::new();
+    v.push(S(1));
+    v.sort();
+    return 0;
+}
+"#,
+        "`sort` работает с `int`, `float` и `string`",
+    );
+}
+
+// Дешёвые встроенные функции.
+#[test]
+fn встроенные_функции_компилируются() {
+    ok(r#"
+fn main() int {
+    let s string = to_string(42);
+    let n = to_int("41") > 40;
+    assert(n, "сравнение");
+    if argc() > 100 { panic("слишком много аргументов"); }
+    if argc() > 200 { exit(2); }
+    return min(len(s), max(1, abs(-3)));
+}
+"#);
+}
+
+#[test]
+fn to_string_от_структуры_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let s = to_string(S(1));
+    return 0;
+}
+"#,
+        "`to_string` работает с int, float, bool и string",
+    );
+}
+
+#[test]
+fn assert_условие_не_bool_ошибка() {
+    fails(
+        r#"
+fn main() int {
+    assert(1, "не bool");
+    return 0;
+}
+"#,
+        "`assert` ждёт условие типа `bool`",
+    );
+}
+
+// `==` по структуре/массиву: в C это не компилируется или сравнивает
+// адреса, поэтому ошибка ловится в проверщике.
+#[test]
+fn сравнение_структуры_и_массива_ошибка() {
+    fails(
+        r#"
+struct S { x int; }
+fn main() int {
+    let a = S(1);
+    let b = S(1);
+    return a == b;
+}
+"#,
+        "сравнение структур, кортежей и массивов",
+    );
+    fails(
+        r#"
+fn main() int {
+    let a [int; 2] = [1, 2];
+    let b [int; 2] = [1, 2];
+    return a == b;
+}
+"#,
+        "сравнение структур, кортежей и массивов",
+    );
+}
+
+// `if let` — сахар над `match`: вариант, привязка и `else` как вторая
+// ветвь. Работает для `Option` и `Result`.
+#[test]
+fn if_let_компилируется() {
+    ok(r#"
+fn find(xs &[int; 3], t int) Option<int> {
+    for i in 0..3 {
+        if xs[i] == t { return Some(i); }
+    }
+    return None;
+}
+fn main() int {
+    let xs [int; 3] = [1, 2, 3];
+    let mut n = 0;
+    if let Some(i) = find(&xs, 2) {
+        n += i;
+    } else {
+        n += 10;
+    }
+    if let None = find(&xs, 9) { n += 1; }
+    let r Result<int, string> = Ok(5);
+    if let Ok(v) = r { n += v; }
+    if let Err(e) = r { println(e); }
+    return n;
+}
+"#);
+}
+
+#[test]
+fn if_let_чужой_вариант_ошибка_разбора() {
+    parse_fails(
+        r#"
+fn main() int {
+    let x = 1;
+    if let Foo(y) = x { println(y); }
+    return 0;
+}
+"#,
+        "`if let` ждёт вариант `Option` или `Result`",
+    );
+}
+
+// `while let` — цикл с разбором на каждой итерации.
+#[test]
+fn while_let_компилируется() {
+    ok(r#"
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push(1);
+    let mut total = 0;
+    while let Some(x) = v.pop() {
+        total += x;
+    }
+    while let None = v.get(total) {
+        total += 1;
+        if total > 2 { break; }
+    }
+    return total;
+}
+"#);
+}
+
+// `break` из ветви `match` относится к объемлющему циклу, а не к самому
+// `match` (в C `switch` ловил бы его на себя).
+#[test]
+fn break_из_ветви_match_выходит_из_цикла() {
+    let r = compile(
+        r#"
+enum State { Go, Stop }
+fn main() int {
+    let mut n = 0;
+    while n < 100 {
+        match State::Stop {
+            State::Go => { n += 1; }
+            State::Stop => { break; }
+        }
+    }
+    return n;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty());
+    // Ветви — if/else, а не switch: там `break` вышел бы из switch.
+    assert!(!r.c_code.contains("switch (__k_subj"));
+}
+
+// `match` по значению: число, строка, `bool`.
+#[test]
+fn match_по_числу_разбирает_литералы() {
+    ok(
+        r#"
+fn f(n int) int {
+    match n {
+        0 => { return 10; }
+        1 => { return 20; }
+        _ => { return 30; }
+    }
+    return 0;
+}
+fn main() int {
+    return f(1);
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_строке_разбирает_литералы() {
+    ok(
+        r#"
+fn f(s string) string {
+    match s {
+        "ok" => { return "да"; }
+        "err" => { return "нет"; }
+        _ => { return "?"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_bool_полон_без_подстановки() {
+    // Оба значения `bool` — исчерпывающесть достигнута без `_`.
+    ok(
+        r#"
+fn f(b bool) string {
+    match b {
+        true => { return "да"; }
+        false => { return "нет"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_по_числу_ловит_несовпадение_типа() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        "x" => { return "строка"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не совпадает с типом",
+    );
+}
+
+#[test]
+fn match_по_числу_ловит_повтор_значения() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        1 => { return "раз"; }
+        1 => { return "два"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "разобрано дважды",
+    );
+}
+
+#[test]
+fn match_по_числу_требует_ветвь_подстановки() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        1 => { return "раз"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+#[test]
+fn match_по_bool_требует_ветвь_подстановки() {
+    fails(
+        r#"
+fn f(b bool) string {
+    match b {
+        true => { return "да"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "не исчерпывающий",
+    );
+}
+
+#[test]
+fn match_по_значению_не_ломает_исчерпывающий_match_по_enum() {
+    // Оба вида `match` живут в одном файле: разбор не смешивается.
+    ok(
+        r#"
+enum Light { Red, Green }
+fn by_value(n int) int {
+    match n {
+        0 => { return 1; }
+        _ => { return 2; }
+    }
+    return 0;
+}
+fn by_tag(l Light) int {
+    match l {
+        Light::Red => { return 1; }
+        Light::Green => { return 2; }
+    }
+    return 0;
+}
+fn main() int {
+    return by_value(0) + by_tag(Light::Red);
+}
+"#,
+    );
+}
+
+// Регрессии: ветвь `_` в `match` по значению. Раньше `_` всегда
+// порождала `else` без предшествующего `if` — gcc получал битый C.
+#[test]
+fn match_по_значению_только_подстановка_даёт_корректный_c() {
+    let r = compile(
+        r#"
+fn main() int {
+    let x = 5;
+    match x {
+        _ => { println("any"); }
+    }
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // `else` без `if` — ошибка gcc; проверяем, что такого нет.
+    assert!(!r.c_code.contains("else {"));
+}
+
+#[test]
+fn match_по_значению_подстановка_не_в_конце_ловится() {
+    fails(
+        r#"
+fn main() int {
+    let x = 5;
+    match x {
+        _ => { println("any"); }
+        0 => { println("zero"); }
+    }
+    return 0;
+}
+"#,
+        "должна быть последней",
+    );
+}
+
+#[test]
+fn match_по_enum_не_принимает_подстановку() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red => { println("red"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+        "не принимает `_`",
+    );
+}
+
+#[test]
+fn match_по_float_ловится_понятным_сообщением() {
+    // Ошибка разбора: `float` не разбирается по значению.
+    parse_fails(
+        r#"
+fn main() int {
+    let x = 1.5;
+    match x {
+        1.5 => { println("one point five"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+        "по `float` не поддерживается",
+    );
+}
+
+#[test]
+fn match_по_ссылке_на_строку_разбирает_литералы() {
+    ok(
+        r#"
+fn main() int {
+    let s = "abc";
+    let r = &s;
+    match r {
+        "abc" => { println("eq"); }
+        _ => { println("other"); }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+// Оператор `?` — пропагация ошибки.
+#[test]
+fn оператор_вопрос_распаковывает_ok() {
+    ok(
+        r#"
+fn parse(s string) Result<int, string> {
+    if s == "42" {
+        return Ok(42);
+    }
+    return Err("не число");
+}
+fn double(x int) Result<int, string> {
+    return Ok(x * 2);
+}
+fn chain(s string) Result<int, string> {
+    let a = parse(s)?;
+    let b = double(a)?;
+    return Ok(b + 1);
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn оператор_вопрос_требует_result() {
+    fails(
+        r#"
+fn f(x int) int {
+    return x?;
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "требует `Result`",
+    );
+}
+
+#[test]
+fn оператор_вопрос_требует_функцию_с_result() {
+    fails(
+        r#"
+fn g() Result<int, string> {
+    return Ok(1);
+}
+fn f() int {
+    let x = g()?;
+    return x;
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "возвращающую `Result`",
+    );
+}
+
+// Регрессия: срез в параметре функции. Тип среза не регистрировался
+// среди инстанциаций, и в C появлялся необъявленный `Keel_Slice_*`.
+#[test]
+fn срез_в_параметре_функции_даёт_корректный_c() {
+    let r = compile(
+        r#"
+fn first(names [string]) string {
+    if len(names) == 0 {
+        return "?";
+    }
+    return names[0];
+}
+fn main() int {
+    let names [string; 2] = ["a", "b"];
+    println(first(names));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("Keel_Slice_string"));
+}
+
+// `match` guards: условие после паттерна.
+#[test]
+fn match_с_guard_по_значению_разбирает_привязку() {
+    ok(
+        r#"
+fn classify(n int) string {
+    match n {
+        n if n < 0 => { return "отрицательное"; }
+        0 => { return "ноль"; }
+        _ => { return "положительное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_по_enum_читает_привязку() {
+    ok(
+        r#"
+fn kind(o Option<int>) string {
+    match o {
+        Some(x) if x > 10 => { return "большое"; }
+        Some(_) => { return "маленькое"; }
+        None => { return "нет"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_и_литералом_не_считается_повтором() {
+    // `1 if n > 0` и `1` — разные ветви, как в Rust.
+    ok(
+        r#"
+fn f(n int) string {
+    match n {
+        1 if n > 0 => { return "один положительный"; }
+        1 => { return "просто один"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn match_с_guard_ловит_не_bool_условие() {
+    fails(
+        r#"
+fn f(n int) string {
+    match n {
+        n if n => { return "плохо"; }
+        _ => { return "иное"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+        "условие ветви должно быть bool",
+    );
+}
+
+// Регрессия: привязка guard'а (`n if n > 0`) должна быть видна в теле
+// ветви. Раньше сброс scope стирал её, и имя не находилось.
+#[test]
+fn привязка_guard_видна_в_теле_ветви() {
+    ok(
+        r#"
+fn main() int {
+    for i in 0..3 {
+        match i {
+            n if n % 2 == 0 => { println("чётное ", n); }
+            _ => { println("нечётное ", i); }
+        }
+    }
+    return 0;
+}
+"#,
+    );
+}
+
+// Регрессия: `?` возвращает ошибку **типа функции**, а не типа
+// субъекта: `Result<int,string>` внутри функции, возвращающей
+// `Result<string,string>`.
+#[test]
+fn оператор_вопрос_возвращает_ошибку_типа_функции() {
+    ok(
+        r#"
+fn get(x int) Result<int, string> {
+    if x < 0 { return Err("минус"); }
+    return Ok(x);
+}
+fn f(x int) Result<string, string> {
+    let v = get(x)?;
+    match v {
+        n if n > 10 => { return Ok("большое"); }
+        0 => { return Ok("ноль"); }
+        _ => { return Ok("маленькое"); }
+    }
+    return Ok("?");
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+// `or`-паттерны: `A | B => { ... }`.
+#[test]
+fn or_паттерны_по_enum_разбирают_несколько_вариантов() {
+    ok(
+        r#"
+enum Light { Red, Yellow, Green }
+fn name(l Light) string {
+    match l {
+        Light::Red | Light::Green => { return "тёплый"; }
+        Light::Yellow => { return "жёлтый"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn or_паттерны_по_литералам_разбирают_несколько_значений() {
+    ok(
+        r#"
+fn f(n int) string {
+    match n {
+        1 | 2 | 3 => { return "мало"; }
+        10 => { return "десять"; }
+        _ => { return "много"; }
+    }
+    return "?";
+}
+fn main() int {
+    return 0;
+}
+"#,
+    );
+}
+
+#[test]
+fn or_паттерны_ловит_несуществующий_вариант() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Yellow => { println("x"); }
+        Light::Green => { println("y"); }
+    }
+    return 0;
+}
+"#,
+        "нет варианта `Yellow`",
+    );
+}
+
+#[test]
+fn or_паттерны_ловит_повтор_варианта() {
+    fails(
+        r#"
+enum Light { Red, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Green => { println("x"); }
+        Light::Green => { println("y"); }
+    }
+    return 0;
+}
+"#,
+        "разобран дважды",
+    );
+}
+
+#[test]
+fn or_паттерны_учитываются_в_исчерпывающем_разборе() {
+    // `Red | Green` не покрывает `Yellow` — разбор неполный.
+    fails(
+        r#"
+enum Light { Red, Yellow, Green }
+fn main() int {
+    let l Light = Light::Red;
+    match l {
+        Light::Red | Light::Green => { println("x"); }
+    }
+    return 0;
+}
+"#,
+        "не разобраны варианты `Light::Yellow`",
+    );
+}
+
+// Регрессия: после сработавшей guard-ветви разбор заканчивается.
+// Раньше ветви генерировались отдельными `if`, и следующая ветвь того
+// же варианта выполнялась вслед за ней.
+#[test]
+fn guard_останавливает_разбор_как_в_rust() {
+    let r = compile(
+        r#"
+fn f(o Option<int>) {
+    match o {
+        Some(x) if x > 10 => { println("guarded"); }
+        Some(_) => { println("plain"); }
+        None => { println("none"); }
+    }
+    println("done");
+}
+fn main() int {
+    f(Some(20));
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    // Флаг «ветвь уже выбрана» должен быть в сгенерированном C.
+    assert!(r.c_code.contains("__k_done"));
+}
+
+#[test]
+fn guard_в_match_по_значению_останавливает_разбор() {
+    let r = compile(
+        r#"
+fn f(n int) {
+    match n {
+        1 if n > 0 => { println("guarded"); }
+        1 => { println("plain"); }
+        _ => { println("other"); }
+    }
+    println("done");
+}
+fn main() int {
+    f(1);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    assert!(r.diagnostics.is_empty(), "диагностики: {:?}", r.diagnostics);
+    assert!(r.c_code.contains("__k_done"));
+}
+
+// Строковый литерал не может содержать нулевой байт: строка в Keel —
+// это C-строка, она заканчивается на первом `\0`. Раньше `\0` попадал
+// в значение молча: строка обрезалась, а в сгенерированный C шёл сырой
+// нулевой байт.
+#[test]
+fn нулевой_байт_в_строке_ловится() {
+    parse_fails(
+        r#"
+fn main() int {
+    let s string = "a\0b";
+    println(s);
+    return 0;
+}
+"#,
+        "нулевой байт",
+    );
+}
+
+// ============================================================
+// Box<T>: значение в куче, единственный владелец
+// ============================================================
+
+#[test]
+fn box_поле_читается_через_авторазыменование() {
+    ok(r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 7 });
+    println(b.value);
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn box_в_option_разрешён() {
+    // `Option<Box<T>>` — законный способ выразить «узла нет».
+    ok(r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Option<Box<Node>> = None;
+    match b {
+        Some(n) => { println(n.value); }
+        None => { println("нет"); }
+    }
+    return 0;
+}
+"#);
+}
+
+#[test]
+fn box_не_копируется() {
+    // Владение единственное: копии не бывает.
+    fails(
+        r#"
+struct Node {
+    value int;
+}
+
+fn main() int {
+    let b Box<Node> = Box::new(Node { value: 1 });
+    let c Box<Node> = b;
+    println(b.value);
+    return 0;
+}
+"#,
+        "уже перемещён",
+    );
+}
+
+#[test]
+fn box_new_берёт_один_аргумент() {
+    fails(
+        r#"
+fn main() int {
+    let b Box<int> = Box::new(1, 2);
+    return 0;
+}
+"#,
+        "`Box::new` принимает один аргумент",
+    );
+}
+
+#[test]
+fn структура_не_содержит_саму_себя() {
+    // Бесконечный размер: `next Node` невозможно, нужен `Box`.
+    fails(
+        r#"
+struct Node {
+    value int;
+    next Node;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "содержит саму себя",
+    );
+}
+
+#[test]
+fn взаимная_рекурсия_тоже_ловится() {
+    fails(
+        r#"
+struct A {
+    b B;
+}
+
+struct B {
+    a A;
+}
+
+fn main() int {
+    return 0;
+}
+"#,
+        "содержит саму себя",
+    );
+}
+
+#[test]
+fn box_разрывает_рекурсию() {
+    ok(r#"
+struct Node {
+    value int;
+    next Box<Node>;
+}
+
+fn main() int {
+    return 0;
+}
+"#);
+}
+
+// Каждая диагностика получает код ошибки и подсказку «что делать».
+// Код нужен, чтобы искать ошибку в документации, подсказка — чтобы было
+// видно, что делать. Проверяем на наборе разных ошибок сразу.
+#[test]
+fn каждая_ошибка_имеет_код_и_подсказку() {
+    let r = compile(
+        r#"
+struct Point { x int; }
+fn main() int {
+    let mut v Vec<int> = Vec::new();
+    v.push("не int");
+    let p = Point { y: 1 };
+    let o Option<int> = Some(1);
+    println(o.unwrap_or(1, 2));
+    return missing();
+}
+"#,
+    )
+    .unwrap();
+    assert!(!r.diagnostics.is_empty(), "ожидались ошибки");
+    for d in &r.diagnostics {
+        assert!(!d.code.is_empty(), "нет кода ошибки: {}", d.msg);
+        assert!(d.hint.is_some(), "нет подсказки: {}", d.msg);
+        assert!(
+            d.hint.as_ref().map_or(true, |h| !h.trim().is_empty()),
+            "пустая подсказка: {}",
+            d.msg
+        );
+    }
+    let text = format_diagnostics(&r.diagnostics);
+    assert!(text.contains("[E020]"), "нет кода E020:\n{}", text);
+}
+
+// Инвариант на уровне исходника: новая диагностика не появится без кода
+// и подсказки. Проверяем все сообщения компилятора, а не только те, что
+// попали в пример: маркеры должны идти строго по очереди —
+// Diagnostic::new, .code, .hint.
+#[test]
+fn в_исходнике_у_каждой_диагностики_есть_код_и_подсказка() {
+    let src = include_str!("../src/checker.rs");
+    let mut rest = src;
+    let mut checked = 0usize;
+    while let Some(i) = rest.find("Diagnostic::new(") {
+        let after = &rest[i..];
+        // До следующей диагностики ждём ровно `.code(` и `.hint(`.
+        let segment_end = after[1..]
+            .find("Diagnostic::new(")
+            .map_or(after.len(), |j| j + 1);
+        let segment = &after[..segment_end];
+        let code = segment
+            .find(".code(")
+            .unwrap_or_else(|| panic!("диагностика без кода: {}", head(segment)));
+        let hint = segment
+            .find(".hint(")
+            .unwrap_or_else(|| panic!("диагностика без подсказки: {}", head(segment)));
+        assert!(code < hint, "код и подсказка переставлены: {}", head(segment));
+        checked += 1;
+        rest = &after[segment_end..];
+    }
+    assert!(checked > 100, "найдено слишком мало диагностик: {}", checked);
+}
+
+/// Короткое начало фрагмента — для сообщения об ошибке.
+fn head(s: &str) -> String {
+    s.chars().take(120).collect()
+}
+
+// ============================================================
+// Битовая арифметика
+// ============================================================
+
+// Побитовые операции — функциями: `&` и `|` в Keel заняты ссылками и
+// or-паттернами, а `^`/`~`/`<<`/`>>` в лексере не знакомы.
+#[test]
+fn битовые_операции() {
+    ok(r#"
+fn main() int {
+    let a int = 12;
+    let b int = 10;
+    println(band(a, b));    // 8
+    println(bor(a, b));     // 14
+    println(bxor(a, b));    // 6
+    println(bshl(a, 2));    // 48
+    println(bshr(a, 2));    // 3
+    println(bnot(a));       // -13
+    return 0;
+}
+"#);
+}
+
+// Побитовая операция требует целые: строка или float — ошибка.
+#[test]
+fn битовые_операции_требуют_int() {
+    fails(
+        r#"
+fn main() int {
+    println(band(1, "два"));
+    return 0;
+}
+"#,
+        "работает только с `int`",
+    );
+}
+
+// Аргументов ровно два (для `bnot` — один).
+#[test]
+fn битовые_операции_арность() {
+    fails(
+        r#"
+fn main() int {
+    println(band(1));
+    return 0;
+}
+"#,
+        "принимает 2 аргумента",
+    );
+}
+
+// Сдвиг вправо — арифметический: знак расширяется, как в Rust.
+#[test]
+fn сдвиг_вправо_арифметический() {
+    ok(r#"
+fn main() int {
+    assert(bshr(-1, 63) == -1, "знак расширяется");
+    assert(bshr(-8, 1) == -4, "знак расширяется");
+    assert(bshr(1024, 4) == 64, "обычный сдвиг");
+    return 0;
+}
+"#);
+}
+
+// Числовая встроенная принимает ссылку на число: `min(&x, 3)` — это
+// `min(x, 3)`. Проверка разыменования: без неё C получал указатель
+// там, где ждалось число.
+#[test]
+fn числовая_встроенная_принимает_ссылку() {
+    ok(r#"
+fn f(x &int) int {
+    return min(x, 3);
+}
+
+fn main() int {
+    let a int = 5;
+    assert(f(&a) == 3, "min по ссылке");
+    assert(abs(&a) == 5, "abs по ссылке");
+    return 0;
 }
 "#);
 }

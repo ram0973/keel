@@ -22,6 +22,12 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     /// Встроенный `Vec<T>`: растущий массив в куче.
     Vec(Box<Type>),
+    /// Встроенный `Box<T>`: одно значение в куче, единственный владелец.
+    ///
+    /// В отличие от `Vec<T>`, `Box<T>` — ровно одно значение, и оно
+    /// всегда есть: пустой `Box` невозможен (в Keel нет null), для
+    /// отсутствующего значения — `Option<Box<T>>`.
+    Box(Box<Type>),
     /// Кортеж `(T, U)`.
     Tuple(Vec<Type>),
     /// Срез `[T]`: указатель на элементы + длина.
@@ -56,6 +62,7 @@ impl Type {
             Type::Option(t) => format!("Option<{}>", t.name()),
             Type::Result(t, e) => format!("Result<{}, {}>", t.name(), e.name()),
             Type::Vec(t) => format!("Vec<{}>", t.name()),
+            Type::Box(t) => format!("Box<{}>", t.name()),
             Type::Tuple(ts) => format!(
                 "({})",
                 ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ")
@@ -83,6 +90,7 @@ impl Type {
             Type::Option(t) => format!("Option_{}", t.mangle()),
             Type::Result(t, e) => format!("Result_{}_{}", t.mangle(), e.mangle()),
             Type::Vec(t) => format!("Vec_{}", t.mangle()),
+            Type::Box(t) => format!("Box_{}", t.mangle()),
             Type::Tuple(ts) => format!(
                 "Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
@@ -398,9 +406,6 @@ pub enum ExprKind {
     Unary { op: UnOp, e: Box<Expr> },
     Binary { op: BinOp, l: Box<Expr>, r: Box<Expr> },
     Ref(Box<Expr>),
-    /// `expr?` — разворачивает `Option`/`Result`: при `Some`/`Ok` даёт
-    /// значение, при `None`/`Err` возвращает его из функции.
-    Try(Box<Expr>),
     /// `if cond { a } else { b }` как выражение. Ветви — одиночные
     /// выражения; значение — результат выбранной ветви.
     If {
@@ -408,6 +413,9 @@ pub enum ExprKind {
         then_expr: Box<Expr>,
         else_expr: Box<Expr>,
     },
+    /// `expr?` — оператор пропагации ошибки. Субъект — `Result<T, E>`;
+    /// значение — `T`, а при `Err` функция возвращает `Err` дальше.
+    Try(Box<Expr>),
     /// Замыкание `|x| expr` или `|x| { ... }`.
     Closure {
         params: Vec<Param>,
@@ -488,14 +496,15 @@ pub enum Stmt {
     },
     /// `for x in a..b` — цикл по диапазону целых чисел.
     /// Правая граница исключительная, как в Rust и Zeta: `0..3` — это
-    /// 0, 1, 2. `..=` делает её включительной, `step N` задаёт шаг
-    /// (отрицательный — обратный цикл).
+    /// 0, 1, 2; `0..=3` — 0..3; шаг — `step N`.
     ForRange {
         line: usize,
         var: String,
         start: Expr,
         end: Expr,
+        /// `..=` — правая граница включается.
         inclusive: bool,
+        /// `step N` — шаг, `None` — шаг 1.
         step: Option<Expr>,
         body: Block,
     },
@@ -541,12 +550,29 @@ pub struct MatchArm {
     pub variant: String,
     /// Имена, привязанные к данным варианта: `Some(x)` → `["x"]`.
     pub bindings: Vec<String>,
-    /// Литерал ветви (`0`, `"x"`, `true`). `None` — ветвь по варианту enum.
+    /// Литерал ветви (`0`, `"x"`, `true`) — для `match` по значению.
+    /// `None` — ветвь по варианту enum.
     pub literal: Option<MatchLit>,
-    /// Условие-«страж»: `Some(x) if x > 0 => ...`.
+    /// Условие-guard: `Some(x) if x > 0 => { ... }`.
+    /// Ветвь выполняется, только если условие истинно.
     pub guard: Option<Expr>,
+    /// Имя, которому привязывается субъект: `n if n > 0 => { ... }`.
+    /// Только для `match` по значению.
+    pub bind: Option<String>,
+    /// Дополнительные варианты ветви: `A | B => { ... }`.
+    pub alts: Vec<MatchAlt>,
     pub body: Block,
     pub line: usize,
+}
+
+/// Дополнительный вариант ветви `match`: `A | B => { ... }`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MatchAlt {
+    /// Вариант enum: тип и имя. Тип должен совпадать с типом
+    /// основного варианта ветви.
+    Variant { ty: String, variant: String },
+    /// Литерал того же типа, что и субъект.
+    Literal(MatchLit),
 }
 
 /// Литерал в ветви `match` по числу, строке или `bool`.

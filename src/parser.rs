@@ -15,6 +15,12 @@ pub struct Parser {
     /// обязано быть известно компилятору. Область видимости — файл:
     /// константы, объявленные до места использования, видны ниже.
     consts: HashMap<String, ConstVal>,
+    /// Был ли последний разобранный оператор выражением **без** `;`.
+    ///
+    /// Тело функции: последнее выражение без `;` — возвращаемое
+    /// значение, с `;` — обычный оператор, значение отбрасывается.
+    /// Различие важно: `fn f() int { g(); }` не возвращает значение `g()`.
+    last_stmt_semi: bool,
 }
 
 /// Значение именованной константы. Только то, что известно компилятору.
@@ -29,7 +35,7 @@ type PResult<T> = Result<T, String>;
 
 impl Parser {
     pub fn new(src: &str) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0, consts: HashMap::new() })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: 0, consts: HashMap::new(), last_stmt_semi: false })
     }
 
     /// Парсер с заданным начальным значением счётчика id.
@@ -39,7 +45,7 @@ impl Parser {
     /// файла попадёт на выражение из другого — и сгенерированный C
     /// окажется неверным (`self.name` вместо `self->name`).
     pub fn with_id_start(src: &str, start: u32) -> PResult<Parser> {
-        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start, consts: HashMap::new() })
+        Ok(Parser { toks: lex(src)?, pos: 0, next_id: start, consts: HashMap::new(), last_stmt_semi: false })
     }
 
     /// Сколько id израсходовано — чтобы продолжить нумерацию в
@@ -49,6 +55,53 @@ impl Parser {
     }
 
     // --- вспомогательное ---
+
+    /// Guard ветви `match`: `if <условие>` перед `=>`.
+    fn parse_guard(&mut self) -> PResult<Option<Expr>> {
+        if !self.at_kw("if") {
+            return Ok(None);
+        }
+        self.bump();
+        Ok(Some(self.parse_expr()?))
+    }
+
+    /// Литерал ветви `match`, если следующий токен — число, строка или bool.
+    fn try_parse_lit(&mut self) -> PResult<Option<MatchLit>> {
+        match self.peek().clone() {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(Some(MatchLit::Int(n)))
+            }
+            Tok::Float(_) => {
+                Err(format!(
+                    "строка {}: `match` по `float` не поддерживается",
+                    self.line()
+                ))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Some(MatchLit::Str(s)))
+            }
+            Tok::Punct(p) if p == "-" => {
+                if let Tok::Int(n) = self.peek_at(1).clone() {
+                    self.bump();
+                    self.bump();
+                    Ok(Some(MatchLit::Int(-n)))
+                } else {
+                    Ok(None)
+                }
+            }
+            Tok::Ident(s) if s == "true" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(true)))
+            }
+            Tok::Ident(s) if s == "false" => {
+                self.bump();
+                Ok(Some(MatchLit::Bool(false)))
+            }
+            _ => Ok(None),
+        }
+    }
 
     fn peek(&self) -> &Tok {
         &self.toks[self.pos].tok
@@ -442,8 +495,9 @@ impl Parser {
         }
 
         let mut body = self.parse_block()?;
-        // Тело-выражение: последнее выражение без `;` — возвращаемое значение.
-        if ret != Type::Void {
+        // Тело-выражение: последнее выражение **без `;`** — возвращаемое
+        // значение. С `;` — обычный оператор, и значение отбрасывается.
+        if ret != Type::Void && !self.last_stmt_semi {
             if let Some(Stmt::Expr(e)) = body.stmts.last() {
                 let e = e.clone();
                 body.stmts.pop();
@@ -691,8 +745,76 @@ impl Parser {
                 self.expect_punct(">")?;
                 Ok(Type::Vec(Box::new(inner)))
             }
+            "Box" => {
+                self.expect_punct("<")?;
+                let inner = self.parse_type()?;
+                self.expect_punct(">")?;
+                Ok(Type::Box(Box::new(inner)))
+            }
             _ => Ok(Type::Named(name)),
         }
+    }
+
+    /// Шаблон `Вариант(x)` в `if let` / `while let`: тип enum'а, вариант,
+    /// имена привязок. Произвольные enum'ы не поддержаны — только встроенные
+    /// `Option`/`Result`, у которых известны все варианты.
+    fn parse_let_pattern(&mut self, kw: &str) -> PResult<(String, String, Vec<String>)> {
+        let line = self.line();
+        let first = self.ident()?;
+        let (ty, variant) = if self.eat_punct("::") {
+            (first, self.ident()?)
+        } else {
+            match first.as_str() {
+                "Some" | "None" => ("Option".to_string(), first),
+                "Ok" | "Err" => ("Result".to_string(), first),
+                _ => {
+                    return Err(format!(
+                        "строка {}: {} ждёт вариант `Option` или `Result`",
+                        line, kw
+                    ))
+                }
+            }
+        };
+        let mut bindings = Vec::new();
+        if self.eat_punct("(") {
+            while !self.at_punct(")") {
+                bindings.push(self.ident()?);
+                if !self.eat_punct(",") {
+                    break;
+                }
+            }
+            self.expect_punct(")")?;
+        }
+        Ok((ty, variant, bindings))
+    }
+
+    /// Вторая ветвь для `if let`/`while let`: парный вариант
+    /// (`Some` ↔ `None`, `Ok` ↔ `Err`) с телом по умолчанию.
+    /// Данные несут `Some`, `Ok` и `Err`, у `None` их нет.
+    fn let_other_arm(&self, ty: &str, variant: &str, line: usize, body: Block) -> PResult<MatchArm> {
+        let other = match variant {
+            "Some" => "None",
+            "None" => "Some",
+            "Ok" => "Err",
+            "Err" => "Ok",
+            _ => return Err(format!("строка {}: неизвестный вариант `{}`", line, variant)),
+        };
+        let bindings = if other == "None" {
+            Vec::new()
+        } else {
+            vec!["_".to_string()]
+        };
+        Ok(MatchArm {
+            ty: ty.to_string(),
+            variant: other.to_string(),
+            bindings,
+            literal: None,
+            guard: None,
+            bind: None,
+            alts: Vec::new(),
+            body,
+            line,
+        })
     }
 
     fn parse_block(&mut self) -> PResult<Block> {
@@ -706,6 +828,16 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> PResult<Stmt> {
+        let r = self.parse_stmt_inner();
+        // Оператор не-выражение (return, let, цикл…) — не тело-выражение.
+        // Флаг ставится после разбора: вложенные блоки могли его сбить.
+        if !matches!(r, Ok(Stmt::Expr(_))) {
+            self.last_stmt_semi = true;
+        }
+        r
+    }
+
+    fn parse_stmt_inner(&mut self) -> PResult<Stmt> {
         let line = self.line();
 
         // Похоже на объявление без `let`: `x int = 0;` вместо
@@ -769,17 +901,87 @@ impl Parser {
             return Ok(Stmt::Return { line, value: Some(e) });
         }
 
+        // `if let Some(x) = expr { ... } [else { ... }]` — сахар над
+        // `match` с двумя ветвями. Встроенные enum'ы знают свои варианты,
+        // поэтому недостающая ветвь достраивается здесь: проверка и
+        // кодогенерация остаются прежними.
+        if self.at_kw("if") && matches!(self.peek_at(1), Tok::Ident(k) if k == "let") {
+            let line = self.line();
+            self.bump();
+            self.bump();
+            let (ty, variant, bindings) = self.parse_let_pattern("`if let`")?;
+            self.expect_punct("=")?;
+            let subject = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let else_body = if self.eat_kw("else") {
+                if self.at_kw("if") {
+                    Some(Block { stmts: vec![self.parse_stmt()?] })
+                } else {
+                    Some(self.parse_block()?)
+                }
+            } else {
+                None
+            };
+            let arms = vec![
+                MatchArm {
+                    ty: ty.clone(),
+                    variant: variant.clone(),
+                    bindings,
+                    literal: None,
+                    guard: None,
+                    bind: None,
+                    alts: Vec::new(),
+                    body,
+                    line,
+                },
+                self.let_other_arm(&ty, &variant, line, else_body.unwrap_or(Block { stmts: Vec::new() }))?,
+            ];
+            return Ok(Stmt::Match { line, subject, arms });
+        }
+
+        // `while let Some(x) = expr { ... }` — сахар над
+        // `while true { match expr { Some(x) => ..., _ => break } }`:
+        // субъект вычисляется заново на каждой итерации, как в Rust.
+        if self.at_kw("while") && matches!(self.peek_at(1), Tok::Ident(k) if k == "let") {
+            let line = self.line();
+            self.bump();
+            self.bump();
+            let (ty, variant, bindings) = self.parse_let_pattern("`while let`")?;
+            self.expect_punct("=")?;
+            let subject = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let arms = vec![
+                MatchArm {
+                    ty: ty.clone(),
+                    variant: variant.clone(),
+                    bindings,
+                    literal: None,
+                    guard: None,
+                    bind: None,
+                    alts: Vec::new(),
+                    body,
+                    line,
+                },
+                self.let_other_arm(&ty, &variant, line, Block { stmts: vec![Stmt::Break { line }] })?,
+            ];
+            let cond = Expr { id: self.id(), line, kind: ExprKind::Bool(true) };
+            return Ok(Stmt::While {
+                cond,
+                body: Block { stmts: vec![Stmt::Match { line, subject, arms }] },
+            });
+        }
+
         if self.at_kw("if") {
-            // `if let PATTERN = EXPR { ... }` — десугар в `match`.
-            if matches!(self.peek_at(1), Tok::Ident(s) if s == "let") {
-                return self.parse_if_let();
-            }
             // Сначала пробуем форму выражения: `if cond { a } else { b }`.
             // Если ветви — не одиночные выражения, откатываемся к форме
             // оператора (`if cond { stmts } else { stmts }`).
             let save = (self.pos, self.next_id);
             match self.parse_if_expr() {
-                Ok(e) => return Ok(Stmt::Expr(e)),
+                Ok(e) => {
+                    // `if ... { ... } else { ... }` без `;` — тело-выражение.
+                    self.last_stmt_semi = false;
+                    return Ok(Stmt::Expr(e));
+                }
                 Err(_) => {
                     self.pos = save.0;
                     self.next_id = save.1;
@@ -809,15 +1011,146 @@ impl Parser {
             let mut arms = Vec::new();
             while !self.at_punct("}") {
                 let aline = self.line();
-                let (ty, variant, bindings, literal) = self.parse_pattern()?;
-                let guard = if self.eat_kw("if") {
-                    Some(self.parse_expr()?)
+                // Ветвь по значению: литерал (`0`, `"x"`, `true`) или `_`.
+                if let Some(literal) = self.try_parse_lit()? {
+                    // `1 | 2 => { ... }` — несколько значений в одной ветви.
+                    let mut alts = Vec::new();
+                    while self.at_punct("|") {
+                        self.bump();
+                        match self.try_parse_lit()? {
+                            Some(l) => alts.push(MatchAlt::Literal(l)),
+                            None => {
+                                return Err(format!(
+                                    "строка {}: после `|` ожидался литерал",
+                                    self.line()
+                                ))
+                            }
+                        }
+                    }
+                    let guard = self.parse_guard()?;
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: String::new(),
+                        bindings: Vec::new(),
+                        literal: Some(literal),
+                        guard,
+                        bind: None,
+                        alts,
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
+                if matches!(self.peek(), Tok::Ident(s) if s == "_") {
+                    self.bump();
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: "_".to_string(),
+                        bindings: Vec::new(),
+                        literal: None,
+                        guard: None,
+                        bind: None,
+                        alts: Vec::new(),
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
+                let first = self.ident()?;
+                // Привязка к субъекту: `n if n > 0 => { ... }`.
+                // Только в `match` по значению — там, где нет вариантов.
+                let is_builtin = matches!(first.as_str(), "Some" | "None" | "Ok" | "Err");
+                if !is_builtin && !self.at_punct("::") {
+                    let guard = self.parse_guard()?;
+                    self.expect_punct("=>")?;
+                    let body = self.parse_block()?;
+                    arms.push(MatchArm {
+                        ty: String::new(),
+                        variant: String::new(),
+                        bindings: Vec::new(),
+                        literal: None,
+                        guard,
+                        bind: Some(first),
+                        alts: Vec::new(),
+                        body,
+                        line: aline,
+                    });
+                    continue;
+                }
+                let (ty, variant) = if self.eat_punct("::") {
+                    let variant = self.ident()?;
+                    (first, variant)
                 } else {
-                    None
+                    // Голые имена встроенных вариантов: `Some`/`None`/`Ok`/`Err`.
+                    let ty = match first.as_str() {
+                        "Some" | "None" => "Option".to_string(),
+                        "Ok" | "Err" => "Result".to_string(),
+                        _ => {
+                            return Err(format!(
+                                "строка {}: ветвь `{}` должна быть `Тип::Вариант` или литералом",
+                                aline, first
+                            ))
+                        }
+                    };
+                    (ty, first)
                 };
+                let mut bindings = Vec::new();
+                if self.eat_punct("(") {
+                    while !self.at_punct(")") {
+                        bindings.push(self.ident()?);
+                        if !self.eat_punct(",") {
+                            break;
+                        }
+                    }
+                    self.expect_punct(")")?;
+                }
+                // `A::X | A::Y => { ... }` — несколько вариантов в ветви.
+                let mut alts: Vec<MatchAlt> = Vec::new();
+                while self.at_punct("|") {
+                    self.bump();
+                    let alt_ty = self.ident()?;
+                    if !self.eat_punct("::") {
+                        return Err(format!(
+                            "строка {}: после `|` ожидался `Тип::Вариант`",
+                            self.line()
+                        ));
+                    }
+                    let alt_variant = self.ident()?;
+                    // Привязки данных у альтернативы — свои; опускаем:
+                    // они должны совпадать с основной ветвью.
+                    if self.at_punct("(") {
+                        self.bump();
+                        while !self.at_punct(")") {
+                            self.ident()?;
+                            if !self.eat_punct(",") {
+                                break;
+                            }
+                        }
+                        self.expect_punct(")")?;
+                    }
+                    alts.push(MatchAlt::Variant {
+                        ty: alt_ty,
+                        variant: alt_variant,
+                    });
+                }
+                let guard = self.parse_guard()?;
                 self.expect_punct("=>")?;
                 let body = self.parse_block()?;
-                arms.push(MatchArm { ty, variant, bindings, literal, guard, body, line: aline });
+                arms.push(MatchArm {
+                    ty,
+                    variant,
+                    bindings,
+                    literal: None,
+                    guard,
+                    bind: None,
+                    alts,
+                    body,
+                    line: aline,
+                });
             }
             self.expect_punct("}")?;
             if arms.is_empty() {
@@ -839,11 +1172,6 @@ impl Parser {
         }
 
         if self.at_kw("while") {
-            // `while let PATTERN = EXPR { ... }` — десугар в
-            // `while true { match ... }`.
-            if matches!(self.peek_at(1), Tok::Ident(s) if s == "let") {
-                return self.parse_while_let();
-            }
             self.bump();
             let cond = self.parse_expr()?;
             let body = self.parse_block()?;
@@ -869,11 +1197,15 @@ impl Parser {
             self.bump();
             let var = self.ident()?;
             self.expect_kw("in")?;
-            // Диапазон: `for i in 0..10`, `0..=10`, `0..n step 2`.
+            // Диапазон: `for i in 0..10`.
             let first = self.parse_expr()?;
-            if self.at_punct("..") || self.at_punct("..=") {
-                let inclusive = self.at_punct("..=");
+            if self.at_punct("..") {
                 self.bump();
+                // `..=` лексер отдаёт как `..` и `=`.
+                let inclusive = self.at_punct("=");
+                if inclusive {
+                    self.bump();
+                }
                 let end = self.parse_expr()?;
                 let step = if self.at_kw("step") {
                     self.bump();
@@ -884,7 +1216,7 @@ impl Parser {
                 let body = self.parse_block()?;
                 return Ok(Stmt::ForRange { line, var, start: first, end, inclusive, step, body });
             }
-            // Массив: `for x in arr`.
+            // Массив, Vec или срез: `for x in arr`.
             let body = self.parse_block()?;
             return Ok(Stmt::ForEach { line, var, iter: first, body });
         }
@@ -927,10 +1259,14 @@ impl Parser {
             }
         }
         if self.at_punct("}") {
+            // Последнее выражение тела без `;` — возвращаемое значение.
+            self.last_stmt_semi = false;
             return Ok(Stmt::Expr(lhs));
         }
         self.expect_punct(";")?;
         let _ = line;
+        // Выражение с `;` — обычный оператор: значение отбрасывается.
+        self.last_stmt_semi = true;
         Ok(Stmt::Expr(lhs))
     }
 
@@ -965,142 +1301,6 @@ impl Parser {
                 else_expr: Box::new(else_expr),
             },
         ))
-    }
-
-    /// Шаблон ветви: `Some(x)`, `None`, `Enum::Variant(a, b)` или `_`.
-    fn parse_pattern(&mut self) -> PResult<(String, String, Vec<String>, Option<MatchLit>)> {
-        let aline = self.line();
-        // Литералы: `0`, `-1`, `"x"`, `true`/`false`.
-        if let Some(lit) = self.try_parse_lit()? {
-            return Ok((String::new(), String::new(), Vec::new(), Some(lit)));
-        }
-        let first = self.ident()?;
-        if first == "_" {
-            return Ok((String::new(), "_".to_string(), Vec::new(), None));
-        }
-        let (ty, variant) = if self.eat_punct("::") {
-            let variant = self.ident()?;
-            (first, variant)
-        } else {
-            // Голые имена встроенных вариантов: `Some`/`None`/`Ok`/`Err`.
-            let ty = match first.as_str() {
-                "Some" | "None" => "Option".to_string(),
-                "Ok" | "Err" => "Result".to_string(),
-                _ => {
-                    return Err(format!(
-                        "строка {}: ветвь `{}` должна быть `Тип::Вариант` или литералом",
-                        aline, first
-                    ))
-                }
-            };
-            (ty, first)
-        };
-        let mut bindings = Vec::new();
-        if self.eat_punct("(") {
-            while !self.at_punct(")") {
-                bindings.push(self.ident()?);
-                if !self.eat_punct(",") {
-                    break;
-                }
-            }
-            self.expect_punct(")")?;
-        }
-        Ok((ty, variant, bindings, None))
-    }
-
-    /// Литерал ветви `match`, если следующий токен — число, строка или bool.
-    fn try_parse_lit(&mut self) -> PResult<Option<MatchLit>> {
-        match self.peek().clone() {
-            Tok::Int(n) => {
-                self.bump();
-                Ok(Some(MatchLit::Int(n)))
-            }
-            Tok::Str(s) => {
-                self.bump();
-                Ok(Some(MatchLit::Str(s)))
-            }
-            Tok::Punct(p) if p == "-" => {
-                if let Tok::Int(n) = self.peek_at(1).clone() {
-                    self.bump();
-                    self.bump();
-                    Ok(Some(MatchLit::Int(-n)))
-                } else {
-                    Ok(None)
-                }
-            }
-            Tok::Ident(s) if s == "true" => {
-                self.bump();
-                Ok(Some(MatchLit::Bool(true)))
-            }
-            Tok::Ident(s) if s == "false" => {
-                self.bump();
-                Ok(Some(MatchLit::Bool(false)))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    /// `if let PATTERN = EXPR { ... } else { ... }` — десугар в `match`.
-    fn parse_if_let(&mut self) -> PResult<Stmt> {
-        let line = self.line();
-        self.expect_kw("if")?;
-        self.expect_kw("let")?;
-        let (ty, variant, bindings, literal) = self.parse_pattern()?;
-        self.expect_punct("=")?;
-        let subject = self.parse_expr()?;
-        let then_block = self.parse_block()?;
-        let else_block = if self.eat_kw("else") {
-            if self.at_kw("if") {
-                let nested = self.parse_stmt()?;
-                Some(Block { stmts: vec![nested] })
-            } else {
-                Some(self.parse_block()?)
-            }
-        } else {
-            None
-        };
-        let arms = vec![
-            MatchArm { ty, variant, bindings, literal, guard: None, body: then_block, line },
-            MatchArm {
-                ty: String::new(),
-                variant: "_".to_string(),
-                bindings: Vec::new(),
-                literal: None,
-                guard: None,
-                body: else_block.unwrap_or(Block { stmts: Vec::new() }),
-                line,
-            },
-        ];
-        Ok(Stmt::Match { line, subject, arms })
-    }
-
-    /// `while let PATTERN = EXPR { ... }` — десугар в
-    /// `while true { match EXPR { PATTERN => { ... } _ => { break; } } }`.
-    fn parse_while_let(&mut self) -> PResult<Stmt> {
-        let line = self.line();
-        self.expect_kw("while")?;
-        self.expect_kw("let")?;
-        let (ty, variant, bindings, literal) = self.parse_pattern()?;
-        self.expect_punct("=")?;
-        let subject = self.parse_expr()?;
-        let body = self.parse_block()?;
-        let arms = vec![
-            MatchArm { ty, variant, bindings, literal, guard: None, body, line },
-            MatchArm {
-                ty: String::new(),
-                variant: "_".to_string(),
-                bindings: Vec::new(),
-                literal: None,
-                guard: None,
-                body: Block { stmts: vec![Stmt::Break { line }] },
-                line,
-            },
-        ];
-        let cond = self.mk(line, ExprKind::Bool(true));
-        Ok(Stmt::While {
-            cond,
-            body: Block { stmts: vec![Stmt::Match { line, subject, arms }] },
-        })
     }
 
     fn parse_or(&mut self) -> PResult<Expr> {
@@ -1289,6 +1489,7 @@ impl Parser {
                 let id = self.id();
                 e = Expr { id, line, kind: ExprKind::Call { callee: Box::new(e), args } };
             } else if self.at_punct("?") {
+                // `expr?` — оператор пропагации ошибки.
                 self.bump();
                 let id = self.id();
                 e = Expr { id, line, kind: ExprKind::Try(Box::new(e)) };

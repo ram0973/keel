@@ -9,6 +9,10 @@ use crate::ast::*;
 use crate::checker::Checker;
 use std::collections::HashMap;
 
+/// Рантайм Keel: собственный аллокатор (`ke_alloc`/`ke_realloc`/`ke_free`),
+/// счётчики живых блоков и отчёт об утечках на выходе.
+const KEEL_RUNTIME: &str = include_str!("../runtime/keel_rt.c");
+
 pub struct Codegen<'a> {
     prog: &'a Program,
     types: &'a HashMap<u32, Type>,
@@ -21,16 +25,32 @@ pub struct Codegen<'a> {
     result_insts: &'a [(Type, Type)],
     /// Конкретные инстанциации встроенных `Vec<T>`.
     vec_insts: &'a [Type],
+    /// Конкретные инстанциации встроенных `Box<T>`.
+    box_insts: &'a [Type],
     /// Конкретные типы кортежей.
     tuple_insts: &'a [Type],
     /// Конкретные типы срезов.
     slice_insts: &'a [Type],
     /// `Vec`-локальные для автоматического освобождения в конце функции.
-    vec_drops: &'a HashMap<String, Vec<(String, Type, Vec<String>)>>,
+    vec_drops: &'a HashMap<String, Vec<crate::checker::VecDrop>>,
+    /// `Box`-владения для автоматического освобождения.
+    box_drops: &'a HashMap<String, Vec<crate::checker::BoxDrop>>,
+    /// id субъекта `match` → флаги «связка заимствует payload».
+    match_bind_refs: &'a HashMap<u32, Vec<Vec<bool>>>,
     /// Тела замыканий — эмитятся после функций.
     closures: std::cell::RefCell<Vec<String>>,
+    /// Сигнатуры замыканий — нужны forward-декларации: вложенное
+    /// замыкание вызывается из тела внешнего, а определено позже.
+    closure_sigs: std::cell::RefCell<Vec<String>>,
     /// Отложенные замыкания: (имя, параметры, тело, тип).
     pending_closures: std::cell::RefCell<Vec<(String, Vec<Param>, Block, Type)>>,
+    /// Имена замыканий по id выражения. Регистрация идемпотентна:
+    /// замыкание опознаётся и при сборе, и при генерации — имя должно
+    /// совпадать, а тело не должно эмититься дважды.
+    closure_names: std::cell::RefCell<HashMap<u32, String>>,
+    /// Счётчик имён замыканий. Единый и монотонный: вложенные замыкания
+    /// не должны получать одно и то же имя.
+    closure_counter: std::cell::Cell<u32>,
     out: std::cell::RefCell<String>,
     /// Имя C-типа для каждой структуры Keel.
     ctype: HashMap<String, String>,
@@ -38,6 +58,9 @@ pub struct Codegen<'a> {
     structs: HashMap<String, StructDecl>,
     /// Объявления enum — нужны для вариантов и нулевого значения.
     enums: HashMap<String, EnumDecl>,
+    /// Счётчик временных переменных для выражений с побочными
+    /// эффектами (например, `expr?`).
+    tmp_counter: std::cell::Cell<u32>,
     /// Текущая глубина вложенности циклов — для уникальных имён
     /// переменных цикла.
     loop_depth: usize,
@@ -73,18 +96,6 @@ pub struct Codegen<'a> {
     cur_fn_name: String,
     /// Файл текущей функции — для `#line` в сгенерированном C.
     cur_file: String,
-    /// Куда ведёт `break`: цикл или `switch` (у `match`). В C `break`
-    /// внутри `switch` выходит из `switch`, а не из цикла — поэтому
-    /// `break` в ветви `match` ставит флаг и выходит по `goto`.
-    break_stack: Vec<BreakTarget>,
-    next_loop_id: usize,
-    next_switch_id: usize,
-}
-
-/// Ближайшая конструкция, из которой выходит `break`.
-enum BreakTarget {
-    Loop(usize),
-    Switch(usize),
 }
 
 /// Вид определения типа для топологической сортировки.
@@ -94,6 +105,7 @@ enum DefKind {
     Option(Type),
     Result(Type, Type),
     Vec(Type),
+    Box(Type),
     Tuple(Vec<Type>),
     Slice(Type),
 }
@@ -124,11 +136,17 @@ impl<'a> Codegen<'a> {
             option_insts: &checker.option_insts,
             result_insts: &checker.result_insts,
             vec_insts: &checker.vec_insts,
+            box_insts: &checker.box_insts,
             tuple_insts: &checker.tuple_insts,
             slice_insts: &checker.slice_insts,
             vec_drops: &checker.vec_drops,
+            box_drops: &checker.box_drops,
+            match_bind_refs: &checker.match_bind_refs,
             closures: std::cell::RefCell::new(Vec::new()),
+            closure_sigs: std::cell::RefCell::new(Vec::new()),
             pending_closures: std::cell::RefCell::new(Vec::new()),
+            closure_names: std::cell::RefCell::new(HashMap::new()),
+            closure_counter: std::cell::Cell::new(0),
             out: std::cell::RefCell::new(String::new()),
             ctype,
             structs,
@@ -137,15 +155,87 @@ impl<'a> Codegen<'a> {
             loop_vars: HashMap::new(),
             in_struct_init: std::cell::Cell::new(false),
             shadow_count: std::cell::RefCell::new(HashMap::new()),
+            tmp_counter: std::cell::Cell::new(0),
             var_names: std::cell::RefCell::new(HashMap::new()),
             in_main: false,
             cur_ret: Type::Void,
             cur_post: Vec::new(),
             cur_fn_name: String::new(),
             cur_file: String::new(),
-            break_stack: Vec::new(),
-            next_loop_id: 0,
-            next_switch_id: 0,
+        }
+    }
+
+    /// Значение получателя: ссылка разыменовывается.
+    fn recv_value(&self, obj: &Expr) -> String {
+        match self.types.get(&obj.id) {
+            Some(Type::Ref(_)) => format!("(*{})", self.expr(obj)),
+            _ => self.expr(obj),
+        }
+    }
+
+    /// Методы `Option<T>`: тег и поле читаются напрямую, без функций рантайма.
+    fn option_method(&self, e: &Expr, obj: &Expr, name: &str, args: &[Expr], inner: &Type) -> String {
+        let c = self.ty(&Type::Option(Box::new(inner.clone())));
+        let val = self.recv_value(obj);
+        match name {
+            "is_some" => format!("({}.tag == {}_Some)", val, c),
+            "is_none" => format!("({}.tag == {}_None)", val, c),
+            "unwrap" => format!(
+                "({{ {c} __k_o = {v}; if (__k_o.tag != {c}_Some) {{ \
+                 fprintf(stderr, \"unwrap: None (строка {line})\\n\"); exit(1); }} \
+                 __k_o.data.Some._0; }})",
+                c = c,
+                v = val,
+                line = e.line
+            ),
+            "unwrap_or" => {
+                let d = self.expr(&args[0]);
+                format!(
+                    "({{ {c} __k_o = {v}; \
+                     __k_o.tag == {c}_Some ? __k_o.data.Some._0 : ({d}); }})",
+                    c = c,
+                    v = val,
+                    d = d
+                )
+            }
+            _ => "0".to_string(),
+        }
+    }
+
+    /// Методы `Result<T, E>`: как у `Option`, но с тегами `Ok`/`Err`.
+    fn result_method(
+        &self,
+        e: &Expr,
+        obj: &Expr,
+        name: &str,
+        args: &[Expr],
+        ok: &Type,
+        err: &Type,
+    ) -> String {
+        let c = self.ty(&Type::Result(Box::new(ok.clone()), Box::new(err.clone())));
+        let val = self.recv_value(obj);
+        match name {
+            "is_ok" => format!("({}.tag == {}_Ok)", val, c),
+            "is_err" => format!("({}.tag == {}_Err)", val, c),
+            "unwrap" => format!(
+                "({{ {c} __k_o = {v}; if (__k_o.tag != {c}_Ok) {{ \
+                 fprintf(stderr, \"unwrap: Err (строка {line})\\n\"); exit(1); }} \
+                 __k_o.data.Ok._0; }})",
+                c = c,
+                v = val,
+                line = e.line
+            ),
+            "unwrap_or" => {
+                let d = self.expr(&args[0]);
+                format!(
+                    "({{ {c} __k_o = {v}; \
+                     __k_o.tag == {c}_Ok ? __k_o.data.Ok._0 : ({d}); }})",
+                    c = c,
+                    v = val,
+                    d = d
+                )
+            }
+            _ => "0".to_string(),
         }
     }
 
@@ -168,6 +258,7 @@ impl<'a> Codegen<'a> {
                 format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())
             }
             Type::Vec(inner) => format!("Keel_Vec_{}", inner.mangle()),
+            Type::Box(inner) => format!("Keel_Box_{}", inner.mangle()),
             Type::Tuple(ts) => format!(
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
@@ -178,6 +269,21 @@ impl<'a> Codegen<'a> {
                 self.ty(ret),
                 args.iter().map(|t| self.ty(t)).collect::<Vec<_>>().join(", ")
             ),
+        }
+    }
+
+    /// Операнд числовой встроенной функции (`min`, `max`, `abs`, побитовые).
+    ///
+    /// Ссылка на число разыменовывается: в Keel `min(&x, 3)` означает
+    /// `min(*&x, 3)`, а в C указатель в сравнении с числом — ошибка.
+    fn num_operand(&self, a: &Expr) -> String {
+        let v = self.expr(a);
+        match self.types.get(&a.id) {
+            Some(Type::Ref(inner)) => match inner.as_ref() {
+                Type::Int | Type::Float => format!("(*{})", v),
+                _ => v,
+            },
+            _ => v,
         }
     }
 
@@ -236,6 +342,11 @@ impl<'a> Codegen<'a> {
 
     pub fn generate(mut self) -> String {
         self.out.borrow_mut().push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+        // Рантайм с собственным аллокатором. Подставляется целиком:
+        // сгенерированный C остаётся самодостаточным — его можно
+        // собрать, не имея исходников Keel.
+        self.out.borrow_mut().push_str(KEEL_RUNTIME);
+        self.out.borrow_mut().push_str("\n");
         // Нарушение контракта pre/post: сообщение в stderr и выход.
         // Это проверка, а не доказательство: контракт говорит «здесь
         // значение гарантированно есть», а не «поверьте».
@@ -258,44 +369,19 @@ impl<'a> Codegen<'a> {
              \x20 return i;\n\
              }\n\n",
         );
-        // `unwrap` на `None`/`Err`: сообщение и выход с кодом 1, а не
-        // чтение мусора из union.
+        // Строковое представление чисел: память под строку не
+        // освобождается — строки в языке пока не владеющие (волна 8).
         self.out.borrow_mut().push_str(
-            "// `unwrap` на пустом значении — ошибка, а не чтение мусора.\n\
-             static void k_unwrap_fail(int line) {\n\
-             \x20 fprintf(stderr, \"строка %d: unwrap на пустом значении (None/Err)\\n\", line);\n\
-             \x20 exit(1);\n\
-             }\n\n",
-        );
-        // Число/bool в строку и обратно. Память под строку — из кучи,
-        // не освобождается (как `read_line`).
-        self.out.borrow_mut().push_str(
-            "// Число/bool в строку: память из кучи, не освобождается.\n\
-             static const char* k_int_to_str(int64_t x) {\n\
-             \x20 char* b = (char*)malloc(32);\n\
-             \x20 snprintf(b, 32, \"%lld\", (long long)x);\n\
-             \x20 return b;\n\
-             }\n\
-             static const char* k_float_to_str(double x) {\n\
-             \x20 char* b = (char*)malloc(32);\n\
-             \x20 snprintf(b, 32, \"%g\", x);\n\
-             \x20 return b;\n\
-             }\n\
-             static int64_t k_str_to_int(const char* s) { return (int64_t)strtoll(s, NULL, 10); }\n\
-             static double k_str_to_float(const char* s) { return strtod(s, NULL); }\n\
-             static int64_t k_min_int(int64_t a, int64_t b) { return a < b ? a : b; }\n\
-             static int64_t k_max_int(int64_t a, int64_t b) { return a > b ? a : b; }\n\
-             static int64_t k_abs_int(int64_t a) { return a < 0 ? -a : a; }\n\
-             static double k_min_float(double a, double b) { return a < b ? a : b; }\n\
-             static double k_max_float(double a, double b) { return a > b ? a : b; }\n\
-             static double k_abs_float(double a) { return a < 0 ? -a : a; }\n\
-             static void k_assert_fail(int line) {\n\
-             \x20 fprintf(stderr, \"assert: строка %d\\n\", line);\n\
-             \x20 exit(1);\n\
-             }\n\
-             static void k_panic(const char* msg) {\n\
-             \x20 fprintf(stderr, \"%s\\n\", msg);\n\
-             \x20 exit(1);\n\
+            "// Число в строку. Память не освобождается — см. волну 8.\n\
+             static const char* k_to_string_i(int64_t v) {\n\
+             \x20 char buf[32];\n\
+             \x20 snprintf(buf, sizeof buf, \"%lld\", (long long)v);\n\
+             \x20 return strdup(buf);\n\
+             }\n\n\
+             static const char* k_to_string_f(double v) {\n\
+             \x20 char buf[64];\n\
+             \x20 snprintf(buf, sizeof buf, \"%g\", v);\n\
+             \x20 return strdup(buf);\n\
              }\n\n",
         );
         // Ввод: строка и целое из stdin.
@@ -315,14 +401,14 @@ impl<'a> Codegen<'a> {
              // Память не освобождается — см. волну 8 в docs/lang-design.md.\n\
              static char* k_read_line(void) {\n\
              \x20 size_t cap = 64, len = 0;\n\
-             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 char* buf = (char*)ke_alloc(cap);\n\
              \x20 if (!buf) return NULL;\n\
              \x20 int c;\n\
              \x20 while ((c = getchar()) != EOF && c != '\\n') {\n\
-             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)ke_realloc(buf, cap); }\n\
              \x20   buf[len++] = (char)c;\n\
              \x20 }\n\
-             \x20 if (c == EOF && len == 0) { free(buf); return NULL; }\n\
+             \x20 if (c == EOF && len == 0) { ke_free(buf); return NULL; }\n\
              \x20 buf[len] = '\\0';\n\
              \x20 return buf;\n\
              }\n\n\
@@ -356,10 +442,10 @@ impl<'a> Codegen<'a> {
              \x20 FILE* f = (FILE*)(intptr_t)fd;\n\
              \x20 if (!f) return \"\";\n\
              \x20 size_t cap = 256, len = 0;\n\
-             \x20 char* buf = (char*)malloc(cap);\n\
+             \x20 char* buf = (char*)ke_alloc(cap);\n\
              \x20 if (!buf) return \"\";\n\
              \x20 for (;;) {\n\
-             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }\n\
+             \x20   if (len + 1 >= cap) { cap *= 2; buf = (char*)ke_realloc(buf, cap); }\n\
              \x20   size_t n = fread(buf + len, 1, cap - len - 1, f);\n\
              \x20   len += n;\n\
              \x20   if (n == 0) break;\n\
@@ -387,7 +473,7 @@ impl<'a> Codegen<'a> {
              // Освобождения пока нет — см. волну 8 в docs/lang-design.md.\n\
              static char* k_str_concat(const char* a, const char* b) {\n\
              \x20 size_t la = strlen(a), lb = strlen(b);\n\
-             \x20 char* r = (char*)malloc(la + lb + 1);\n\
+             \x20 char* r = (char*)ke_alloc(la + lb + 1);\n\
              \x20 memcpy(r, a, la);\n\
              \x20 memcpy(r + la, b, lb + 1);\n\
              \x20 return r;\n\
@@ -407,6 +493,8 @@ impl<'a> Codegen<'a> {
         // определять их в порядке зависимостей.
         self.emit_forward_decls();
         self.emit_type_defs();
+        // Освобождение `Box` — после типов: оно знает их раскладку.
+        self.emit_box_drops();
         self.out.borrow_mut().push('\n');
         // Конструкторы структур с массивами в полях.
         for item in &self.prog.items {
@@ -486,9 +574,19 @@ impl<'a> Codegen<'a> {
                     self.shadow_count.borrow_mut().insert(p.name.clone(), 1);
                 }
                 let mut s = format!("static {} {}({}) {{\n", ret_ty, name, args.join(", "));
+                self.closure_sigs
+                    .borrow_mut()
+                    .push(format!("static {} {}({});\n", ret_ty, name, args.join(", ")));
                 let saved = std::mem::take(&mut *self.out.borrow_mut());
+                // Возвращаемое значение замыкания: у `void`-замыкания
+                // `return <expr>;` — невалидный C («return with a value,
+                // in function returning void»).
+                let returns_value = match &ret {
+                    Type::Fn(_, r) => !matches!(r.as_ref(), Type::Void),
+                    _ => false,
+                };
                 for (i, stmt) in body.stmts.iter().enumerate() {
-                    if i == body.stmts.len() - 1 {
+                    if i == body.stmts.len() - 1 && returns_value {
                         if let Stmt::Expr(e) = stmt {
                             let v = self.expr(e);
                             self.out.borrow_mut().push_str(&format!("  return {};\n", v));
@@ -504,6 +602,16 @@ impl<'a> Codegen<'a> {
             }
         }
         // Эмитим тела замыканий до функций.
+        // Сначала сигнатуры: вложенное замыкание вызывается из тела
+        // внешнего, а определено позже — без forward-декларации C
+        // не знает символ.
+        let sigs = std::mem::take(&mut *self.closure_sigs.borrow_mut());
+        for s in &sigs {
+            self.out.borrow_mut().push_str(s);
+        }
+        if !sigs.is_empty() {
+            self.out.borrow_mut().push('\n');
+        }
         let closures = std::mem::take(&mut *self.closures.borrow_mut());
         for c in &closures {
             self.out.borrow_mut().push_str(c);
@@ -568,6 +676,14 @@ impl<'a> Codegen<'a> {
                 vec![(**inner).clone()],
             ));
         }
+        for t in self.box_insts {
+            let Type::Box(inner) = t else { continue };
+            defs.push((
+                format!("Keel_Box_{}", inner.mangle()),
+                DefKind::Box((**inner).clone()),
+                vec![(**inner).clone()],
+            ));
+        }
         for t in self.tuple_insts {
             let Type::Tuple(ts) = t else { continue };
             defs.push((
@@ -606,6 +722,7 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     DefKind::Option(inner) => self.emit_option_def(inner),
+                    DefKind::Box(inner) => self.emit_box_def(inner),
                     DefKind::Result(ok, err) => self.emit_result_def(ok, err),
                     DefKind::Vec(inner) => self.emit_vec_def(inner),
                     DefKind::Tuple(ts) => self.emit_tuple_def(ts),
@@ -655,6 +772,7 @@ impl<'a> Codegen<'a> {
             Type::Option(inner) => Some(format!("Keel_Option_{}", inner.mangle())),
             Type::Result(ok, err) => Some(format!("Keel_Result_{}_{}", ok.mangle(), err.mangle())),
             Type::Vec(inner) => Some(format!("Keel_Vec_{}", inner.mangle())),
+            Type::Box(inner) => Some(format!("Keel_Box_{}", inner.mangle())),
             Type::Tuple(ts) => Some(format!(
                 "Keel_Tuple_{}",
                 ts.iter().map(|t| t.mangle()).collect::<Vec<_>>().join("_")
@@ -702,6 +820,16 @@ impl<'a> Codegen<'a> {
         ));
     }
 
+    /// `Box<T>` — указатель на одно значение в куче.
+    fn emit_box_def(&mut self, inner: &Type) {
+        let cname = format!("Keel_Box_{}", inner.mangle());
+        let elem = self.ty(inner);
+        self.out.borrow_mut().push_str(&format!(
+            "struct {} {{\n  {}* ptr;\n}};\n\n",
+            cname, elem
+        ));
+    }
+
     fn emit_tuple_def(&mut self, ts: &[Type]) {
         let cname = format!(
             "Keel_Tuple_{}",
@@ -734,7 +862,7 @@ impl<'a> Codegen<'a> {
             cname = cname, m = m
         ));
         self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_push({cname}* v, {elem} x) {{\n  if (v->len == v->cap) {{\n    v->cap = v->cap ? v->cap * 2 : 4;\n    v->data = ({elem}*)realloc(v->data, (size_t)v->cap * sizeof({elem}));\n  }}\n  v->data[v->len++] = x;\n}}\n\n",
+            "static void k_vec_{m}_push({cname}* v, {elem} x) {{\n  if (v->len == v->cap) {{\n    v->cap = v->cap ? v->cap * 2 : 4;\n    v->data = ({elem}*)ke_realloc(v->data, (size_t)v->cap * sizeof({elem}));\n  }}\n  v->data[v->len++] = x;\n}}\n\n",
             m = m, cname = cname, elem = elem
         ));
         self.out.borrow_mut().push_str(&format!(
@@ -750,57 +878,67 @@ impl<'a> Codegen<'a> {
             opt = opt, m = m, cname = cname
         ));
         self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_free({cname}* v) {{\n  free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
+            "static void k_vec_{m}_free({cname}* v) {{\n  ke_free(v->data);\n  v->data = NULL;\n  v->len = 0;\n  v->cap = 0;\n}}\n\n",
             m = m, cname = cname
         ));
         self.out.borrow_mut().push_str(&format!(
-            "static bool k_vec_{m}_is_empty(const {cname}* v) {{ return v->len == 0; }}\n\n",
-            m = m, cname = cname
+            "static int64_t k_vec_{m}_is_empty(const {cname}* v) {{ return v->len == 0; }}\n\n\
+             static void k_vec_{m}_clear({cname}* v) {{ v->len = 0; }}\n\n\
+             static void k_vec_{m}_reverse({cname}* v) {{\n\
+             \x20 for (int64_t lo = 0, hi = v->len - 1; lo < hi; lo++, hi--) {{\n\
+             \x20   {elem} t = v->data[lo];\n\
+             \x20   v->data[lo] = v->data[hi];\n\
+             \x20   v->data[hi] = t;\n\
+             \x20 }}\n\
+             }}\n\n\
+             static {opt} k_vec_{m}_first(const {cname}* v) {{\n\
+             \x20 if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n\
+             \x20 return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[0] }} }};\n\
+             }}\n\n\
+             static {opt} k_vec_{m}_last(const {cname}* v) {{\n\
+             \x20 if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n\
+             \x20 return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[v->len - 1] }} }};\n\
+             }}\n\n",
+            m = m, cname = cname, elem = elem, opt = opt
         ));
-        self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_clear({cname}* v) {{ v->len = 0; }}\n\n",
-            m = m, cname = cname
-        ));
-        // Сравнение по содержимому: строки — `strcmp`, остальные — `==`.
-        let eq = match inner {
-            Type::Str => "strcmp(v->data[i], x) == 0",
-            _ => "v->data[i] == x",
+        // Сравнение: строки — по содержимому, числа — побайтово.
+        let eq = if matches!(inner, Type::Str) {
+            "strcmp(v->data[i], x) == 0".to_string()
+        } else {
+            "memcmp(&v->data[i], &x, sizeof x) == 0".to_string()
         };
         self.out.borrow_mut().push_str(&format!(
-            "static bool k_vec_{m}_contains(const {cname}* v, {elem} x) {{\n  for (int64_t i = 0; i < v->len; i++) if ({eq}) return true;\n  return false;\n}}\n\n",
-            m = m, cname = cname, elem = elem, eq = eq
+            "static bool k_vec_{m}_contains(const {cname}* v, {elem} x) {{\n\
+             \x20 for (int64_t i = 0; i < v->len; i++) {{\n\
+             \x20   if ({eq}) return true;\n\
+             \x20 }}\n\
+             \x20 return false;\n\
+             }}\n\n",
+            m = m,
+            cname = cname,
+            elem = elem,
+            eq = eq
         ));
-        // Компаратор для `qsort`: порядок по значению, строки — `strcmp`.
-        let cmp = match inner {
-            Type::Str => "return strcmp(*(const char* const*)a, *(const char* const*)b);",
-            Type::Float => {
-                "double x = *(const double*)a, y = *(const double*)b; return (x > y) - (x < y);"
-            }
-            Type::Bool => {
-                "bool x = *(const bool*)a, y = *(const bool*)b; return (int)x - (int)y;"
-            }
-            _ => "int64_t x = *(const int64_t*)a, y = *(const int64_t*)b; return (x > y) - (x < y);",
+        let cmp_body = match inner {
+            Type::Str => "return strcmp(x, y);".to_string(),
+            _ => "return (x > y) - (x < y);".to_string(),
         };
-        self.out.borrow_mut().push_str(&format!(
-            "static int k_vec_{m}_cmp(const void* a, const void* b) {{ {cmp} }}\n\n",
-            m = m, cmp = cmp
-        ));
-        self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_sort({cname}* v) {{ if (v->len > 1) qsort(v->data, (size_t)v->len, sizeof({elem}), k_vec_{m}_cmp); }}\n\n",
-            m = m, cname = cname, elem = elem
-        ));
-        self.out.borrow_mut().push_str(&format!(
-            "static void k_vec_{m}_reverse({cname}* v) {{\n  for (int64_t i = 0, j = v->len - 1; i < j; i++, j--) {{\n    {elem} t = v->data[i];\n    v->data[i] = v->data[j];\n    v->data[j] = t;\n  }}\n}}\n\n",
-            m = m, cname = cname, elem = elem
-        ));
-        self.out.borrow_mut().push_str(&format!(
-            "static {opt} k_vec_{m}_first(const {cname}* v) {{\n  if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[0] }} }};\n}}\n\n",
-            opt = opt, m = m, cname = cname
-        ));
-        self.out.borrow_mut().push_str(&format!(
-            "static {opt} k_vec_{m}_last(const {cname}* v) {{\n  if (v->len == 0) return ({opt}){{ .tag = {opt}_None }};\n  return ({opt}){{ .tag = {opt}_Some, .data.Some = {{ ._0 = v->data[v->len - 1] }} }};\n}}\n\n",
-            opt = opt, m = m, cname = cname
-        ));
+        if matches!(inner, Type::Int | Type::Float | Type::Str) {
+            self.out.borrow_mut().push_str(&format!(
+                "static int k_vec_{m}_cmp(const void* a, const void* b) {{\n\
+                 \x20 {elem} x = *({elem}*)a;\n\
+                 \x20 {elem} y = *({elem}*)b;\n\
+                 \x20 {body}\n\
+                 }}\n\n\
+                 static void k_vec_{m}_sort({cname}* v) {{\n\
+                 \x20 qsort(v->data, (size_t)v->len, sizeof({elem}), k_vec_{m}_cmp);\n\
+                 }}\n\n",
+                m = m,
+                cname = cname,
+                elem = elem,
+                body = cmp_body
+            ));
+        }
     }
 
     fn emit_forward_decls(&mut self) {
@@ -826,6 +964,11 @@ impl<'a> Codegen<'a> {
         }
         for (ok, err) in self.result_insts {
             let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+            self.out.borrow_mut().push_str(&format!("typedef struct {} {};\n", cname, cname));
+        }
+        for t in self.box_insts {
+            let Type::Box(inner) = t else { continue };
+            let cname = format!("Keel_Box_{}", inner.mangle());
             self.out.borrow_mut().push_str(&format!("typedef struct {} {};\n", cname, cname));
         }
         for t in self.vec_insts {
@@ -934,17 +1077,31 @@ impl<'a> Codegen<'a> {
         self.out.borrow_mut().push_str(&text);
     }
 
+    /// Имя замыкания по id выражения; при первом обращении замыкание
+    /// ставится в очередь на эмит. Повторное обращение возвращает то же
+    /// имя и не дублирует тело.
+    fn register_closure(&self, e: &Expr, params: &[Param], body: &Block) -> String {
+        if let Some(name) = self.closure_names.borrow().get(&e.id) {
+            return name.clone();
+        }
+        let n = self.closure_counter.get();
+        self.closure_counter.set(n + 1);
+        let name = format!("closure_{}", n);
+        self.closure_names
+            .borrow_mut()
+            .insert(e.id, name.clone());
+        let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
+        self.pending_closures
+            .borrow_mut()
+            .push((name.clone(), params.to_vec(), body.clone(), ret));
+        name
+    }
+
     fn collect_closures_expr(&self, e: &Expr) {
         match &e.kind {
             ExprKind::Closure { params, body } => {
-                let name = format!(
-                    "closure_{}",
-                    self.closures.borrow().len() + self.pending_closures.borrow().len()
-                );
-                let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
-                self.pending_closures
-                    .borrow_mut()
-                    .push((name, params.clone(), body.clone(), ret));
+                let name = self.register_closure(e, params, body);
+                let _ = name;
                 for stmt in &body.stmts {
                     self.collect_closures_stmt(stmt);
                 }
@@ -1137,39 +1294,111 @@ impl<'a> Codegen<'a> {
             .get(&crate::checker::Checker::func_key(f))
             .cloned()
             .unwrap_or_default();
-        let last_use: Vec<(String, Type, usize)> = drops
+        let last_use: Vec<(crate::checker::VecDrop, usize)> = drops
             .into_iter()
-            .map(|(name, ty, aliases)| {
+            .map(|d| {
                 let idx = f
                     .body
                     .stmts
                     .iter()
                     .rposition(|s| {
-                        stmt_mentions(s, &name)
-                            || aliases.iter().any(|a| stmt_mentions(s, a))
+                        stmt_mentions(s, &d.name)
+                            || d.aliases.iter().any(|a| stmt_mentions(s, a))
                     })
                     .unwrap_or(usize::MAX);
-                (name, ty, idx)
+                (d, idx)
+            })
+            .collect();
+        // `Box`: освобождаем по той же схеме liveness — сразу после
+        // последнего использования. Присваивание — особый случай:
+        // старое значение надо освободить ДО присваивания, иначе оно
+        // утечёт (новое значение занимает ту же переменную).
+        let box_drops = self
+            .box_drops
+            .get(&crate::checker::Checker::func_key(f))
+            .cloned()
+            .unwrap_or_default();
+        let box_last_use: Vec<(crate::checker::BoxDrop, usize)> = box_drops
+            .into_iter()
+            .map(|d| {
+                let last = f
+                    .body
+                    .stmts
+                    .iter()
+                    .rposition(|s| {
+                        stmt_mentions(s, &d.name)
+                            || d.aliases.iter().any(|a| stmt_mentions(s, a))
+                    })
+                    .unwrap_or(usize::MAX);
+                // Если последнее упоминание — присваивание, то после
+                // него переменная владеет новым значением: старое
+                // освобождается перед присваиванием, а новое — в конце
+                // области видимости.
+                let idx = match last {
+                    usize::MAX => usize::MAX,
+                    i if assigns_to_drop(&f.body.stmts[i], &d.name, &d.field) => usize::MAX,
+                    i => i,
+                };
+                (d, idx)
             })
             .collect();
         for (i, stmt) in f.body.stmts.iter().enumerate() {
+            // `Box`: присваивание освобождает старое значение ДО
+            // присваивания — иначе оно утечёт.
+            for (d, idx) in &box_last_use {
+                if *idx == i && assigns_to_drop(stmt, &d.name, &d.field) {
+                    if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                        self.out.borrow_mut().push_str(&code);
+                    }
+                }
+            }
             self.emit_stmt(stmt);
-            for (name, ty, idx) in &last_use {
+            // `Vec`: освобождение после последнего использования.
+            for (d, idx) in &last_use {
                 if *idx == i {
-                    if let Type::Vec(inner) = ty {
+                    if let Type::Vec(inner) = &d.ty {
                         let m = inner.mangle();
-                        let cname = self.var_name(name);
-                        self.out.borrow_mut().push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                        let cname = self.var_name(&d.name);
+                        // Поле структуры: `&k_h.items`.
+                        let target = match &d.field {
+                            Some(field) => format!("{}.{}", cname, field),
+                            None => cname,
+                        };
+                        self.out
+                            .borrow_mut()
+                            .push_str(&format!("  k_vec_{}_free(&{});\n", m, target));
+                    }
+                }
+            }
+            // `Box`: освобождение после последнего использования.
+            for (d, idx) in &box_last_use {
+                if *idx == i && !assigns_to_drop(stmt, &d.name, &d.field) {
+                    if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                        self.out.borrow_mut().push_str(&code);
                     }
                 }
             }
         }
-        for (name, ty, idx) in &last_use {
+        // Vec и Box, которые не упоминались нигде — освобождаем в конце.
+        for (d, idx) in &last_use {
             if *idx == usize::MAX {
-                if let Type::Vec(inner) = ty {
+                if let Type::Vec(inner) = &d.ty {
                     let m = inner.mangle();
-                    let cname = self.var_name(name);
-                    self.out.borrow_mut().push_str(&format!("  k_vec_{}_free(&{});\n", m, cname));
+                    let cname = self.var_name(&d.name);
+                    let target = match &d.field {
+                        Some(field) => format!("{}.{}", cname, field),
+                        None => cname,
+                    };
+                    self.out
+                        .borrow_mut()
+                        .push_str(&format!("  k_vec_{}_free(&{});\n", m, target));
+                }
+            }
+        }
+        for (d, idx) in &box_last_use {
+            if *idx == usize::MAX {
+                if let Some(code) = self.box_free_code(&d.name, &d.field, &d.ty) {
+                    self.out.borrow_mut().push_str(&code);
                 }
             }
         }
@@ -1238,6 +1467,202 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    /// Владеет ли тип кучей, которую надо освободить.
+    fn type_owns_box(&self, t: &Type) -> bool {
+        match t {
+            Type::Box(_) => true,
+            Type::Option(inner) => self.type_owns_box(inner),
+            Type::Result(ok, err) => self.type_owns_box(ok) || self.type_owns_box(err),
+            Type::Named(n) => self
+                .structs
+                .get(n)
+                .map(|s| s.fields.iter().any(|f| self.type_owns_box(&f.ty)))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Код освобождения вложенного владения.
+    ///
+    /// `expr` — выражение, дающее значение этого типа: сам блок для
+    /// `Box`, вариант с тегом для `Option`/`Result`, содержимое для
+    /// структуры.
+    fn free_owned_expr(&self, ty: &Type, expr: &str) -> String {
+        match ty {
+            Type::Box(inner) => {
+                format!("  k_box_free_{}({}.ptr);\n", inner.mangle(), expr)
+            }
+            Type::Option(inner) => {
+                // Внутри `Option` лежит `Box<T>` — функция освобождения
+                // называется по содержимому блока, а не по `Box`.
+                let Type::Box(pointee) = inner.as_ref() else {
+                    return String::new();
+                };
+                let c = format!("Keel_Option_{}", inner.mangle());
+                format!(
+                    "  if ({}.tag == {}_Some) k_box_free_{}({}.data.Some._0.ptr);\n",
+                    expr,
+                    c,
+                    pointee.mangle(),
+                    expr
+                )
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                let ok_pointee = match ok.as_ref() {
+                    Type::Box(t) => Some(t.mangle()),
+                    _ => None,
+                };
+                let err_pointee = match err.as_ref() {
+                    Type::Box(t) => Some(t.mangle()),
+                    _ => None,
+                };
+                match (ok_pointee, err_pointee) {
+                    (Some(okm), Some(errm)) => format!(
+                        "  if ({}.tag == {}_Ok) k_box_free_{}({}.data.Ok._0.ptr); else k_box_free_{}({}.data.Err._0.ptr);\n",
+                        expr, c, okm, expr, errm, expr
+                    ),
+                    (Some(okm), None) => format!(
+                        "  if ({}.tag == {}_Ok) k_box_free_{}({}.data.Ok._0.ptr);\n",
+                        expr, c, okm, expr
+                    ),
+                    (None, Some(errm)) => format!(
+                        "  if ({}.tag == {}_Err) k_box_free_{}({}.data.Err._0.ptr);\n",
+                        expr, c, errm, expr
+                    ),
+                    _ => String::new(),
+                }
+            }
+            Type::Named(n) => {
+                let Some(decl) = self.structs.get(n) else {
+                    return String::new();
+                };
+                let mut out = String::new();
+                for f in &decl.fields {
+                    if !self.type_owns_box(&f.ty) {
+                        continue;
+                    }
+                    out.push_str(&self.free_owned_expr(&f.ty, &format!("v->{}", f.name)));
+                }
+                out
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Функции освобождения `Box`: содержимое блока может само
+    /// владеть боксами — их надо освободить до самого блока.
+    fn emit_box_drops(&mut self) {
+        let need: Vec<Type> = self
+            .box_insts
+            .iter()
+            .filter(|t| match t {
+                Type::Box(inner) => self.type_owns_box(inner),
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        if need.is_empty() {
+            return;
+        }
+        // Вперёд объявления: типы могут ссылаться друг на друга.
+        for t in &need {
+            let Type::Box(inner) = t else { continue };
+            self.out.borrow_mut().push_str(&format!(
+                "static void k_box_free_{}(void *p);\n",
+                inner.mangle()
+            ));
+        }
+        self.out.borrow_mut().push_str("\n");
+        for t in &need {
+            let Type::Box(inner) = t else { continue };
+            let m = inner.mangle();
+            let inner_c = self.ty(inner);
+            let body = self.free_owned_expr(inner, "v");
+            self.out.borrow_mut().push_str(&format!(
+                "static void k_box_free_{m}(void *p) {{\n  {inner_c}* v = ({inner_c}*)p;\n{body}  ke_free(p);\n}}\n\n",
+                m = m,
+                inner_c = inner_c,
+                body = body
+            ));
+        }
+    }
+
+    /// Вызов освобождения блока: `Box<T>`, где содержимое само владеет
+    /// боксами, — через функцию освобождения, иначе через `ke_free`.
+    fn free_block(&self, inner: &Type, expr: &str) -> String {
+        if self.type_owns_box(inner) {
+            format!("k_box_free_{}({}.ptr)", inner.mangle(), expr)
+        } else {
+            format!("ke_free({}.ptr)", expr)
+        }
+    }
+
+    /// Код освобождения `Box`-владения.
+    ///
+    /// `Box<T>` — освобождаем сам блок. `Option<Box<T>>` и
+    /// `Result<Box<T>, E>` — только если вариант несёт `Box`: у
+    /// `None`/`Err` блока нет, освобождать нечего.
+    fn box_free_code(&self, name: &str, field: &Option<String>, ty: &Type) -> Option<String> {
+        let cname = self.var_name(name);
+        let target = match field {
+            Some(f) => format!("{}.{}", cname, f),
+            None => cname,
+        };
+        match ty {
+            Type::Box(inner) => Some(format!(
+                "  {};\n",
+                self.free_block(inner, &target)
+            )),
+            Type::Option(inner) => {
+                let c = format!("Keel_Option_{}", inner.mangle());
+                let Type::Box(pointee) = inner.as_ref() else {
+                    return None;
+                };
+                Some(format!(
+                    "  if ({}.tag == {}_Some) {};\n",
+                    target,
+                    c,
+                    self.free_block(pointee, &format!("{}.data.Some._0", target))
+                ))
+            }
+            Type::Result(ok, err) => {
+                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
+                let ok_pointee = match ok.as_ref() {
+                    Type::Box(t) => Some(t.clone()),
+                    _ => None,
+                };
+                let err_pointee = match err.as_ref() {
+                    Type::Box(t) => Some(t.clone()),
+                    _ => None,
+                };
+                match (ok_pointee, err_pointee) {
+                    (Some(okt), Some(ert)) => Some(format!(
+                        "  if ({}.tag == {}_Ok) {}; else {};\n",
+                        target,
+                        c,
+                        self.free_block(&okt, &format!("{}.data.Ok._0", target)),
+                        self.free_block(&ert, &format!("{}.data.Err._0", target))
+                    )),
+                    (Some(okt), None) => Some(format!(
+                        "  if ({}.tag == {}_Ok) {};\n",
+                        target,
+                        c,
+                        self.free_block(&okt, &format!("{}.data.Ok._0", target))
+                    )),
+                    (None, Some(ert)) => Some(format!(
+                        "  if ({}.tag == {}_Err) {};\n",
+                        target,
+                        c,
+                        self.free_block(&ert, &format!("{}.data.Err._0", target))
+                    )),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Нулевое значение типа — для возврата в конце функции, которая
     /// может закончиться без `return`.
     fn zero_value(&self, t: &Type) -> String {
@@ -1271,6 +1696,7 @@ impl<'a> Codegen<'a> {
                 format!("({}){{ .tag = {}_Ok }}", c, c)
             }
             Type::Vec(inner) => format!("(Keel_Vec_{}){{0}}", inner.mangle()),
+            Type::Box(inner) => format!("(Keel_Box_{}){{0}}", inner.mangle()),
             Type::Tuple(_) => format!("({}){{0}}", self.ty(t)),
             Type::Slice(_) => format!("({}){{0}}", self.ty(t)),
             Type::Fn(..) => "NULL".to_string(),
@@ -1278,207 +1704,154 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    /// `match` с условиями-«стражами»: `if`-цепочка вместо `switch`
-    /// (в `switch` два `case` одного варианта недопустимы).
-    fn emit_guarded_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
-        let sw = self.next_switch_id;
-        self.next_switch_id += 1;
-        let subj_expr = self.value_expr(subject);
-        let end = format!("__k_match_end_{}", sw);
-        let (cname, variants, is_payload) = match subj_ty {
-            Type::Option(inner) => {
-                let c = format!("Keel_Option_{}", inner.mangle());
-                let vs = vec![
-                    ("Some".to_string(), vec![(**inner).clone()]),
-                    ("None".to_string(), Vec::new()),
-                ];
-                (c, vs, true)
-            }
-            Type::Result(ok, err) => {
-                let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
-                let vs = vec![
-                    ("Ok".to_string(), vec![(**ok).clone()]),
-                    ("Err".to_string(), vec![(**err).clone()]),
-                ];
-                (c, vs, true)
-            }
-            Type::Named(n) => {
-                let e = self.enums.get(n);
-                let vs: Vec<(String, Vec<Type>)> = e
-                    .map(|e| {
-                        e.variants
-                            .iter()
-                            .map(|v| (v.name.clone(), v.payload.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let payload = e
-                    .map(|e| e.variants.iter().any(|v| !v.payload.is_empty()))
-                    .unwrap_or(false);
-                (
-                    self.ctype.get(n).cloned().unwrap_or_else(|| n.clone()),
-                    vs,
-                    payload,
-                )
-            }
-            _ => (String::new(), Vec::new(), false),
-        };
-        let is_lit = matches!(subj_ty, Type::Int | Type::Bool | Type::Str);
-        // Субъект вычисляется один раз.
-        let subj = {
-            let tmp = format!("__k_subj_{}", sw);
-            self.out.borrow_mut().push_str(&format!(
-                "  {} = {};\n",
-                self.decl(subj_ty, &tmp),
-                subj_expr
-            ));
-            tmp
-        };
-        let tag = if is_payload {
-            format!("{}.tag", subj)
-        } else {
-            subj.clone()
-        };
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    ///
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    ///
+    /// **Guard** (`паттерн if условие`): если условие ложно, ветвь
+    /// пропускается и разбор продолжается со следующей. Поэтому
+    /// ветви с guard — отдельные `if`, а не `else if`: в `else if`
+    /// неудачный guard просто ушёл бы в конец цепочки.
+    /// `match` по значению: число, строка или `bool`.
+    /// Ветви — литералы, последняя может быть `_`.
+    ///
+    /// Генерируется цепочкой `if/else` (как `match` по enum), а не
+    /// `switch`: `break`/`continue` из ветви относятся к объемлющему
+    /// циклу, а в `switch` били бы по самому `switch`.
+    ///
+    /// **Guard** (`паттерн if условие`) — часть условия ветви:
+    /// `if (субъект == 5 && (n > 0))`. Если условие ложно, ветвь не
+    /// подходит и разбор идёт к следующей — как в Rust.
+    ///
+    /// **Привязка** (`n if n > 0`) объявляется до цепочки: guard
+    /// читает её значение.
+    fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
+        let subj = self.value_expr(subject);
+        // Субъект вычисляется один раз: это может быть вызов.
+        self.out.borrow_mut().push_str(&format!(
+            "  {{\n  __typeof__({}) __k_subj = {};\n",
+            subj, subj
+        ));
+        // Привязки объявляются до цепочки: guard читает их значение.
         for arm in arms {
-            let cond = if arm.variant == "_" {
-                "1".to_string()
-            } else if is_lit {
-                match &arm.literal {
-                    Some(MatchLit::Int(n)) => format!("{} == INT64_C({})", tag, n),
-                    Some(MatchLit::Bool(b)) => format!("{} == {}", tag, b),
-                    Some(MatchLit::Str(s)) => {
-                        format!("strcmp({}, {}) == 0", tag, c_string_lit(s))
-                    }
-                    None => "0".to_string(),
+            if let Some(name) = &arm.bind {
+                let cname = self.fresh_var_name(name);
+                let decl = self.decl(subj_ty, &cname);
+                self.out.borrow_mut().push_str(&format!("  {} = __k_subj;\n", decl));
+            }
+        }
+        let mut first = true;
+        // Есть ли guard: тогда цепочка `else if` не годится.
+        let match_has_guard = arms.iter().any(|a| a.guard.is_some());
+        // Флаг «ветвь уже выбрана». Нужен, когда guard'ы есть: ветви
+        // идут отдельными `if`, и без флага после сработавшей ветви
+        // выполнилась бы и следующая — а разбор должен закончиться.
+        if match_has_guard {
+            self.out.borrow_mut().push_str("  bool __k_done = false;\n");
+        }
+        for arm in arms {
+            let is_default = arm.literal.is_none() && arm.variant == "_" && arm.bind.is_none();
+            // Условие ветви: совпадение значения и, если есть, guard.
+            let mut cond = match (&arm.literal, subj_ty) {
+                (Some(MatchLit::Int(n)), _) => format!("__k_subj == {}", n),
+                (Some(MatchLit::Bool(b)), _) => {
+                    format!("__k_subj == {}", if *b { 1 } else { 0 })
                 }
-            } else if is_payload {
-                format!("{} == {}_{}", tag, cname, arm.variant)
-            } else {
-                format!("{} == Keel_{}_{}", tag, arm.ty, arm.variant)
+                (Some(MatchLit::Str(s)), Type::Str) => {
+                    format!("strcmp(__k_subj, {}) == 0", c_string_lit(s))
+                }
+                // Ветвь с привязкой: значение подходит любое, решает guard.
+                (None, _) => String::new(),
+                _ => "0".to_string(),
             };
-            self.out.borrow_mut().push_str(&format!("  if ({}) {{\n", cond));
-            let payload: Vec<Type> = variants
-                .iter()
-                .find(|(n, _)| n == &arm.variant)
-                .map(|(_, p)| p.clone())
-                .unwrap_or_default();
-            let saved: Vec<(String, Option<String>)> = arm
-                .bindings
-                .iter()
-                .map(|b| (b.clone(), self.var_names.borrow().get(b).cloned()))
-                .collect();
-            if is_payload {
-                for (i, b) in arm.bindings.iter().enumerate() {
-                    let cname = self.fresh_var_name(b);
-                    let ty = payload.get(i).cloned().unwrap_or(Type::Int);
-                    let decl = self.decl(&ty, &cname);
-                    self.out.borrow_mut().push_str(&format!(
-                        "    {} = {}.data.{}._{};\n",
-                        decl, subj, arm.variant, i
-                    ));
+            // Альтернативы `1 | 2` — условие через `||`.
+            for alt in &arm.alts {
+                if let crate::ast::MatchAlt::Literal(l) = alt {
+                    let alt_cond = match (l, subj_ty) {
+                        (MatchLit::Int(n), _) => format!("__k_subj == {}", n),
+                        (MatchLit::Bool(b), _) => {
+                            format!("__k_subj == {}", if *b { 1 } else { 0 })
+                        }
+                        (MatchLit::Str(s), Type::Str) => {
+                            format!("strcmp(__k_subj, {}) == 0", c_string_lit(s))
+                        }
+                        _ => "0".to_string(),
+                    };
+                    if cond.is_empty() {
+                        cond = alt_cond;
+                    } else {
+                        cond.push_str(&format!(" || {}", alt_cond));
+                    }
                 }
             }
-            let guard = arm.guard.as_ref().map(|g| self.expr(g));
-            if let Some(g) = &guard {
-                self.out.borrow_mut().push_str(&format!("    if ({}) {{\n", g));
+            if let Some(g) = &arm.guard {
+                let gexpr = self.expr(g);
+                cond = if cond.is_empty() {
+                    format!("({})", gexpr)
+                } else {
+                    format!("{} && ({})", cond, gexpr)
+                };
+            }
+            if is_default {
+                // Ветвь `_`: закрывает разбор. Без guard'ов — это `else`
+                // (требует предшествующего `if`; если условных ветвей не
+                // было, нужен безусловный `if`). С guard'ами — отдельный
+                // `if`: `else` привязался бы к последней ветви и сработал
+                // бы даже после сработавшей guard-ветви.
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  if (!__k_done) {\n");
+                } else if first {
+                    self.out.borrow_mut().push_str("  if (1) {\n");
+                } else {
+                    self.out.borrow_mut().push_str("  else {\n");
+                }
+                first = false;
+            } else if cond.is_empty() {
+                // Ветвь без условия (привязка без guard) закрывает разбор.
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  if (!__k_done) {\n");
+                } else if first {
+                    self.out.borrow_mut().push_str("  if (1) {\n");
+                } else {
+                    self.out.borrow_mut().push_str("  else {\n");
+                }
+                first = false;
+            } else {
+                // Guard — часть условия, но `else if` цепочку портит:
+                // неудачный guard ушёл бы в конец цепочки, а не к
+                // следующей ветви. Поэтому при наличии guard каждая
+                // ветвь — отдельный `if`, а флаг `__k_done` гарантирует,
+                // что после сработавшей ветви остальные не выполнятся.
+                let full = if match_has_guard {
+                    format!("!__k_done && ({})", cond)
+                } else {
+                    cond
+                };
+                self.out.borrow_mut().push_str(&format!(
+                    "  {} ({}) {{\n",
+                    if first && !match_has_guard { "if" } else { "if" },
+                    full
+                ));
+                first = false;
             }
             for s in &arm.body.stmts {
                 self.emit_stmt(s);
             }
-            self.out.borrow_mut().push_str(&format!("      goto {};\n", end));
-            if guard.is_some() {
-                self.out.borrow_mut().push_str("    }\n");
-            }
-            self.out.borrow_mut().push_str("  }\n");
-            for (b, prev) in saved {
-                match prev {
-                    Some(v) => {
-                        self.var_names.borrow_mut().insert(b, v);
-                    }
-                    None => {
-                        self.var_names.borrow_mut().remove(&b);
-                    }
-                }
-            }
-        }
-        self.out.borrow_mut().push_str(&format!("  {}:;\n", end));
-    }
-
-    /// `match` по литералам: `switch` по значению (int/bool) или по
-    /// индексу ветви (string — C `switch` не умеет строки).
-    fn emit_literal_match(&mut self, subject: &Expr, arms: &[MatchArm], subj_ty: &Type) {
-        let sw = self.next_switch_id;
-        self.next_switch_id += 1;
-        let subj_expr = self.value_expr(subject);
-        let loop_id = self.innermost_loop();
-        if loop_id.is_some() {
-            self.out
-                .borrow_mut()
-                .push_str(&format!("  bool __k_brk_{} = false;\n", sw));
-        }
-        self.break_stack.push(BreakTarget::Switch(sw));
-        if *subj_ty == Type::Str {
-            let tmp = format!("__k_s_{}", sw);
-            let idx = format!("__k_m_{}", sw);
-            self.out.borrow_mut().push_str(&format!(
-                "  const char* {} = {};\n  int64_t {} = -1;\n",
-                tmp, subj_expr, idx
-            ));
-            let mut n = 0;
-            for arm in arms {
-                if let Some(MatchLit::Str(s)) = &arm.literal {
-                    self.out.borrow_mut().push_str(&format!(
-                        "  if (strcmp({}, {}) == 0) {} = {};\n",
-                        tmp,
-                        c_string_lit(s),
-                        idx,
-                        n
-                    ));
-                    n += 1;
-                }
-            }
-            self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", idx));
-            let mut n = 0;
-            for arm in arms {
-                if arm.variant == "_" {
-                    self.out.borrow_mut().push_str("    default: {\n");
-                } else {
-                    self.out.borrow_mut().push_str(&format!("    case {}: {{\n", n));
-                    n += 1;
-                }
-                for s in &arm.body.stmts {
-                    self.emit_stmt(s);
-                }
-                self.out.borrow_mut().push_str("      break;\n    }\n");
-            }
-            self.out.borrow_mut().push_str("  }\n");
-        } else {
-            self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", subj_expr));
-            for arm in arms {
-                if arm.variant == "_" {
-                    self.out.borrow_mut().push_str("    default: {\n");
-                } else {
-                    let lit = match &arm.literal {
-                        Some(MatchLit::Int(n)) => n.to_string(),
-                        Some(MatchLit::Bool(b)) => b.to_string(),
-                        _ => "0".to_string(),
-                    };
-                    self.out.borrow_mut().push_str(&format!("    case {}: {{\n", lit));
-                }
-                for s in &arm.body.stmts {
-                    self.emit_stmt(s);
-                }
-                self.out.borrow_mut().push_str("      break;\n    }\n");
+            if match_has_guard && !is_default {
+                // Ветвь выбрана — следующие не выполнятся.
+                self.out.borrow_mut().push_str("    __k_done = true;\n");
             }
             self.out.borrow_mut().push_str("  }\n");
         }
-        self.break_stack.pop();
-        if let Some(lid) = loop_id {
-            self.out.borrow_mut().push_str(&format!(
-                "  if (__k_brk_{}) goto __k_loop_{};\n",
-                sw, lid
-            ));
-        }
+        self.out.borrow_mut().push_str("  }\n");
     }
 
     fn emit_stmt(&mut self, stmt: &Stmt) {
@@ -1595,28 +1968,20 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::Match { subject, arms, .. } => {
-                let lit_ty = self.types.get(&subject.id).cloned().unwrap_or(Type::Int);
-                let lit_ty = match lit_ty {
-                    Type::Ref(inner) => *inner,
-                    t => t,
-                };
-                if arms.iter().any(|a| a.guard.is_some()) {
-                    self.emit_guarded_match(subject, arms, &lit_ty);
-                    return;
-                }
-                if matches!(lit_ty, Type::Int | Type::Bool | Type::Str) {
-                    self.emit_literal_match(subject, arms, &lit_ty);
-                    return;
-                }
                 // Субъект читается по значению: ссылка разыменовывается.
-                let sw = self.next_switch_id;
-                self.next_switch_id += 1;
-                let subj_expr = self.value_expr(subject);
+                let subj = self.value_expr(subject);
                 let subj_ty = self.types.get(&subject.id).cloned().unwrap_or(Type::Int);
                 let subj_ty = match subj_ty {
                     Type::Ref(inner) => *inner,
                     t => t,
                 };
+                // `match` по числу, строке или `bool` — цепочка сравнений.
+                if matches!(subj_ty, Type::Int | Type::Str | Type::Bool)
+                    && arms.iter().any(|a| a.literal.is_some() || a.variant == "_")
+                {
+                    self.emit_literal_match(subject, arms, &subj_ty);
+                    return;
+                }
                 // (C-имя типа, варианты (имя, payload), есть ли данные)
                 let (cname, variants, is_payload) = match &subj_ty {
                     Type::Option(inner) => {
@@ -1656,44 +2021,71 @@ impl<'a> Codegen<'a> {
                     }
                     _ => (String::new(), Vec::new(), false),
                 };
-                // Субъект с данными читается дважды (тег и payload) —
-                // сохраняем во временную, иначе `match v.pop()` вызовет
-                // `pop` дважды.
-                let subj = if is_payload {
-                    let tmp = format!("__k_subj_{}", sw);
-                    self.out.borrow_mut().push_str(&format!(
-                        "  {} = {};\n",
-                        self.decl(&subj_ty, &tmp),
-                        subj_expr
-                    ));
-                    tmp
-                } else {
-                    subj_expr
-                };
+                // Субъект вычисляется один раз: он может быть вызовом
+                // (`match v.pop()`), и второе вычисление потеряло бы
+                // значение или сдвинуло состояние. Блок даёт временной
+                // переменной свою область видимости.
+                self.out.borrow_mut().push_str(&format!(
+                    "  {{\n  __typeof__({}) __k_subj = {};\n",
+                    subj, subj
+                ));
                 let tag = if is_payload {
-                    format!("{}.tag", subj)
+                    "__k_subj.tag".to_string()
                 } else {
-                    subj.clone()
+                    "__k_subj".to_string()
                 };
-                let loop_id = self.innermost_loop();
-                if loop_id.is_some() {
-                    self.out
-                        .borrow_mut()
-                        .push_str(&format!("  bool __k_brk_{} = false;\n", sw));
+                let mut first = true;
+                // Есть ли guard: тогда цепочка `else if` не годится.
+                let match_has_guard = arms.iter().any(|a| a.guard.is_some());
+                // Флаг «ветвь уже выбрана» — иначе после сработавшей
+                // guard-ветви выполнилась бы и следующая.
+                if match_has_guard {
+                    self.out.borrow_mut().push_str("  bool __k_done = false;\n");
                 }
-                self.break_stack.push(BreakTarget::Switch(sw));
-                self.out.borrow_mut().push_str(&format!("  switch ({}) {{\n", tag));
-                for arm in arms {
-                    if arm.variant == "_" {
-                        self.out.borrow_mut().push_str("    default: {\n");
+                for (arm_index, arm) in arms.iter().enumerate() {
+                    let case = if is_payload {
+                        format!("{}_{}", cname, arm.variant)
                     } else {
-                        let case = if is_payload {
-                            format!("{}_{}", cname, arm.variant)
-                        } else {
-                            format!("Keel_{}_{}", arm.ty, arm.variant)
-                        };
-                        self.out.borrow_mut().push_str(&format!("    case {}: {{\n", case));
+                        format!("Keel_{}_{}", arm.ty, arm.variant)
+                    };
+                    // Цепочка `if/else` вместо `switch`: `break`/`continue`
+                    // из ветви относятся к объемлющему циклу, а в `switch`
+                    // они били бы по самому `switch`.
+                    //
+                    // Guard (`Some(x) if x > 0`) читает привязку `x`,
+                    // а она объявляется в теле ветви. Поэтому guard —
+                    // вложенный `if` внутри ветви: сначала тег, потом
+                    // условие.
+                    //
+                    // Из-за guard'ов цепочка `else if` не годится: она
+                    // привязана к первой ветви, и неудачный guard ушёл бы
+                    // в конец цепочки, а не к следующей ветви. Поэтому
+                    // при наличии guard каждая ветвь — отдельный `if`.
+                    // Альтернативы `A::X | A::Y` — условие через `||`.
+                    let mut cond = format!("{} == {}", tag, case);
+                    for alt in &arm.alts {
+                        if let crate::ast::MatchAlt::Variant { variant, .. } = alt {
+                            let alt_case = if is_payload {
+                                format!("{}_{}", cname, variant)
+                            } else {
+                                format!("Keel_{}_{}", arm.ty, variant)
+                            };
+                            cond.push_str(&format!(" || {} == {}", tag, alt_case));
+                        }
                     }
+                    // Флаг `__k_done` не даёт выполниться следующей
+                    // ветви после сработавшей.
+                    let full = if match_has_guard {
+                        format!("!__k_done && ({})", cond)
+                    } else {
+                        cond
+                    };
+                    self.out.borrow_mut().push_str(&format!(
+                        "  {} ({}) {{\n",
+                        if first && !match_has_guard { "if" } else { "if" },
+                        full
+                    ));
+                    first = false;
                     // Привязки данных: `Some(x)` → `int64_t x = ...`.
                     let payload: Vec<Type> = variants
                         .iter()
@@ -1706,21 +2098,59 @@ impl<'a> Codegen<'a> {
                         .map(|b| (b.clone(), self.var_names.borrow().get(b).cloned()))
                         .collect();
                     if is_payload {
+                        // Связка, которая заимствует payload (субъект
+                        // был взят по ссылке), — это указатель: владения
+                        // у неё нет, и освобождать ей нечего.
+                        let arm_flags = self
+                            .match_bind_refs
+                            .get(&subject.id)
+                            .and_then(|v| v.get(arm_index))
+                            .cloned()
+                            .unwrap_or_default();
                         for (i, b) in arm.bindings.iter().enumerate() {
                             let cname = self.fresh_var_name(b);
                             let ty = payload.get(i).cloned().unwrap_or(Type::Int);
-                            let decl = self.decl(&ty, &cname);
-                            self.out.borrow_mut().push_str(&format!(
-                                "      {} = {}.data.{}._{};\n",
-                                decl, subj, arm.variant, i
-                            ));
+                            let borrowed = arm_flags.get(i).copied().unwrap_or(false);
+                            if borrowed {
+                                let bty = Type::Ref(Box::new(ty.clone()));
+                                let decl = self.decl(&bty, &cname);
+                                self.out.borrow_mut().push_str(&format!(
+                                    "      {} = &__k_subj.data.{}._{};\n",
+                                    decl, arm.variant, i
+                                ));
+                            } else {
+                                let decl = self.decl(&ty, &cname);
+                                self.out.borrow_mut().push_str(&format!(
+                                    "      {} = __k_subj.data.{}._{};\n",
+                                    decl, arm.variant, i
+                                ));
+                            }
                         }
                     }
-                    for s in &arm.body.stmts {
-                        self.emit_stmt(s);
+                    if let Some(g) = &arm.guard {
+                        // Условие читает привязку `x` — она уже объявлена.
+                        let gexpr = self.expr(g);
+                        self.out
+                            .borrow_mut()
+                            .push_str(&format!("    if ({}) {{\n", gexpr));
+                        for s in &arm.body.stmts {
+                            self.emit_stmt(s);
+                        }
+                        if match_has_guard {
+                            // Guard прошёл — ветвь выбрана. Не прошёл —
+                            // разбор продолжается со следующей ветви.
+                            self.out.borrow_mut().push_str("      __k_done = true;\n");
+                        }
+                        self.out.borrow_mut().push_str("    }\n");
+                    } else {
+                        for s in &arm.body.stmts {
+                            self.emit_stmt(s);
+                        }
+                        if match_has_guard {
+                            self.out.borrow_mut().push_str("    __k_done = true;\n");
+                        }
                     }
-                    self.out.borrow_mut().push_str("      break;\n");
-                    self.out.borrow_mut().push_str("    }\n");
+                    self.out.borrow_mut().push_str("  }\n");
                     for (b, prev) in saved {
                         match prev {
                             Some(v) => {
@@ -1733,13 +2163,6 @@ impl<'a> Codegen<'a> {
                     }
                 }
                 self.out.borrow_mut().push_str("  }\n");
-                self.break_stack.pop();
-                if let Some(lid) = loop_id {
-                    self.out.borrow_mut().push_str(&format!(
-                        "  if (__k_brk_{}) goto __k_loop_{};\n",
-                        sw, lid
-                    ));
-                }
             }
             Stmt::If { cond, then_block, else_block } => {
                 self.out.borrow_mut()
@@ -1757,99 +2180,70 @@ impl<'a> Codegen<'a> {
                 }
             }
             Stmt::While { cond, body } => {
-                let id = self.next_loop_id;
-                self.next_loop_id += 1;
-                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut()
                     .push_str(&format!("  while ({}) {{\n", self.expr(cond)));
                 for s in &body.stmts {
                     self.emit_stmt(s);
                 }
                 self.out.borrow_mut().push_str("  }\n");
-                self.break_stack.pop();
-                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::DoWhile { body, cond } => {
-                let id = self.next_loop_id;
-                self.next_loop_id += 1;
-                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut().push_str("  do {\n");
                 for s in &body.stmts {
                     self.emit_stmt(s);
                 }
                 self.out.borrow_mut()
                     .push_str(&format!("  }} while ({});\n", self.expr(cond)));
-                self.break_stack.pop();
-                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::Break { .. } => {
-                // В C `break` внутри `switch` выходит из `switch`, а не из
-                // цикла. Поэтому `break` в ветви `match` ставит флаг, а
-                // после `switch` — `goto` на выход из цикла.
-                match self.break_stack.last() {
-                    Some(BreakTarget::Switch(id)) => {
-                        let id = *id;
-                        self.out
-                            .borrow_mut()
-                            .push_str(&format!("  __k_brk_{} = true; break;\n", id));
-                    }
-                    _ => self.out.borrow_mut().push_str("  break;\n"),
-                }
+                self.out.borrow_mut().push_str("  break;\n");
             }
             Stmt::Continue { .. } => {
                 self.out.borrow_mut().push_str("  continue;\n");
             }
             Stmt::ForRange { var, start, end, inclusive, step, body, .. } => {
-                // Правая граница исключительная, как в Rust и Zeta:
-                // `0..3` — это 0, 1, 2. Поэтому условие `<`; `..=` — `<=`.
-                // Переменная цикла объявлена в самом `for` — иначе два
-                // вложенных цикла с одинаковым именем конфликтуют в C.
-                // В C область действия `for` охватывает всё тело, поэтому
-                // внутренний цикл с тем же именем перетирает внешний. Чтобы
-                // этого не было, внутренние циклы получают своё имя
-                // (по номеру вложенности).
-                let (cvar, _cstart) = self.loop_var(var);
-                let id = self.next_loop_id;
-                self.next_loop_id += 1;
-                self.break_stack.push(BreakTarget::Loop(id));
-                let cmp = if *inclusive { "<=" } else { "<" };
-                let (init, cond, incr) = match step {
-                    Some(s) => {
-                        // Шаг может быть отрицательным: направление известно
-                        // только в рантайме, поэтому условие выбирается
-                        // тернарником. Шаг вычисляется один раз.
-                        let ks = "__ks";
-                        let cond = format!(
-                            "{} > 0 ? {} {} {} : {} {} {}",
-                            ks,
-                            cvar,
-                            cmp,
+                let (cvar, _) = self.loop_var(var);
+                // Границы и шаг вычисляются один раз: конец диапазона —
+                // не пересчитываемая на каждой итерации граница.
+                let cend = format!("{}__end", cvar);
+                let cstep = format!("{}__step", cvar);
+                let (lt, gt) = if *inclusive { ("<=", ">=") } else { ("<", ">") };
+                let (init, cond, inc) = match step {
+                    Some(s) => (
+                        format!(
+                            "{} = {}, {} = {}, {} = {}",
+                            self.decl(&Type::Int, &cvar),
+                            self.expr(start),
+                            cend,
                             self.expr(end),
-                            cvar,
-                            if *inclusive { ">=" } else { ">" },
-                            self.expr(end)
-                        );
-                        (
-                            format!(
-                                "{} = {}, {} = {}",
-                                self.decl(&Type::Int, &cvar),
-                                self.expr(start),
-                                ks,
-                                self.expr(s)
-                            ),
-                            cond,
-                            format!("{} += {}", cvar, ks),
-                        )
-                    }
+                            cstep,
+                            self.expr(s)
+                        ),
+                        format!(
+                            "({cstep} > 0 ? {cvar} {lt} {cend} : {cvar} {gt} {cend})",
+                            cstep = cstep,
+                            cvar = cvar,
+                            lt = lt,
+                            cend = cend,
+                            gt = gt
+                        ),
+                        format!("{} += {}", cvar, cstep),
+                    ),
                     None => (
-                        format!("{} = {}", self.decl(&Type::Int, &cvar), self.expr(start)),
-                        format!("{} {} {}", cvar, cmp, self.expr(end)),
+                        format!(
+                            "{} = {}, {} = {}",
+                            self.decl(&Type::Int, &cvar),
+                            self.expr(start),
+                            cend,
+                            self.expr(end)
+                        ),
+                        format!("{} {} {}", cvar, lt, cend),
                         format!("{}++", cvar),
                     ),
                 };
                 self.out
                     .borrow_mut()
-                    .push_str(&format!("  for ({}; {}; {}) {{\n", init, cond, incr));
+                    .push_str(&format!("  for ({}; {}; {}) {{\n", init, cond, inc));
                 // На время тела цикла имя переменной в Keel отображается
                 // в имя в C.
                 self.loop_vars.insert(var.clone(), cvar);
@@ -1859,37 +2253,33 @@ impl<'a> Codegen<'a> {
                 self.loop_vars.remove(var);
                 self.loop_depth -= 1;
                 self.out.borrow_mut().push_str("  }\n");
-                self.break_stack.pop();
-                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
             Stmt::ForEach { var, iter, body, .. } => {
-                // Обход массива, `Vec` или среза: индексируемся, копия
-                // элемента попадает в переменную цикла.
+                // Обход коллекции по индексу: копия элемента попадает
+                // в переменную цикла. Для массива длина известна из типа,
+                // для Vec и среза — из поля `len` в рантайме.
                 let base = self.expr(iter);
-                let (elem_ty, data, len) = match self.types.get(&iter.id) {
-                    Some(Type::Vec(elem)) | Some(Type::Slice(elem)) => (
-                        (**elem).clone(),
-                        format!("{}.data", base),
-                        format!("{}.len", base),
-                    ),
-                    Some(Type::Ref(inner))
-                        if matches!(inner.as_ref(), Type::Vec(_) | Type::Slice(_)) =>
-                    {
-                        let elem = match inner.as_ref() {
-                            Type::Vec(e) | Type::Slice(e) => (**e).clone(),
-                            _ => unreachable!(),
-                        };
-                        (elem, format!("{}->data", base), format!("{}->len", base))
+                let t = self.types.get(&iter.id).cloned().unwrap_or(Type::Int);
+                let (elem_ty, data, len) = match &t {
+                    Type::Array(elem, n) => ((**elem).clone(), base, n.to_string()),
+                    Type::Ref(inner) if matches!(inner.as_ref(), Type::Array(..)) => {
+                        let Type::Array(elem, n) = inner.as_ref() else { unreachable!() };
+                        ((**elem).clone(), format!("(*{})", base), n.to_string())
                     }
-                    _ => {
-                        let (elem_ty, n) = self.array_info(iter);
-                        (elem_ty, base.clone(), n.to_string())
+                    Type::Vec(elem) | Type::Slice(elem) => {
+                        ((**elem).clone(), format!("{}.data", base), format!("{}.len", base))
                     }
+                    Type::Ref(inner) => match inner.as_ref() {
+                        Type::Vec(elem) | Type::Slice(elem) => (
+                            (**elem).clone(),
+                            format!("{}->data", base),
+                            format!("{}->len", base),
+                        ),
+                        _ => (Type::Int, base, "0".to_string()),
+                    },
+                    _ => (Type::Int, base, "0".to_string()),
                 };
                 let (cvar, _) = self.loop_var(var);
-                let id = self.next_loop_id;
-                self.next_loop_id += 1;
-                self.break_stack.push(BreakTarget::Loop(id));
                 self.out.borrow_mut().push_str(&format!(
                     "  for (int64_t __ki = 0; __ki < {}; __ki++) {{\n",
                     len
@@ -1906,8 +2296,6 @@ impl<'a> Codegen<'a> {
                 self.loop_vars.remove(var);
                 self.loop_depth -= 1;
                 self.out.borrow_mut().push_str("  }\n");
-                self.break_stack.pop();
-                self.out.borrow_mut().push_str(&format!("  __k_loop_{}:;\n", id));
             }
         }
     }
@@ -1916,6 +2304,13 @@ impl<'a> Codegen<'a> {
     /// `x`, второе — `x__1`, третье — `x__2`. Иначе C скажет
     /// «redefinition». Имя запоминается в `var_names`, чтобы обращения
     /// к переменной шли к правильному объявлению.
+    /// Следующее уникальное имя временной переменной.
+    fn next_tmp_id(&self) -> u32 {
+        let n = self.tmp_counter.get();
+        self.tmp_counter.set(n + 1);
+        n
+    }
+
     fn fresh_var_name(&self, name: &str) -> String {
         let mut counts = self.shadow_count.borrow_mut();
         let n = counts.get(name).copied().unwrap_or(0);
@@ -1954,27 +2349,6 @@ impl<'a> Codegen<'a> {
             format!("k_{}__{}", var, depth)
         };
         (name, var.to_string())
-    }
-
-    /// Ближайший цикл — цель `goto` для `break` из `switch`.
-    fn innermost_loop(&self) -> Option<usize> {
-        self.break_stack.iter().rev().find_map(|t| match t {
-            BreakTarget::Loop(id) => Some(*id),
-            BreakTarget::Switch(_) => None,
-        })
-    }
-
-    /// Тип элемента и длина массива — для обхода `for ... in`.
-    fn array_info(&self, iter: &Expr) -> (Type, usize) {
-        let t = match self.types.get(&iter.id) {
-            Some(Type::Array(elem, n)) => Some((elem.as_ref().clone(), *n)),
-            Some(Type::Ref(inner)) => match inner.as_ref() {
-                Type::Array(elem, n) => Some((elem.as_ref().clone(), *n)),
-                _ => None,
-            },
-            _ => None,
-        };
-        t.unwrap_or((Type::Int, 0))
     }
 
     /// Элементы массива-литерала.
@@ -2154,6 +2528,15 @@ impl<'a> Codegen<'a> {
             ExprKind::Field { obj, name } => {
                 let base = self.expr(obj);
                 let base_ty = self.types.get(&obj.id);
+                // `Box<T>` — обёртка: поле лежит за указателем.
+                if let Some(Type::Box(_)) = base_ty {
+                    return format!("{}.ptr->{}", base, name);
+                }
+                if let Some(Type::Ref(inner)) = base_ty {
+                    if let Type::Box(_) = inner.as_ref() {
+                        return format!("{}->ptr->{}", base, name);
+                    }
+                }
                 // Если base — ссылка (указатель), используем ->.
                 match base_ty {
                     Some(Type::Tuple(_)) => format!("{}._{}", base, name),
@@ -2200,6 +2583,34 @@ impl<'a> Codegen<'a> {
                 if let Some(Type::Fn(..)) = self.types.get(&callee.id) {
                     let a: Vec<String> = args.iter().map(|x| self.expr(x)).collect();
                     return format!("{}({})", self.var_name(name), a.join(", "));
+                }
+                // Встроенный `Box::new(x)`: выделяем в куче и копируем
+                // туда значение. `ke_alloc_copy` выделяет и копирует —
+                // так значение не остаётся в стеке.
+                if name == "Box::new" {
+                    let t = self
+                        .types
+                        .get(&e.id)
+                        .cloned()
+                        .unwrap_or(Type::Box(Box::new(Type::Int)));
+                    if let Type::Box(inner) = t {
+                        let c = format!("Keel_Box_{}", inner.mangle());
+                        let inner_c = self.ty(&inner);
+                        let v = args
+                            .first()
+                            .map(|a| self.expr(a))
+                            .unwrap_or_else(|| "0".to_string());
+                        // Значение кладём во временную переменную
+                        // нужного типа и копируем из неё: иначе
+                        // составной литерал вложился бы сам в себя.
+                        let tmp = self.decl(&inner, "__k_box_tmp");
+                        // Точка с запятой после составного литерала
+                        // обязательна: без неё gcc ждёт `;` перед `}`.
+                        return format!(
+                            "({{ {} = {}; ({}){{ .ptr = ({}*)ke_alloc_copy(sizeof({}), &__k_box_tmp) }}; }})",
+                            tmp, v, c, inner_c, inner_c
+                        );
+                    }
                 }
                 // Встроенный `Vec::new()`.
                 if name == "Vec::new" {
@@ -2317,6 +2728,114 @@ impl<'a> Codegen<'a> {
                 if name == "read_int" {
                     return "k_read_int()".to_string();
                 }
+                // `to_string(x)` — строка из числа, bool или уже строка.
+                if name == "to_string" {
+                    let Some(a) = args.first() else {
+                        return "\"\"".to_string();
+                    };
+                    let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int).deref().clone();
+                    let v = match self.types.get(&a.id) {
+                        Some(Type::Ref(_)) => format!("(*{})", self.expr(a)),
+                        _ => self.expr(a),
+                    };
+                    return match t {
+                        Type::Int => format!("k_to_string_i({})", v),
+                        Type::Float => format!("k_to_string_f({})", v),
+                        Type::Bool => format!("({} ? \"true\" : \"false\")", v),
+                        _ => v,
+                    };
+                }
+                // `to_int(s)` / `to_float(s)` — разбор строки.
+                if name == "to_int" {
+                    let v = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "\"\"".to_string());
+                    return format!("(int64_t)strtoll({}, NULL, 10)", v);
+                }
+                if name == "to_float" {
+                    let v = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "\"\"".to_string());
+                    return format!("strtod({}, NULL)", v);
+                }
+                // Побитовые операции — выражением, без функций рантайма.
+                // В C это те же операторы, поэтому код получается прямой.
+                // Операнды вычисляются по одному разу — как в C.
+                if matches!(
+                    name.as_str(),
+                    "band" | "bor" | "bxor" | "bshl" | "bshr" | "bnot"
+                ) {
+                    let a = args.first().map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    if name == "bnot" {
+                        return format!("((~({})))", a);
+                    }
+                    let b = args.get(1).map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    // Величина сдвига — по модулю 64: в Rust в release
+                    // сдвиг за разрядность тоже оборачивается, а в C это
+                    // неопределённое поведение.
+                    //
+                    // `bshr` — арифметический (знак расширяется), как в
+                    // Rust: `>>` для знакового в C определён реализацией,
+                    // gcc и clang делают именно арифметический.
+                    return match name.as_str() {
+                        "band" => format!("(({}) & ({}))", a, b),
+                        "bor" => format!("(({}) | ({}))", a, b),
+                        "bxor" => format!("(({}) ^ ({}))", a, b),
+                        "bshr" => format!("(({}) >> (({}) & 63))", a, b),
+                        _ => format!("((int64_t)((uint64_t)({}) << (({}) & 63)))", a, b),
+                    };
+                }
+                // `min`/`max`/`abs` — выражением, без функций рантайма.
+                // Аргументы вычисляются один раз: у макроса был бы двойной
+                // вызов при побочных эффектах.
+                if name == "min" || name == "max" || name == "abs" {
+                    let ty = self
+                        .types
+                        .get(&e.id)
+                        .cloned()
+                        .unwrap_or(Type::Int)
+                        .deref()
+                        .clone();
+                    let c = self.ty(&ty);
+                    let a = args.first().map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    if name == "abs" {
+                        return format!(
+                            "({{ {c} __k_v = {a}; __k_v < 0 ? -__k_v : __k_v; }})",
+                            c = c,
+                            a = a
+                        );
+                    }
+                    let b = args.get(1).map(|a| self.num_operand(a)).unwrap_or_else(|| "0".to_string());
+                    let op = if name == "min" { "<" } else { ">" };
+                    return format!(
+                        "({{ {c} __k_a = {a}; {c} __k_b = {b}; __k_a {op} __k_b ? __k_a : __k_b; }})",
+                        c = c,
+                        a = a,
+                        b = b,
+                        op = op
+                    );
+                }
+                // `assert(cond, msg)` — нарушение печатается и завершает
+                // программу с кодом 1, как `k_contract_fail`.
+                if name == "assert" {
+                    let cond = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
+                    let msg = args.get(1).map(|a| self.expr(a)).unwrap_or_else(|| "\"\"".to_string());
+                    return format!(
+                        "({{ if (!({cond})) {{ fprintf(stderr, \"assert (строка {line}): %s\\n\", {msg}); exit(1); }} (void)0; }})",
+                        cond = cond,
+                        msg = msg,
+                        line = e.line
+                    );
+                }
+                // `panic(msg)` / `exit(code)`.
+                if name == "panic" {
+                    let msg = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "\"\"".to_string());
+                    return format!(
+                        "({{ fprintf(stderr, \"panic (строка {line}): %s\\n\", {msg}); exit(1); (void)0; }})",
+                        msg = msg,
+                        line = e.line
+                    );
+                }
+                if name == "exit" {
+                    let code = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".to_string());
+                    return format!("exit({})", code);
+                }
                 // `argc` — сколько аргументов получила программа.
                 if name == "argc" {
                     return "k_argc".to_string();
@@ -2367,69 +2886,6 @@ impl<'a> Codegen<'a> {
                         .map(|a| self.expr(a))
                         .unwrap_or_else(|| "0".to_string());
                     return format!("k_close({})", fd);
-                }
-                // `to_string(x)` — число или bool в строку.
-                if name == "to_string" {
-                    let Some(a) = args.first() else {
-                        return "\"\"".to_string();
-                    };
-                    let t = self.types.get(&a.id).cloned().unwrap_or(Type::Int);
-                    let base = t.deref().clone();
-                    let v = match t {
-                        Type::Ref(_) => format!("(*{})", self.expr(a)),
-                        _ => self.expr(a),
-                    };
-                    return match base {
-                        Type::Int => format!("k_int_to_str({})", v),
-                        Type::Float => format!("k_float_to_str({})", v),
-                        Type::Bool => format!("(({}) ? \"true\" : \"false\")", v),
-                        _ => v,
-                    };
-                }
-                // `to_int(s)` / `to_float(s)` — разбор строки.
-                if name == "to_int" || name == "to_float" {
-                    let v = args
-                        .first()
-                        .map(|a| self.expr(a))
-                        .unwrap_or_else(|| "\"\"".to_string());
-                    return format!("k_str_{}({})", name, v);
-                }
-                // `min`/`max`/`abs` — по типу аргумента.
-                if name == "min" || name == "max" {
-                    let a = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
-                    let b = args.get(1).map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
-                    let t = args
-                        .first()
-                        .and_then(|x| self.types.get(&x.id))
-                        .map(|t| t.deref().clone())
-                        .unwrap_or(Type::Int);
-                    let suffix = if t == Type::Float { "float" } else { "int" };
-                    return format!("k_{}_{}({}, {})", name, suffix, a, b);
-                }
-                if name == "abs" {
-                    let a = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
-                    let t = args
-                        .first()
-                        .and_then(|x| self.types.get(&x.id))
-                        .map(|t| t.deref().clone())
-                        .unwrap_or(Type::Int);
-                    let suffix = if t == Type::Float { "float" } else { "int" };
-                    return format!("k_abs_{}({})", suffix, a);
-                }
-                // `assert(cond)` — проверка в рантайме.
-                if name == "assert" {
-                    let c = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "true".to_string());
-                    return format!("({{ if (!({})) k_assert_fail({}); }})", c, e.line);
-                }
-                // `panic(msg)` — сообщение и выход с кодом 1.
-                if name == "panic" {
-                    let m = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "\"\"".to_string());
-                    return format!("k_panic({})", m);
-                }
-                // `exit(code)` — выход с кодом.
-                if name == "exit" {
-                    let c = args.first().map(|x| self.expr(x)).unwrap_or_else(|| "0".to_string());
-                    return format!("exit({})", c);
                 }
                 // `len` — длина строки или массива. Для массива размер
                 // известен из типа и подставляется числом; для строки
@@ -2566,9 +3022,7 @@ impl<'a> Codegen<'a> {
                         "free" => format!("k_vec_{}_free({})", m, recv),
                         "is_empty" => format!("k_vec_{}_is_empty({})", m, recv),
                         "clear" => format!("k_vec_{}_clear({})", m, recv),
-                        "contains" => {
-                            format!("k_vec_{}_contains({}, {})", m, recv, self.expr(&args[0]))
-                        }
+                        "contains" => format!("k_vec_{}_contains({}, {})", m, recv, self.expr(&args[0])),
                         "sort" => format!("k_vec_{}_sort({})", m, recv),
                         "reverse" => format!("k_vec_{}_reverse({})", m, recv),
                         "first" => format!("k_vec_{}_first({})", m, recv),
@@ -2577,50 +3031,12 @@ impl<'a> Codegen<'a> {
                     };
                 }
                 if let Some(Type::Option(inner)) = &obj_ty {
-                    let c = format!("Keel_Option_{}", inner.mangle());
-                    let recv = match self.types.get(&obj.id) {
-                        Some(Type::Ref(_)) => format!("(*{})", self.expr(obj)),
-                        _ => self.expr(obj),
-                    };
-                    return match name.as_str() {
-                        "unwrap" => format!(
-                            "({{ {} __o = {}; if (__o.tag != {}_Some) k_unwrap_fail({}); __o.data.Some._0; }})",
-                            c, recv, c, e.line
-                        ),
-                        "unwrap_or" => format!(
-                            "({{ {} __o = {}; __o.tag == {}_Some ? __o.data.Some._0 : {}; }})",
-                            c,
-                            recv,
-                            c,
-                            self.expr(&args[0])
-                        ),
-                        "is_some" => format!("(({}).tag == {}_Some)", recv, c),
-                        "is_none" => format!("(({}).tag == {}_None)", recv, c),
-                        _ => "0".to_string(),
-                    };
+                    let inner = (**inner).clone();
+                    return self.option_method(e, obj, name, args, &inner);
                 }
                 if let Some(Type::Result(ok, err)) = &obj_ty {
-                    let c = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
-                    let recv = match self.types.get(&obj.id) {
-                        Some(Type::Ref(_)) => format!("(*{})", self.expr(obj)),
-                        _ => self.expr(obj),
-                    };
-                    return match name.as_str() {
-                        "unwrap" => format!(
-                            "({{ {} __o = {}; if (__o.tag != {}_Ok) k_unwrap_fail({}); __o.data.Ok._0; }})",
-                            c, recv, c, e.line
-                        ),
-                        "unwrap_or" => format!(
-                            "({{ {} __o = {}; __o.tag == {}_Ok ? __o.data.Ok._0 : {}; }})",
-                            c,
-                            recv,
-                            c,
-                            self.expr(&args[0])
-                        ),
-                        "is_ok" => format!("(({}).tag == {}_Ok)", recv, c),
-                        "is_err" => format!("(({}).tag == {}_Err)", recv, c),
-                        _ => "0".to_string(),
-                    };
+                    let (ok, err) = ((**ok).clone(), (**err).clone());
+                    return self.result_method(e, obj, name, args, &ok, &err);
                 }
                 let ty_name = match &obj_ty {
                     Some(Type::Named(n)) => n.clone(),
@@ -2693,17 +3109,7 @@ impl<'a> Codegen<'a> {
                 };
                 format!("({} {} {})", ls, opstr, rs)
             }
-            ExprKind::Closure { params, body } => {
-                let name = format!(
-                    "closure_{}",
-                    self.closures.borrow().len() + self.pending_closures.borrow().len()
-                );
-                let ret = self.types.get(&e.id).cloned().unwrap_or(Type::Void);
-                self.pending_closures
-                    .borrow_mut()
-                    .push((name.clone(), params.clone(), body.clone(), ret));
-                name
-            }
+            ExprKind::Closure { params, body } => self.register_closure(e, params, body),
             ExprKind::If { cond, then_expr, else_expr } => {
                 // Тернарный оператор C: значение — результат выбранной
                 // ветви, типы у обеих ветвей совпадают (проверил checker).
@@ -2712,6 +3118,43 @@ impl<'a> Codegen<'a> {
                     self.value_expr(cond),
                     self.value_expr(then_expr),
                     self.value_expr(else_expr)
+                )
+            }
+            ExprKind::Try(inner) => {
+                // `expr?` — если `Err`, возвращаем его из функции.
+                //
+                // Statement expression — расширение gcc/clang: внутри
+                // блока можно сделать `return`, а значение блока — это
+                // значение выражения.
+                let t = self.types.get(&inner.id).cloned().unwrap_or(Type::Int);
+                let (ok_ty, err_ty) = match t {
+                    Type::Ref(inner) => match *inner {
+                        Type::Result(ok, err) => (*ok, *err),
+                        other => (other, Type::Str),
+                    },
+                    Type::Result(ok, err) => (*ok, *err),
+                    other => (other, Type::Str),
+                };
+                // Тип субъекта — его `Result`: из него берётся значение.
+                let c = format!("Keel_Result_{}_{}", ok_ty.mangle(), err_ty.mangle());
+                // А возвращается ошибка **функции**: тип возврата может
+                // отличаться от типа субъекта (`Result<int,string>` внутри
+                // функции, возвращающей `Result<string,string>`).
+                let ret_c = match &self.cur_ret {
+                    Type::Result(rok, rerr) => {
+                        format!("Keel_Result_{}_{}", rok.mangle(), rerr.mangle())
+                    }
+                    _ => c.clone(),
+                };
+                let v = self.value_expr(inner);
+                let tmp = format!("__k_q{}", self.next_tmp_id());
+                // Последнее выражение statement-expression требует `;`.
+                format!(
+                    "({{ {c} {t} = {v}; if ({t}.tag == {c}_Err) return ({r}){{ .tag = {r}_Err, .data.Err = {{ ._0 = {t}.data.Err._0 }} }}; {t}.data.Ok._0; }})",
+                    c = c,
+                    r = ret_c,
+                    t = tmp,
+                    v = v
                 )
             }
             ExprKind::Array(items) => {
@@ -2744,63 +3187,28 @@ impl<'a> Codegen<'a> {
                     _ => format!("(&{})", base),
                 }
             }
-            ExprKind::Try(inner) => {
-                // `expr?` — statement expression: при `None`/`Err` — `return`
-                // из функции, иначе — значение.
-                let base = self.expr(inner);
-                let t = self.types.get(&inner.id).cloned().unwrap_or(Type::Int);
-                let t = match t {
-                    Type::Ref(i) => *i,
-                    t => t,
-                };
-                match &t {
-                    Type::Option(inner_ty) => {
-                        let cname = format!("Keel_Option_{}", inner_ty.mangle());
-                        format!(
-                            "({{ {} __t = {}; if (__t.tag != {}_Some) return ({}){{ .tag = {}_None }}; __t.data.Some._0; }})",
-                            self.ty(&t),
-                            base,
-                            cname,
-                            self.ty(&self.cur_ret),
-                            cname
-                        )
-                    }
-                    Type::Result(ok, err) => {
-                        let cname = format!("Keel_Result_{}_{}", ok.mangle(), err.mangle());
-                        format!(
-                            "({{ {} __t = {}; if (__t.tag != {}_Ok) return ({}){{ .tag = {}_Err, .data.Err = {{ ._0 = __t.data.Err._0 }} }}; __t.data.Ok._0; }})",
-                            self.ty(&t),
-                            base,
-                            cname,
-                            self.ty(&self.cur_ret),
-                            cname
-                        )
-                    }
-                    _ => base,
-                }
-            }
         }
     }
-}
-
-/// Строковый литерал в C с экранированием.
-fn c_string_lit(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// Упоминает ли оператор имя (для liveness `Vec`).
+/// Присваивает ли оператор переменной `name` (или её полю `field`).
+///
+/// Для `Box` это важно: при присваивании старое значение освобождается
+/// ДО присваивания, иначе оно утечёт.
+fn assigns_to_drop(s: &Stmt, name: &str, field: &Option<String>) -> bool {
+    match s {
+        Stmt::Assign { lhs, .. } => match (&lhs.kind, field) {
+            (ExprKind::Ident(n), None) => n == name,
+            (ExprKind::Field { obj, name: f }, Some(field)) => {
+                matches!(&obj.kind, ExprKind::Ident(n) if n == name) && f == field
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn stmt_mentions(s: &Stmt, name: &str) -> bool {
     match s {
         Stmt::Let { init, .. } => crate::checker::mentions_ident(init, name),
@@ -2823,12 +3231,9 @@ fn stmt_mentions(s: &Stmt, name: &str) -> bool {
             block_mentions(body, name) || crate::checker::mentions_ident(cond, name)
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => false,
-        Stmt::ForRange { start, end, step, body, .. } => {
+        Stmt::ForRange { start, end, body, .. } => {
             crate::checker::mentions_ident(start, name)
                 || crate::checker::mentions_ident(end, name)
-                || step
-                    .as_ref()
-                    .is_some_and(|s| crate::checker::mentions_ident(s, name))
                 || block_mentions(body, name)
         }
         Stmt::ForEach { iter, body, .. } => {
@@ -2843,4 +3248,24 @@ fn stmt_mentions(s: &Stmt, name: &str) -> bool {
 
 fn block_mentions(b: &Block, name: &str) -> bool {
     b.stmts.iter().any(|s| stmt_mentions(s, name))
+}
+
+/// C-литерал строки с экранированием.
+fn c_string_lit(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            // Нулевой байт лекер не пропускает, но на всякий случай:
+            // в C-литерал он попасть не должен.
+            '\0' => out.push_str("\\0"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
 }

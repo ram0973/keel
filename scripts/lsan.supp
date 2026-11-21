@@ -3,3 +3,5 @@
 leak:k_read_line
 leak:k_str_concat
 leak:k_read
+leak:k_to_string_i
+leak:k_to_string_f

@@ -1,0 +1,67 @@
+// Связный список в куче.
+//
+// `Box<T>` — одно значение в куче, единственный владелец. Список —
+// цепочка таких значений: у каждого узла есть ссылка на следующий.
+// Пустого списка не бывает: нет узла — это `None`.
+//
+// В отличие от арены (`Vec<Node>` с индексами), здесь узлы стоят
+// там, где им положено, и удаление узла не оставляет дыр.
+
+struct Node {
+    value int;
+    next Option<Box<Node>>;
+}
+
+// Сумма значений списка. Узел читается через ссылку на `Option`,
+// поэтому владение остаётся у вызывающего.
+fn sum(n &Option<Box<Node>>) int {
+    match n {
+        Some(node) => {
+            return node.value + sum(&node.next);
+        }
+        None => {
+            return 0;
+        }
+    }
+}
+
+// Длина списка.
+fn count(n &Option<Box<Node>>) int {
+    match n {
+        Some(node) => {
+            return 1 + count(&node.next);
+        }
+        None => {
+            return 0;
+        }
+    }
+}
+
+// Печать по порядку.
+fn show(n &Option<Box<Node>>) {
+    match n {
+        Some(node) => {
+            print(node.value, " ");
+            show(&node.next);
+        }
+        None => {
+            return;
+        }
+    }
+}
+
+fn main() int {
+    // Собираем список с конца: каждый новый узел становится головой.
+    let mut head Option<Box<Node>> = None;
+
+    head = Some(Box::new(Node { value: 30, next: head }));
+    head = Some(Box::new(Node { value: 20, next: head }));
+    head = Some(Box::new(Node { value: 10, next: head }));
+
+    println("длина: ", count(&head));
+    println("сумма:  ", sum(&head));
+    print("список: ");
+    show(&head);
+    println();
+    return 0;
+}
